@@ -40,7 +40,11 @@ antes de pasar al siguiente:
    trucos de raster a mitad de línea. Pendiente: modos CGB (paletas por
    tile, VRAM bank 1, prioridad BG-a-nivel-de-tile).
 
-7. **Joypad** — mapeo de botones a 0xFF00, sin lógica compleja.
+7. **Joypad** — `joypad.h`/`joypad.cpp`. Implementado: P1/JOYP con
+   selección de grupo (direccionales/botones), lectura activa-baja, e
+   interrupción en flanco de presión del grupo actualmente seleccionado.
+   `GameBoy::setButtonPressed()` es el punto de entrada para la capa de
+   plataforma.
 
 8. **APU (audio)** — se puede posponer sin bloquear tener un emulador
    jugable (silencioso) mientras se valida CPU+PPU+input.

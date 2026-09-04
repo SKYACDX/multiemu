@@ -26,8 +26,8 @@ metas futuras) para Android e iOS.
 - [x] PPU — modos OAM/transfer/HBlank/VBlank, LYC/STAT, background+window+
       sprites (con prioridad y flip), DMA de OAM; falta CGB y timing
       cycle-accurate dentro de una scanline
+- [x] Input (joypad) — P1/JOYP con selección de grupo e interrupción
 - [ ] APU (audio) — se puede posponer
-- [ ] Input (joypad)
 - [ ] Bindings nativos Android (JNI) + iOS (Obj-C++)
 - [ ] App React Native (carga de ROM, render de frame, controles)
 

@@ -36,6 +36,11 @@ class GameBoy {
     bool frameReady() const { return frameReady_; }
     const Ppu::Framebuffer& framebuffer() const { return bus_.ppu().framebuffer(); }
 
+    // Platform layer entry point: report a button's current physical
+    // state (from touch controls, a gamepad, etc). Safe to call between
+    // step() calls at any time.
+    void setButtonPressed(Button button, bool pressed) { bus_.setButtonPressed(button, pressed); }
+
     const Cpu& cpu() const { return cpu_; }
     SystemBus& bus() { return bus_; }
 

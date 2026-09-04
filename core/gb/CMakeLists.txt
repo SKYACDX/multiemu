@@ -10,6 +10,7 @@ add_library(gbcore STATIC
     src/system_bus.cpp
     src/timer.cpp
     src/ppu.cpp
+    src/joypad.cpp
 )
 target_include_directories(gbcore PUBLIC include)
 
