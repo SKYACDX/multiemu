@@ -55,3 +55,19 @@ cmake -S core/gb -B core/gb/build
 cmake --build core/gb/build
 ctest --test-dir core/gb/build --output-on-failure
 ```
+
+## Probar el pipeline completo sin una ROM comercial
+
+`core/gb/tools/gen_test_rom.cpp` genera una ROM mínima escrita a mano en
+código máquina de Game Boy (sin depender de ningún juego con copyright)
+que dibuja un patrón de franjas verticales usando el renderer de
+background real. `dump_frame` la corre a través de `GameBoy` hasta el
+primer VBlank y vuelca el framebuffer a un BMP:
+
+```bash
+./core/gb/build/gen_test_rom test_rom.gb
+./core/gb/build/dump_frame test_rom.gb frame.bmp
+```
+
+Si el pipeline (CPU + Bus + VRAM/OAM + PPU) funciona, `frame.bmp` muestra
+20 franjas de 8px alternando blanco/negro cubriendo toda la pantalla.

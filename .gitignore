@@ -7,5 +7,7 @@ build/
 *.gb
 *.gbc
 *.bin
+*.bmp
+*.png
 node_modules/
 .DS_Store

@@ -13,5 +13,11 @@ add_library(gbcore STATIC
 )
 target_include_directories(gbcore PUBLIC include)
 
+add_executable(gen_test_rom tools/gen_test_rom.cpp)
+target_link_libraries(gen_test_rom PRIVATE gbcore)
+
+add_executable(dump_frame tools/dump_frame.cpp)
+target_link_libraries(dump_frame PRIVATE gbcore)
+
 enable_testing()
 add_subdirectory(tests)
