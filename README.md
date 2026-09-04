@@ -23,7 +23,9 @@ metas futuras) para Android e iOS.
 - [x] Cartucho / mappers — ROM only y MBC1 implementados; MBC3/MBC5 pendientes
 - [x] Timers e interrupciones — DIV/TIMA/TMA/TAC y despacho IE/IF/IME,
       `GameBoy` mantiene CPU+timer sincronizados
-- [ ] PPU (renderizado de tiles/sprites, scanline)
+- [x] PPU — modos OAM/transfer/HBlank/VBlank, LYC/STAT, background+window+
+      sprites (con prioridad y flip), DMA de OAM; falta CGB y timing
+      cycle-accurate dentro de una scanline
 - [ ] APU (audio) — se puede posponer
 - [ ] Input (joypad)
 - [ ] Bindings nativos Android (JNI) + iOS (Obj-C++)

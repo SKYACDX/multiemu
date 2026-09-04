@@ -6,9 +6,8 @@ namespace gb {
 
 // Owns the CPU and the real memory bus, and keeps them running in lockstep:
 // every m-cycle the CPU spends executing also has to be spent by the timer
-// (and, once it exists, the PPU/APU). This is the class the platform layer
-// (native Android/iOS bindings, or a native test harness) is expected to
-// drive frame-by-frame.
+// and PPU. This is the class the platform layer (native Android/iOS
+// bindings, or a native test harness) is expected to drive frame-by-frame.
 class GameBoy {
    public:
     explicit GameBoy(std::unique_ptr<Cartridge> cartridge)
@@ -16,12 +15,26 @@ class GameBoy {
 
     // Runs exactly one CPU step (an instruction, or interrupt dispatch)
     // and advances every other bus-owned device by the same number of
-    // t-cycles. Returns the number of m-cycles elapsed.
+    // t-cycles. Returns the number of m-cycles elapsed. If the PPU
+    // completed a frame during this step, frameReady() will report true
+    // until the next call to step().
     int step() {
         int mCycles = cpu_.step();
-        bus_.tick(mCycles * 4);
+        frameReady_ = bus_.tick(mCycles * 4);
         return mCycles;
     }
+
+    // Runs steps until a full frame has been rendered (frameReady()
+    // becomes true), then returns. Convenience for callers that just want
+    // "give me the next frame" rather than driving step() by hand.
+    void runUntilFrame() {
+        do {
+            step();
+        } while (!frameReady_);
+    }
+
+    bool frameReady() const { return frameReady_; }
+    const Ppu::Framebuffer& framebuffer() const { return bus_.ppu().framebuffer(); }
 
     const Cpu& cpu() const { return cpu_; }
     SystemBus& bus() { return bus_; }
@@ -29,6 +42,7 @@ class GameBoy {
    private:
     SystemBus bus_;
     Cpu cpu_;
+    bool frameReady_ = false;
 };
 
 }  // namespace gb

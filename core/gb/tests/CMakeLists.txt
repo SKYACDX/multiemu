@@ -17,3 +17,7 @@ add_test(NAME test_timer COMMAND test_timer)
 add_executable(test_gameboy test_gameboy.cpp)
 target_link_libraries(test_gameboy PRIVATE gbcore)
 add_test(NAME test_gameboy COMMAND test_gameboy)
+
+add_executable(test_ppu test_ppu.cpp)
+target_link_libraries(test_ppu PRIVATE gbcore)
+add_test(NAME test_ppu COMMAND test_ppu)

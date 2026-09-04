@@ -29,10 +29,16 @@ antes de pasar al siguiente:
    de juegos). `SystemBus::tick()` y `GameBoy::step()` ya lo mantienen
    sincronizado con la CPU.
 
-6. **PPU** — la parte más grande después de la CPU: modos 0-3 por scanline,
-   renderizado de background/window (tiles) y sprites (OAM), y disparo de
-   VBlank/STAT. Se recomienda primero un renderizador "scanline al final
-   del modo 3" (más simple) antes de intentar ciclo-a-ciclo.
+6. **PPU** — `ppu.h`/`ppu.cpp`. Implementado: máquina de modos 2/3/0/1 con
+   los timings estándar (80/172/204/456 t-cycles), LY/LYC/STAT con sus
+   interrupciones, renderizado de background+window por tile (con scroll,
+   selección de mapa/datos de tile), sprites de 8x8 y 8x16 (flip
+   horizontal/vertical, prioridad OBJ-vs-BG, hasta 10 por línea con el
+   orden de prioridad real por X/índice OAM), y DMA de OAM instantáneo
+   (0xFF46, no bloquea CPU como en hardware real). Modelo "renderiza la
+   línea completa al terminar el modo 3", no ciclo-a-ciclo: no reproduce
+   trucos de raster a mitad de línea. Pendiente: modos CGB (paletas por
+   tile, VRAM bank 1, prioridad BG-a-nivel-de-tile).
 
 7. **Joypad** — mapeo de botones a 0xFF00, sin lógica compleja.
 
