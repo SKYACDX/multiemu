@@ -16,9 +16,10 @@ class Cpu {
     // start executing cartridge code and to unit-test the decoder.
     void reset();
 
-    // Executes exactly one instruction. Returns the number of machine
-    // cycles (m-cycles, 1 m-cycle = 4 t-cycles) it took, for scheduling
-    // the PPU/timer/APU against it later.
+    // Executes exactly one instruction, or services one pending interrupt
+    // if IME (or, for waking from HALT, just IE&IF) allows it. Returns the
+    // number of machine cycles (m-cycles, 1 m-cycle = 4 t-cycles) it took;
+    // the caller must convert to t-cycles (x4) to drive Bus::tick.
     int step();
 
     // --- register access (exposed for tests and for the debugger UI) ---
@@ -110,6 +111,13 @@ class Cpu {
 
     // Executes one opcode. Returns m-cycles taken.
     int execute(u8 opcode);
+
+    // Checks IE & IF & IME (0xFFFF, 0xFF0F, ime_) for a pending
+    // interrupt. If one exists, HALT is cleared unconditionally (hardware
+    // wakes on IE&IF regardless of IME); if IME is also set, dispatches
+    // it (pushes PC, jumps to the vector, clears IME and the IF bit) and
+    // returns 5 m-cycles. Returns 0 if nothing was dispatched.
+    int serviceInterrupt();
 };
 
 }  // namespace gb

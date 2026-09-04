@@ -21,8 +21,9 @@ metas futuras) para Android e iOS.
 - [x] Bus de memoria — WRAM/HRAM/cartucho conectados; VRAM/OAM/I-O son
       stubs hasta que exista la PPU
 - [x] Cartucho / mappers — ROM only y MBC1 implementados; MBC3/MBC5 pendientes
+- [x] Timers e interrupciones — DIV/TIMA/TMA/TAC y despacho IE/IF/IME,
+      `GameBoy` mantiene CPU+timer sincronizados
 - [ ] PPU (renderizado de tiles/sprites, scanline)
-- [ ] Timers e interrupciones
 - [ ] APU (audio) — se puede posponer
 - [ ] Input (joypad)
 - [ ] Bindings nativos Android (JNI) + iOS (Obj-C++)

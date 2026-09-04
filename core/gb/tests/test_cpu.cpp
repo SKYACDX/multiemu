@@ -168,6 +168,45 @@ TEST_CASE(call_and_ret_roundtrip_through_stack) {
     return true;
 }
 
+TEST_CASE(interrupt_dispatched_when_ime_set_and_pending) {
+    FlatBus bus;
+    bus.load(0x0100, {0xFB,   // EI
+                       0x00,  // NOP (EI's effect is immediate in this model)
+                       0x00});
+    bus.write(0xFFFF, 0x01);  // IE: VBlank enabled
+    bus.write(0xFF0F, 0x01);  // IF: VBlank pending
+    gb::Cpu cpu(bus);
+
+    cpu.step();  // EI
+    CHECK(cpu.interruptsEnabled());
+    int cycles = cpu.step();  // should dispatch the interrupt instead of running the NOP
+    CHECK(cycles == 5);
+    CHECK(cpu.pc() == 0x0040);
+    CHECK(!cpu.interruptsEnabled());
+    CHECK((bus.read(0xFF0F) & 0x01) == 0);  // IF bit cleared
+    CHECK(cpu.sp() == 0xFFFC);              // return address was pushed
+    return true;
+}
+
+TEST_CASE(halt_wakes_without_dispatch_when_ime_disabled) {
+    FlatBus bus;
+    bus.load(0x0100, {0xF3,   // DI
+                       0x76,  // HALT
+                       0x00});
+    gb::Cpu cpu(bus);
+    cpu.step();  // DI
+    cpu.step();  // HALT
+    CHECK(cpu.halted());
+
+    bus.write(0xFFFF, 0x01);  // IE: VBlank enabled
+    bus.write(0xFF0F, 0x01);  // IF: VBlank pending, but IME is off
+
+    cpu.step();  // should wake from HALT without servicing the interrupt
+    CHECK(!cpu.halted());
+    CHECK(cpu.pc() == 0x0103);  // fell through to the NOP after HALT, not to 0x0040
+    return true;
+}
+
 TEST_CASE(push_pop_roundtrip) {
     FlatBus bus;
     bus.load(0x0100, {0x01, 0xCD, 0xAB,  // LD BC,0xABCD

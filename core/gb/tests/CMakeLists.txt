@@ -9,3 +9,11 @@ add_test(NAME test_cartridge COMMAND test_cartridge)
 add_executable(test_system_bus test_system_bus.cpp)
 target_link_libraries(test_system_bus PRIVATE gbcore)
 add_test(NAME test_system_bus COMMAND test_system_bus)
+
+add_executable(test_timer test_timer.cpp)
+target_link_libraries(test_timer PRIVATE gbcore)
+add_test(NAME test_timer COMMAND test_timer)
+
+add_executable(test_gameboy test_gameboy.cpp)
+target_link_libraries(test_gameboy PRIVATE gbcore)
+add_test(NAME test_gameboy COMMAND test_gameboy)

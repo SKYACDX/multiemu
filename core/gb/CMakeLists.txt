@@ -8,6 +8,7 @@ add_library(gbcore STATIC
     src/cpu.cpp
     src/cartridge.cpp
     src/system_bus.cpp
+    src/timer.cpp
 )
 target_include_directories(gbcore PUBLIC include)
 

@@ -522,11 +522,33 @@ int Cpu::execute(u8 opcode) {
     return 1;
 }
 
-int Cpu::step() {
-    if (halted_) {
-        // TODO: should still tick timers/PPU and wake on interrupt.
-        return 1;
+int Cpu::serviceInterrupt() {
+    u8 ie = bus_.read(0xFFFF);
+    u8 iflag = bus_.read(0xFF0F);
+    u8 pending = ie & iflag & 0x1F;
+    if (pending == 0) return 0;
+
+    halted_ = false;  // hardware wakes on IE&IF regardless of IME
+    if (!ime_) return 0;
+
+    for (int i = 0; i < 5; i++) {
+        if (pending & (1 << i)) {
+            ime_ = false;
+            bus_.write(0xFF0F, iflag & ~u8(1 << i));
+            push16(pc_);
+            pc_ = 0x0040 + u16(i) * 8;  // VBlank, LCD STAT, Timer, Serial, Joypad
+            return 5;
+        }
     }
+    return 0;  // unreachable
+}
+
+int Cpu::step() {
+    int interruptCycles = serviceInterrupt();
+    if (interruptCycles > 0) return interruptCycles;
+
+    if (halted_) return 1;
+
     u8 opcode = fetch8();
     return execute(opcode);
 }

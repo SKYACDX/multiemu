@@ -17,13 +17,17 @@ antes de pasar al siguiente:
    HRAM, cartucho e IE/IF conectados. VRAM/OAM/resto de I-O son stubs
    (leen 0xFF, ignoran writes) hasta que exista la PPU/timer/joypad.
 
-4. **Interrupciones** — VBlank, LCD STAT, Timer, Serial, Joypad. El CPU
-   necesita un método `requestInterrupt()`/chequeo en cada `step()` que
-   empuje PC a la stack y salte al vector correspondiente si `IME` está
-   activo.
+4. **Interrupciones** — `Cpu::serviceInterrupt()` (en `cpu.cpp`) chequea
+   IE&IF&IME al inicio de cada `step()`; despierta de HALT con solo IE&IF
+   (sin importar IME), y despacha (push PC, salta al vector, limpia IME y
+   el bit de IF) cuando IME también está activo. Pendiente: el retraso de
+   un ciclo en el efecto de EI.
 
-5. **Timers** — DIV/TIMA/TMA/TAC, corren en paralelo a la CPU contando
-   t-cycles; disparan la interrupción de Timer.
+5. **Timers** — `Timer` (`timer.h`/`timer.cpp`): DIV/TIMA/TMA/TAC
+   implementados con un modelo de umbral por t-cycles (no cycle-accurate
+   frente al detector de flanco real, pero correcto para la gran mayoría
+   de juegos). `SystemBus::tick()` y `GameBoy::step()` ya lo mantienen
+   sincronizado con la CPU.
 
 6. **PPU** — la parte más grande después de la CPU: modos 0-3 por scanline,
    renderizado de background/window (tiles) y sprites (OAM), y disparo de
