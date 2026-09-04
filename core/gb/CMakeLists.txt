@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(gbcore STATIC
     src/cpu.cpp
+    src/cartridge.cpp
+    src/system_bus.cpp
 )
 target_include_directories(gbcore PUBLIC include)
 

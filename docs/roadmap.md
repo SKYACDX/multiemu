@@ -8,14 +8,14 @@ antes de pasar al siguiente:
    implementados y testeados contra un `FlatBus` de RAM. Pendiente: tabla
    0xCB (bit ops), DAA, y el retraso de un ciclo de EI.
 
-2. **Cartucho / mappers** — `core/gb/include/gb/cartridge.h` (interfaz
-   definida). Pendiente: `cartridge.cpp` con `RomOnlyCartridge`,
-   `Mbc1Cartridge`, `Mbc3Cartridge` (+RTC), `Mbc5Cartridge`, y el parser de
-   header que elige cuál instanciar. Ver `docs/memory_map.md`.
+2. **Cartucho / mappers** — `core/gb/src/cartridge.cpp`. Implementados:
+   `RomOnlyCartridge` y `Mbc1Cartridge` (enable de RAM, bank switching de
+   ROM y RAM, ambos modos). Pendiente: `Mbc3Cartridge` (+RTC), `Mbc5Cartridge`.
+   Ver `docs/memory_map.md`.
 
-3. **Bus real** — implementación concreta de `gb::Bus` que une WRAM, VRAM,
-   OAM, HRAM, registros de I/O y el `Cartridge` según el mapa de memoria.
-   Aquí también vive el registro `IE`/`IF` para interrupciones.
+3. **Bus real** — `core/gb/src/system_bus.cpp`. WRAM (con echo),
+   HRAM, cartucho e IE/IF conectados. VRAM/OAM/resto de I-O son stubs
+   (leen 0xFF, ignoran writes) hasta que exista la PPU/timer/joypad.
 
 4. **Interrupciones** — VBlank, LCD STAT, Timer, Serial, Joypad. El CPU
    necesita un método `requestInterrupt()`/chequeo en cada `step()` que

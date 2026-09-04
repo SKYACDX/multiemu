@@ -17,9 +17,10 @@ metas futuras) para Android e iOS.
 ## Estado actual
 
 - [x] Estructura del repo
-- [ ] CPU (SM83) — registros, flags, tabla de opcodes
-- [ ] Bus de memoria (WRAM, VRAM, I/O, mapeo de cartucho)
-- [ ] Cartucho / mappers (ROM only, MBC1, MBC3, MBC5)
+- [x] CPU (SM83) — registros, flags, tabla de opcodes (falta 0xCB, DAA)
+- [x] Bus de memoria — WRAM/HRAM/cartucho conectados; VRAM/OAM/I-O son
+      stubs hasta que exista la PPU
+- [x] Cartucho / mappers — ROM only y MBC1 implementados; MBC3/MBC5 pendientes
 - [ ] PPU (renderizado de tiles/sprites, scanline)
 - [ ] Timers e interrupciones
 - [ ] APU (audio) — se puede posponer
