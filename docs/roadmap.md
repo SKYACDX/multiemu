@@ -49,12 +49,20 @@ antes de pasar al siguiente:
 8. **APU (audio)** — se puede posponer sin bloquear tener un emulador
    jugable (silencioso) mientras se valida CPU+PPU+input.
 
-9. **Bindings nativos** — una vez CPU+Bus+Cartridge+PPU+Joypad producen un
-   frame y aceptan input, se envuelve todo en:
-   - Android: JNI (`Java_com_multiemu_..._step`), copiando el framebuffer
-     a una `Bitmap`/textura OpenGL.
-   - iOS: wrapper Objective-C++ que expone el mismo framebuffer a Metal/
-     UIImage.
+9. **Bindings nativos**
+   - **Android**: hecho — `android/gbcore/src/main/cpp/gameboy_jni.cpp`
+     (puente delgado, sin lógica propia) + `GameBoyNative.kt` (wrapper
+     Kotlin: `load()`, `runFrame()`, `framebuffer: IntArray` ya en
+     ARGB_8888, `setButtonPressed()`). Compilado y verificado
+     cross-compilando `libgbjni.so` para arm64-v8a con el NDK standalone
+     (sin proyecto Gradle todavía — ver `android/README.md`); los 5
+     símbolos JNI se confirmaron exportados con `llvm-nm`.
+   - **iOS**: pendiente — wrapper Objective-C++ que exponga el mismo
+     framebuffer a Metal/UIImage.
+
+   Nota para cuando se cree el proyecto Gradle real: gbcore/CMakeLists.txt
+   ya está preparado para eso (`if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)`
+   evita construir tests/tools del host al ser incluido como subdirectorio).
 
 10. **App React Native** — pantalla de selección de ROM, renderizado del
     framebuffer (vía `<Image>` desde base64 al inicio, luego una vista

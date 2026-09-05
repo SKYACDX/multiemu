@@ -28,7 +28,9 @@ metas futuras) para Android e iOS.
       cycle-accurate dentro de una scanline
 - [x] Input (joypad) — P1/JOYP con selección de grupo e interrupción
 - [ ] APU (audio) — se puede posponer
-- [ ] Bindings nativos Android (JNI) + iOS (Obj-C++)
+- [x] Bindings nativos Android (JNI) — `android/gbcore`, compilado y
+      verificado cross-compilando para arm64-v8a con el NDK; falta iOS
+      (Obj-C++) y el proyecto Gradle/app real
 - [ ] App React Native (carga de ROM, render de frame, controles)
 
 ## Estructura
