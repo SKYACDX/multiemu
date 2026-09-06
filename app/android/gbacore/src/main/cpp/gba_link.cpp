@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <sstream>
 
 #include "mgba/internal/gba/gba.h"
 
@@ -143,6 +144,16 @@ void LinkedGbaSession::wakePlayer(Player& p) {
     p.wakeCv.notify_one();
 }
 
+std::string LinkedGbaSession::debugState() const {
+    std::ostringstream oss;
+    for (int i = 0; i < 2; i++) {
+        const Player& p = players_[i];
+        oss << "P" << i << "[mode=" << p.node.mode << " cyc=" << p.cyclesPosted << " awake=" << p.awake
+            << " wait=" << p.waitMask << "] ";
+    }
+    return oss.str();
+}
+
 void LinkedGbaSession::getFramebuffer(int player, uint32_t* outArgb) const {
     const Player& p = players_[player];
     std::lock_guard<std::mutex> lock(p.frameMutex);
@@ -214,11 +225,16 @@ void LinkedGbaSession::addCyclesCb(mLockstep* ls, int id, int32_t cycles) {
             return;
         }
         other.cyclesPosted += cycles;
+        // Qt's version calls these two unconditionally on every
+        // addCycles(0, ...), not just when `awake < 1` -- only the
+        // nextEvent bump is conditional on that. Waking an already-awake
+        // player is harmless; NOT doing so here (my initial port's bug)
+        // risked leaving player 1 under-scheduled/stalled instead.
         if (other.awake < 1) {
             other.node.nextEvent += other.cyclesPosted;
-            self->wakePlayer(other);
-            other.awake = 1;
         }
+        self->wakePlayer(other);
+        other.awake = 1;
     } else {
         self->players_[id].cyclesPosted += cycles;
     }

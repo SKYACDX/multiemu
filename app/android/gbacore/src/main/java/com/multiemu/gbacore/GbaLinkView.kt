@@ -38,6 +38,7 @@ class GbaLinkView(context: Context) : View(context) {
     private var loadAttempted = false
     private var loadFailed = false
     private val debugPaint = Paint().apply { color = android.graphics.Color.RED; textSize = 32f; isAntiAlias = true }
+    private val smallDebugPaint = Paint().apply { color = android.graphics.Color.YELLOW; textSize = 22f; isAntiAlias = true }
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -107,6 +108,7 @@ class GbaLinkView(context: Context) : View(context) {
         // TEMPORARY diagnostic -- see the field comments above.
         session?.let { s ->
             canvas.drawText("A:${s.framesRun(0)} B:${s.framesRun(1)}", 16f, 40f, debugPaint)
+            canvas.drawText(s.debugState(), 16f, 76f, smallDebugPaint)
         }
     }
 

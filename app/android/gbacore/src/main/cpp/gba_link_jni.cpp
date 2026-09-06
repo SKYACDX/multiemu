@@ -112,4 +112,10 @@ JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeGetFramesR
     return static_cast<jlong>(handleToSession(handle)->framesRun(player));
 }
 
+// TEMPORARY diagnostic -- see LinkedGbaSession::debugState.
+JNIEXPORT jstring JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeGetDebugState(
+    JNIEnv* env, jclass, jlong handle) {
+    return env->NewStringUTF(handleToSession(handle)->debugState().c_str());
+}
+
 }  // extern "C"

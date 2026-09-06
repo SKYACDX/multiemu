@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -55,6 +56,11 @@ public:
     // rendering path instead. Delete once local link is confirmed
     // working end-to-end.
     uint64_t framesRun(int player) const { return players_[player].framesRun.load(std::memory_order_relaxed); }
+
+    // TEMPORARY diagnostic -- SIO mode/cycle-bank state for both players,
+    // read without bigLock_ (approximate/racy on purpose: this is a
+    // throwaway debug overlay, not something correctness depends on).
+    std::string debugState() const;
 
 private:
     struct Player {
