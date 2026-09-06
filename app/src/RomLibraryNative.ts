@@ -33,6 +33,7 @@ interface RomLibraryNativeModule {
   saveStateSlot(romId: string, slot: number, base64: string): Promise<void>;
   loadStateSlot(romId: string, slot: number): Promise<{base64: string}>;
   listStateSlots(romId: string): Promise<StateSlot[]>;
+  deleteStateSlot(romId: string, slot: number): Promise<void>;
   saveAuthSession(token: string, username: string): Promise<void>;
   getAuthSession(): Promise<{token: string; username: string} | null>;
   clearAuthSession(): Promise<void>;
@@ -98,6 +99,10 @@ export async function loadStateSlot(romId: string, slot: number): Promise<string
 
 export function listStateSlots(romId: string): Promise<StateSlot[]> {
   return RomLibrary.listStateSlots(romId);
+}
+
+export function deleteStateSlot(romId: string, slot: number): Promise<void> {
+  return RomLibrary.deleteStateSlot(romId, slot);
 }
 
 /** RomHack Hub account session (bearer token), persisted so login survives a restart. */

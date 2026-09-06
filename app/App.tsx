@@ -24,6 +24,7 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   GestureResponderEvent,
   ImageBackground,
   Modal,
@@ -37,7 +38,7 @@ import {
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
-import {IconCloud, IconHome, IconSave, IconTriangle} from './src/icons';
+import {IconCloud, IconHome, IconSave, IconTrash, IconTriangle} from './src/icons';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
 import HubScreen from './src/HubScreen';
@@ -50,6 +51,7 @@ import {
   deleteCachedRom,
   FolderFile,
   FolderPickerCancelledError,
+  deleteStateSlot,
   getAuthSession,
   getLastFolder,
   listCachedRoms,
@@ -112,6 +114,12 @@ function systemForPlatformSlug(slug: string): EmulatedSystem {
 // are manual full-state saves) so both kinds can live side by side.
 // Must be >=0 -- RomHack Hub's API rejects negative slot numbers.
 const GAME_SAVE_CLOUD_SLOT = 99;
+
+// A 4th state slot, written automatically (see the autosave effect
+// below) so a crash or an accidental close doesn't cost hours of
+// progress -- separate from the 3 the user manages by hand.
+const AUTOSAVE_SLOT = 3;
+const AUTOSAVE_INTERVAL_MS = 45_000;
 
 const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance'};
 const SYSTEM_ACCENT: Record<EmulatedSystem, string> = {gb: '#4a90d9', gba: '#c2536a'};
@@ -317,6 +325,155 @@ function App(): React.JSX.Element {
     }
   }, [authToken, cloudSaves]);
 
+  // CRC of the game-save bytes as of the last successful upload/download,
+  // so the periodic auto-sync effect can tell "changed since we last
+  // synced" from "nothing new to push" without re-uploading every tick.
+  const lastSyncedSaveCrc = useRef<number | null>(null);
+
+  // Reading the .sav file while mGBA is actively running risks catching
+  // it mid-write (it writes straight through as the game saves, see
+  // EmulatorControlModule.kt) -- pausing for the handful of milliseconds
+  // a small SRAM/flash file takes to read is cheap insurance and
+  // reuses the same pause the manual-save modal already relies on.
+  const readGameSavePaused = useCallback(async (romId: string): Promise<string | null> => {
+    gbaRef.current?.setPaused(true);
+    try {
+      return await getGameSaveBytes(romId);
+    } catch {
+      return null;
+    } finally {
+      gbaRef.current?.setPaused(saveModalOpen ? true : false);
+    }
+  }, [saveModalOpen]);
+
+  // Silently pushes the current in-game save to the cloud if it changed
+  // since the last sync -- the "cada que haya un cambio... se actualice
+  // automáticamente" ask. Runs on a timer while playing (see the effect
+  // below) instead of hooking every individual SRAM write, which mGBA
+  // doesn't expose a callback for.
+  const autoSyncGameSave = useCallback(async () => {
+    const romId = currentRomId.current;
+    const gameKey = cloudGameKey();
+    if (!authToken || !gameKey || !romId || system !== 'gba') return;
+    const base64 = await readGameSavePaused(romId);
+    if (!base64) return;
+    const crc = crc32(base64ToBytes(base64));
+    if (crc === lastSyncedSaveCrc.current) return;
+    try {
+      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, base64ToBytes(base64), 'game.sav');
+      lastSyncedSaveCrc.current = crc;
+      refreshCloudSaves();
+    } catch {
+      // Best-effort -- the next tick (or the manual "Subir" button) retries.
+    }
+  }, [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, system]);
+
+  useEffect(() => {
+    if (screen !== 'game' || system !== 'gba' || !authToken) return;
+    const interval = setInterval(autoSyncGameSave, AUTOSAVE_INTERVAL_MS);
+    const sub = AppState.addEventListener('change', state => {
+      if (state !== 'active') autoSyncGameSave();
+    });
+    return () => {
+      clearInterval(interval);
+      sub.remove();
+    };
+  }, [screen, system, authToken, autoSyncGameSave]);
+
+  // A full-state autosave (slot 3, see AUTOSAVE_SLOT) so a crash or the
+  // app getting killed doesn't lose progress -- separate from the cloud
+  // sync above, which only covers the cartridge's own SRAM/flash save.
+  const autoSaveState = useCallback(async () => {
+    const romId = currentRomId.current;
+    if (!romId || system !== 'gba' || saveModalOpen) return;
+    try {
+      const base64 = await saveGbaState();
+      await saveStateSlot(romId, AUTOSAVE_SLOT, base64);
+    } catch {
+      // Best-effort -- silent, this isn't user-initiated.
+    }
+  }, [system, saveModalOpen]);
+
+  useEffect(() => {
+    if (screen !== 'game' || system !== 'gba') return;
+    const interval = setInterval(autoSaveState, AUTOSAVE_INTERVAL_MS);
+    const sub = AppState.addEventListener('change', state => {
+      if (state !== 'active') autoSaveState();
+    });
+    return () => {
+      clearInterval(interval);
+      sub.remove();
+    };
+  }, [screen, system, autoSaveState]);
+
+  // Right after loading a GBA ROM (see loadIntoEmulator below): if the
+  // user is logged in and the device's save differs from the cloud's,
+  // ask which one should win instead of silently picking one and
+  // possibly costing them progress either way.
+  const checkGameSaveConflict = useCallback(
+    async (romId: string) => {
+      const gameKey = cloudGameKey();
+      if (!authToken || !gameKey) return;
+      try {
+        const saves = await listCloudSaves(authToken);
+        const remote = saves.find(s => s.gameKey === gameKey && s.slot === GAME_SAVE_CLOUD_SLOT);
+        const localBase64 = await readGameSavePaused(romId);
+        const localCrc = localBase64 ? crc32(base64ToBytes(localBase64)) : null;
+
+        if (!remote) return; // Nothing in the cloud yet -- the autosync timer will create it.
+
+        const remoteBytes = await downloadCloudSave(authToken, remote.id);
+        const remoteCrc = crc32(remoteBytes);
+
+        if (localCrc === remoteCrc) {
+          lastSyncedSaveCrc.current = remoteCrc;
+          return;
+        }
+
+        if (localCrc === null) {
+          Alert.alert('Guardado en la nube encontrado', 'Este juego no tiene datos locales, pero sí un guardado en la nube. ¿Descargarlo?', [
+            {text: 'No', style: 'cancel'},
+            {
+              text: 'Descargar',
+              onPress: async () => {
+                await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
+                lastSyncedSaveCrc.current = remoteCrc;
+                gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+              },
+            },
+          ]);
+          return;
+        }
+
+        Alert.alert(
+          'El guardado de este juego no coincide con la nube',
+          '¿Cuál quieres conservar?',
+          [
+            {
+              text: 'Este dispositivo',
+              onPress: async () => {
+                await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, base64ToBytes(localBase64!), 'game.sav');
+                lastSyncedSaveCrc.current = localCrc;
+                refreshCloudSaves();
+              },
+            },
+            {
+              text: 'La nube',
+              onPress: async () => {
+                await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
+                lastSyncedSaveCrc.current = remoteCrc;
+                gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+              },
+            },
+          ],
+        );
+      } catch {
+        // Best-effort -- skip silently, the manual Subir/Bajar buttons still work.
+      }
+    },
+    [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves],
+  );
+
   // base64: pass it through when the caller already has one (e.g. fresh
   // out of the file picker) to skip re-encoding [bytes] -- for a 16-32MB
   // GBA ROM, encoding it a second time is slow and, combined with every
@@ -340,12 +497,18 @@ function App(): React.JSX.Element {
       });
 
       const encoded = base64 ?? bytesToBase64(bytes);
+      lastSyncedSaveCrc.current = null;
       if (targetSystem === 'gba') {
         gbaRef.current?.loadRomBase64(encoded, currentRomId.current);
         gbaRef.current?.setSpeedMultiplier(1);
         listStateSlots(currentRomId.current)
           .then(setStateSlots)
           .catch(() => setStateSlots([]));
+        // Delayed so the native side has finished creating/opening the
+        // ROM's save file before we try to read it (loadRomBase64 above
+        // is a fire-and-forget command dispatch, not an awaited call).
+        const romId = currentRomId.current;
+        setTimeout(() => checkGameSaveConflict(romId), 500);
       } else {
         gameBoyRef.current?.loadRomBase64(encoded, currentRomId.current);
         gameBoyRef.current?.setSpeedMultiplier(1);
@@ -353,7 +516,7 @@ function App(): React.JSX.Element {
       }
       return encoded;
     },
-    [],
+    [checkGameSaveConflict],
   );
 
   const handleSetSpeed = useCallback(
@@ -413,6 +576,22 @@ function App(): React.JSX.Element {
     },
     [closeSaveModal],
   );
+
+  const handleDeleteSlot = useCallback((slot: number) => {
+    const romId = currentRomId.current;
+    if (!romId) return;
+    Alert.alert('Eliminar guardado', `¿Borrar el contenido del slot ${slot === AUTOSAVE_SLOT ? 'automático' : slot + 1}?`, [
+      {text: 'Cancelar', style: 'cancel'},
+      {
+        text: 'Eliminar',
+        style: 'destructive',
+        onPress: async () => {
+          await deleteStateSlot(romId, slot);
+          setStateSlots(await listStateSlots(romId));
+        },
+      },
+    ]);
+  }, []);
 
   const handleShowAudioDebug = useCallback(() => {
     getAudioDebugInfo()
@@ -822,7 +1001,14 @@ function App(): React.JSX.Element {
                 const cloudBusy = cloudBusySlot === slot;
                 return (
                   <View key={slot} style={styles.slotCard}>
-                    <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
+                    <View style={styles.slotCardTop}>
+                      <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
+                      {info.exists && (
+                        <Pressable hitSlop={8} onPress={() => handleDeleteSlot(slot)}>
+                          <IconTrash size={13} />
+                        </Pressable>
+                      )}
+                    </View>
                     <Text style={styles.slotMeta} numberOfLines={1}>
                       {info.exists
                         ? new Date(info.savedAt ?? 0).toLocaleString(undefined, {
@@ -880,6 +1066,43 @@ function App(): React.JSX.Element {
                 );
               })}
             </View>
+
+            {/* Written automatically every ~45s and on background -- see the
+                autoSaveState effect -- so a crash doesn't cost progress. */}
+            {(() => {
+              const autoInfo = stateSlots.find(s => s.slot === AUTOSAVE_SLOT) ?? {slot: AUTOSAVE_SLOT, exists: false};
+              return (
+                <View style={styles.gameSaveRow}>
+                  <View style={{flex: 1}}>
+                    <View style={styles.slotCardTop}>
+                      <Text style={styles.slotLabel}>Automático</Text>
+                      {autoInfo.exists && (
+                        <Pressable hitSlop={8} onPress={() => handleDeleteSlot(AUTOSAVE_SLOT)}>
+                          <IconTrash size={13} />
+                        </Pressable>
+                      )}
+                    </View>
+                    <Text style={styles.slotMeta} numberOfLines={1}>
+                      {autoInfo.exists
+                        ? new Date(autoInfo.savedAt ?? 0).toLocaleString(undefined, {
+                            day: '2-digit',
+                            month: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : 'Vacío'}
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={[styles.slotActionButton, !autoInfo.exists && styles.slotActionButtonDisabled]}
+                    disabled={!autoInfo.exists}
+                    onPress={() => handleLoadSlot(AUTOSAVE_SLOT)}>
+                    <Text style={[styles.slotActionLabel, !autoInfo.exists && styles.slotActionLabelDisabled]}>Cargar</Text>
+                  </Pressable>
+                </View>
+              );
+            })()}
+
             {authToken && (
               <View style={styles.gameSaveRow}>
                 <Text style={styles.slotLabel}>Guardado del juego</Text>
@@ -1094,7 +1317,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(15,16,20,0.6)',
+    backgroundColor: 'rgba(15,16,20,0.4)',
   },
   topBar: {
     flexDirection: 'row',
@@ -1278,6 +1501,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#242526',
     width: 96,
   },
+  slotCardTop: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 6},
   slotLabel: {color: '#ddd', fontSize: 12, fontWeight: '700'},
   slotMeta: {color: '#777', fontSize: 10},
   slotActions: {flexDirection: 'row', gap: 4, marginTop: 4},

@@ -138,6 +138,14 @@ export function IconTriangle({size = 16, color = '#eee', rotation = 0}: IconProp
   );
 }
 
+export function IconTrash({size = 14, color = '#c77'}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M4 7h16M9 7V4h6v3M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
 /** Decorative cartridge glyph -- used on the Home screen's empty state and header. */
 export function IconCartridge({size = 40, color = '#555'}: IconProps) {
   return (

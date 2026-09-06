@@ -10,13 +10,15 @@ import {unzipSync} from 'fflate';
 export function extractFromZip(bytes: Uint8Array, extensions: string[]): {bytes: Uint8Array; name: string} | null {
   if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) return null; // not a zip ("PK")
 
-  const files = unzipSync(bytes);
+  // filter runs before inflating each entry -- for a zip bundling a ROM
+  // alongside a readme/box art/etc, this skips decompressing everything
+  // but the one file we actually want instead of inflating the whole
+  // archive up front.
+  const files = unzipSync(bytes, {
+    filter: file => extensions.includes(file.name.split('/').pop()?.split('.').pop()?.toLowerCase() ?? ''),
+  });
   for (const [name, contents] of Object.entries(files)) {
-    const baseName = name.split('/').pop() ?? name;
-    const ext = baseName.split('.').pop()?.toLowerCase() ?? '';
-    if (extensions.includes(ext)) {
-      return {bytes: contents, name: baseName};
-    }
+    return {bytes: contents, name: name.split('/').pop() ?? name};
   }
   return null;
 }

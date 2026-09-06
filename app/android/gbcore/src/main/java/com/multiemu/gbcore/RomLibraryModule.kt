@@ -330,11 +330,11 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
-    /** Returns 3 entries (index = slot), each {slot, exists, savedAt?}. */
+    /** Returns 4 entries (index = slot; slot 3 is the autosave slot, see App.tsx), each {slot, exists, savedAt?}. */
     @ReactMethod
     fun listStateSlots(romId: String, promise: Promise) {
         val result: WritableArray = Arguments.createArray()
-        for (slot in 0..2) {
+        for (slot in 0..3) {
             val file = stateSlotFile(romId, slot)
             val entry = Arguments.createMap()
             entry.putInt("slot", slot)
@@ -343,6 +343,12 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
             result.pushMap(entry)
         }
         promise.resolve(result)
+    }
+
+    @ReactMethod
+    fun deleteStateSlot(romId: String, slot: Int, promise: Promise) {
+        stateSlotFile(romId, slot).delete()
+        promise.resolve(null)
     }
 
     private fun stateSlotFile(romId: String, slot: Int): File =
