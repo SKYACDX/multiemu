@@ -6,6 +6,7 @@ import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './
 import {base64ToBytes} from './base64';
 import {crc32} from './patchers/crc32';
 import {CachedRom, loadCachedRom, listCachedRoms, saveRomToCache} from './RomLibraryNative';
+import {getLinkDebugInfo} from './EmulatorControlNative';
 
 type PadButton = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B';
 
@@ -120,11 +121,28 @@ export default function LocalLinkScreen({onClose}: Props) {
     return () => clearTimeout(timer);
   }, [playing, romA, romB]);
 
+  // TEMPORARY diagnostic -- selectable/copyable text instead of a
+  // screenshot, so it can be pasted directly. Delete once local link is
+  // confirmed working end-to-end.
+  const [debugInfo, setDebugInfo] = useState('');
+  useEffect(() => {
+    if (!playing) return;
+    const interval = setInterval(() => {
+      getLinkDebugInfo()
+        .then(setDebugInfo)
+        .catch(() => {});
+    }, 500);
+    return () => clearInterval(interval);
+  }, [playing]);
+
   if (playing && romA && romB) {
     return (
       <View style={styles.playContainer}>
         <StatusBar hidden />
         <GbaLinkView ref={linkRef} style={styles.linkView} />
+        <Text style={styles.debugText} selectable>
+          {debugInfo}
+        </Text>
         {connecting && (
           <View style={styles.connectingOverlay} pointerEvents="none">
             <Text style={styles.connectingLabel}>Conectando ambas ROMs, espera un momento…</Text>
@@ -327,6 +345,16 @@ const styles = StyleSheet.create({
   startLabel: {color: '#fff', fontWeight: '700', fontSize: 15},
   playContainer: {flex: 1, backgroundColor: '#000'},
   linkView: {flex: 1},
+  debugText: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    right: 8,
+    color: '#ff0',
+    fontSize: 11,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    padding: 4,
+  },
   connectingOverlay: {
     position: 'absolute',
     top: 0,

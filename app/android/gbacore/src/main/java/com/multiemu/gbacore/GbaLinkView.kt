@@ -11,7 +11,7 @@ import java.io.File
 
 /**
  * Local (same-device) 2-player GBA link: hosts one [GbaLinkNative]
- * session and paints both players' framebuffers stacked vertically.
+ * session and paints both players' framebuffers stacked top/bottom.
  *
  * Unlike [GbaView], this does NOT call runFrame() from the Choreographer
  * callback -- LinkedGbaSession (native) already drives each side on its
@@ -25,20 +25,26 @@ import java.io.File
  */
 class GbaLinkView(context: Context) : View(context) {
 
+    companion object {
+        /** Set on attach/cleared on detach -- lets EmulatorControlModule reach whichever GbaLinkView is on screen. */
+        var activeGbaLink: GbaLinkView? = null
+    }
+
     private var session: GbaLinkNative? = null
     private var bitmapA: Bitmap? = null
     private var bitmapB: Bitmap? = null
     private val paint = Paint().apply { isFilterBitmap = false }
     private var running = false
 
+    // Visible even with no game content -- see onDraw.
+    private val leftTintPaint = Paint().apply { color = android.graphics.Color.rgb(10, 12, 22) }
+    private val rightTintPaint = Paint().apply { color = android.graphics.Color.rgb(22, 12, 12) }
+    private val dividerPaint = Paint().apply { color = android.graphics.Color.rgb(90, 90, 100) }
+
     // TEMPORARY diagnostics -- local link is a brand-new, unverified
-    // feature and a black screen with no error was reported with no way
-    // to tell "session never even got created" apart from "it's running
-    // but stuck/deadlocked". Delete once it's confirmed working.
-    private var loadAttempted = false
+    // feature. See debugText() below, read from JS as selectable/
+    // copyable text instead of a screenshot. Delete once confirmed working.
     private var loadFailed = false
-    private val debugPaint = Paint().apply { color = android.graphics.Color.RED; textSize = 32f; isAntiAlias = true }
-    private val smallDebugPaint = Paint().apply { color = android.graphics.Color.YELLOW; textSize = 22f; isAntiAlias = true }
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -65,7 +71,6 @@ class GbaLinkView(context: Context) : View(context) {
         session = instance
         bitmapA = instance?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
         bitmapB = instance?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
-        loadAttempted = true
         loadFailed = instance == null
     }
 
@@ -76,6 +81,7 @@ class GbaLinkView(context: Context) : View(context) {
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         running = true
+        activeGbaLink = this
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
@@ -84,48 +90,49 @@ class GbaLinkView(context: Context) : View(context) {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         session?.close()
         session = null
+        if (activeGbaLink === this) activeGbaLink = null
         super.onDetachedFromWindow()
+    }
+
+    /** TEMPORARY diagnostic, read from JS as selectable/copyable text instead of a screenshot -- see EmulatorControlModule.getLinkDebugInfo. */
+    fun debugText(): String {
+        val s = session ?: return if (loadFailed) "Sesión de link: no se pudo crear (¿ROMs de GBA válidas?)" else "Cargando…"
+        return "A:${s.framesRun(0)} B:${s.framesRun(1)} ${s.debugState()}"
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        val halfHeight = height / 2
+        // Tinted halves + a divider so the top/bottom arrangement is
+        // visible even while both sides are still rendering an actual
+        // black GBA boot screen -- otherwise two black rectangles look
+        // the same no matter how they're arranged.
+        canvas.drawRect(0f, 0f, width.toFloat(), halfHeight.toFloat(), leftTintPaint)
+        canvas.drawRect(0f, halfHeight.toFloat(), width.toFloat(), height.toFloat(), rightTintPaint)
+
         val a = bitmapA
         val b = bitmapB
-        if (a == null || b == null) {
-            if (loadFailed) {
-                canvas.drawText("No se pudo crear la sesión de link.", 24f, height / 2f - 20f, debugPaint)
-                canvas.drawText("¿Son ambos archivos ROMs de GBA válidas?", 24f, height / 2f + 20f, debugPaint)
-            } else if (loadAttempted) {
-                canvas.drawText("Cargando…", 24f, height / 2f, debugPaint)
-            }
-            return
+        if (a != null && b != null) {
+            val srcRect = Rect(0, 0, a.width, a.height)
+            canvas.drawBitmap(a, srcRect, fitRect(a.width, a.height, width, halfHeight, 0), paint)
+            canvas.drawBitmap(b, srcRect, fitRect(b.width, b.height, width, halfHeight, halfHeight), paint)
         }
-        val srcRect = Rect(0, 0, a.width, a.height)
-        val halfWidth = width / 2
-        canvas.drawBitmap(a, srcRect, fitRect(a.width, a.height, halfWidth, height, 0), paint)
-        canvas.drawBitmap(b, srcRect, fitRect(b.width, b.height, halfWidth, height, halfWidth), paint)
-
-        // TEMPORARY diagnostic -- see the field comments above.
-        session?.let { s ->
-            canvas.drawText("A:${s.framesRun(0)} B:${s.framesRun(1)}", 16f, 40f, debugPaint)
-            canvas.drawText(s.debugState(), 16f, 76f, smallDebugPaint)
-        }
+        canvas.drawRect(0f, halfHeight - 1f, width.toFloat(), halfHeight + 1f, dividerPaint)
     }
 
     /**
      * Centers a srcW*srcH image, aspect-preserved, inside a boxW*boxH
-     * column starting at [offsetX] -- side-by-side instead of the
-     * original top/bottom stack, which stretched each (landscape-shaped)
-     * GBA screen across the full (portrait) width and squashed it
-     * vertically. Letterboxing here instead looks like two actual GBA
-     * screens rather than two smeared strips.
+     * row starting at [offsetY] -- top/bottom stacked, letterboxed
+     * instead of stretched, so each (landscape-shaped) GBA screen keeps
+     * its real proportions instead of being smeared across the full
+     * (portrait) width.
      */
-    private fun fitRect(srcW: Int, srcH: Int, boxW: Int, boxH: Int, offsetX: Int): Rect {
+    private fun fitRect(srcW: Int, srcH: Int, boxW: Int, boxH: Int, offsetY: Int): Rect {
         val scale = minOf(boxW.toFloat() / srcW, boxH.toFloat() / srcH)
         val w = (srcW * scale).toInt()
         val h = (srcH * scale).toInt()
-        val left = offsetX + (boxW - w) / 2
-        val top = (boxH - h) / 2
+        val left = (boxW - w) / 2
+        val top = offsetY + (boxH - h) / 2
         return Rect(left, top, left + w, top + h)
     }
 }

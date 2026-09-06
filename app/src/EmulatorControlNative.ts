@@ -4,6 +4,7 @@ interface EmulatorControlNativeModule {
   saveGbaState(): Promise<string>;
   loadGbaState(base64: string): Promise<void>;
   getAudioDebugInfo(): Promise<string>;
+  getLinkDebugInfo(): Promise<string>;
   getGameSaveBytes(romId: string): Promise<string>;
   setGameSaveBytes(romId: string, base64: string): Promise<void>;
 }
@@ -26,6 +27,11 @@ export function loadGbaState(base64: string): Promise<void> {
 /** TEMPORARY diagnostic -- see GbaView.kt's totalAudioFramesRead/lastAudioWriteResult. */
 export function getAudioDebugInfo(): Promise<string> {
   return EmulatorControl.getAudioDebugInfo();
+}
+
+/** TEMPORARY diagnostic -- see GbaLinkView.kt's debugText(). */
+export function getLinkDebugInfo(): Promise<string> {
+  return EmulatorControl.getLinkDebugInfo();
 }
 
 /**
