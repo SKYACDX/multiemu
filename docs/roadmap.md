@@ -93,10 +93,38 @@ Esto deja mGBA como el único core "no escrito para este proyecto" en el
 repo — es una integración, no una reescritura, que es exactamente el
 patrón que el punto siguiente (NDS/3DS) debería seguir.
 
-## Cuándo evaluar NDS/3DS
+## NDS — en progreso vía melonDS
 
-Ya con GB (core propio) y GBA (mGBA) jugables de punta a punta en un
-dispositivo real, el mismo patrón de integración usado para GBA —
-vendorizar el core existente (melonDS/Lime3DS) y envolverlo con un
-puente JNI delgado, en vez de reescribir su lógica — es el camino
-directo para agregar esos dos sistemas.
+Con GB (core propio) y GBA (mGBA) ya jugables de punta a punta, arrancó
+la integración de NDS siguiendo el mismo patrón: vendorizar
+[melonDS](https://github.com/melonDS-emu/melonDS) (GPL-3.0 — a
+diferencia de mGBA/MPL-2.0, esto es copyleft fuerte; cualquier build
+distribuido que lo incluya hereda esa obligación) en vez de reescribir
+un core ARM9+ARM7 desde cero. Ver `docs/melonds-setup.md` para el
+detalle completo.
+
+Estado actual:
+
+- **Hecho y verificado**: `third_party/melonds` (tag `1.1`) compila su
+  `core` (+ `teakra`, la emulación del DSP de DSi que vendoriza
+  internamente) para las tres ABI (arm64-v8a, armeabi-v7a, x86_64) sin
+  parches. A diferencia de mGBA, el `core` de melonDS no trae una
+  implementación de su propia interfaz `Platform::` (archivo/hilos/
+  logging/persistencia de saves/red/periféricos de DSi) — eso lo
+  implementa `app/android/dscore/src/main/cpp/ds_platform.cpp`, y ya
+  está enlazando con cero símbolos `melonDS::Platform::*` sin resolver
+  bajo `-Wl,--no-undefined` (confirmado a mano y también sobre el `.so`
+  real que genera Gradle vía `llvm-nm -D -u`) — la señal real de que va
+  a cargar en el dispositivo, no solo de que compila.
+- **Módulo Gradle `dscore`** creado espejando la forma de `gbacore`
+  (`build.gradle`, `CMakeLists.txt` que importa los `libcore.a`/
+  `libteakra.a` prebuilt por ABI), ya integrado en `settings.gradle` y
+  como dependencia de `:app`.
+- **Pendiente, en este orden**: (1) estrategia de BIOS/firmware — usar
+  el "FreeBIOS" que trae melonDS en vez de pedirle al usuario dumps
+  reales de Nintendo; (2) `ds_jni.cpp` real (`nativeCreate`/`loadROM`/
+  `runFrame`/framebuffers de ambas pantallas/botones); (3) vista Kotlin
+  de doble pantalla + mapeo de la pantalla táctil; (4) integrar en
+  `App.tsx` por extensión `.nds`. JIT y el renderer 3D por OpenGL están
+  desactivados por ahora (solo intérprete + renderer por software) —
+  revisar una vez que una ROM arranque y sea jugable de forma estable.

@@ -5,4 +5,5 @@ rootProject.name = 'MultiEmuApp'
 include ':app'
 include ':gbcore'
 include ':gbacore'
+include ':dscore'
 includeBuild('../node_modules/@react-native/gradle-plugin')
