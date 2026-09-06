@@ -233,6 +233,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(10,10,14,0.75)',
     alignItems: 'center',
     justifyContent: 'center',
+    // Android stacks by elevation, not render order -- the action/recent
+    // cards below all carry CARD_SHADOW's elevation:4, which would sit on
+    // top of this despite it being the last sibling.
+    elevation: 20,
+    zIndex: 20,
   },
   busyCard: {
     backgroundColor: '#1e2027',

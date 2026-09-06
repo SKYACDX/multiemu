@@ -31,10 +31,11 @@ function isCompatible(file: RomHackHubFile): boolean {
 interface Props {
   onSelectFile: (file: RomHackHubFile) => void;
   onClose: () => void;
+  downloading: boolean;
 }
 
 /** Browses RomHack Hub's public "files" catalog (see api/romHackHub.ts's listFiles), filtered by platform. */
-export default function FilesScreen({onSelectFile, onClose}: Props) {
+export default function FilesScreen({onSelectFile, onClose, downloading}: Props) {
   const [platform, setPlatform] = useState('gb');
   const [query, setQuery] = useState('');
   const [files, setFiles] = useState<RomHackHubFile[]>([]);
@@ -123,6 +124,15 @@ export default function FilesScreen({onSelectFile, onClose}: Props) {
           }
         />
       )}
+
+      {downloading && (
+        <View style={styles.busyOverlay}>
+          <View style={styles.busyCard}>
+            <ActivityIndicator size="large" color="#7ab8ff" />
+            <Text style={styles.busyText}>Descargando…</Text>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -176,4 +186,25 @@ const styles = StyleSheet.create({
   fileName: {color: '#fff', fontSize: 14, fontWeight: '600'},
   fileMeta: {color: '#888', fontSize: 11, marginTop: 2},
   empty: {color: '#888', textAlign: 'center', marginTop: 32, paddingHorizontal: 24},
+  busyOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(10,10,14,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 20,
+    zIndex: 20,
+  },
+  busyCard: {
+    backgroundColor: '#1e2027',
+    borderRadius: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    gap: 12,
+  },
+  busyText: {color: '#ddd', fontSize: 13, fontWeight: '600'},
 });

@@ -65,7 +65,13 @@ import {
   saveStateSlot,
   StateSlot,
 } from './src/RomLibraryNative';
-import {getAudioDebugInfo, loadGbaState, saveGbaState} from './src/EmulatorControlNative';
+import {
+  getAudioDebugInfo,
+  getGameSaveBytes,
+  loadGbaState,
+  saveGbaState,
+  setGameSaveBytes,
+} from './src/EmulatorControlNative';
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
@@ -100,6 +106,11 @@ function systemForExtension(extension: string): EmulatedSystem {
 function systemForPlatformSlug(slug: string): EmulatedSystem {
   return slug === 'gba' ? 'gba' : 'gb';
 }
+
+// Cloud saves share one list per gameKey; this slot number is reserved
+// for the cartridge's own in-game save (as opposed to slots 0-2, which
+// are manual full-state saves) so both kinds can live side by side.
+const GAME_SAVE_CLOUD_SLOT = -1;
 
 const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance'};
 const SYSTEM_ACCENT: Record<EmulatedSystem, string> = {gb: '#4a90d9', gba: '#c2536a'};
@@ -262,6 +273,47 @@ function App(): React.JSX.Element {
     },
     [authToken, cloudSaves],
   );
+
+  // The cartridge's own in-game save (SRAM/flash), separate from the 3
+  // manual full-state slots above -- this is what the game's own menu
+  // reads on "continue". Reuses the same cloud list/slot mechanism with a
+  // reserved slot number. Only safe while paused, same as the state
+  // slots (see EmulatorControlModule.kt).
+  const handleUploadGameSave = useCallback(async () => {
+    const romId = currentRomId.current;
+    const gameKey = cloudGameKey();
+    if (!authToken || !gameKey || !romId) return;
+    setCloudBusySlot(GAME_SAVE_CLOUD_SLOT);
+    try {
+      const base64 = await getGameSaveBytes(romId);
+      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, base64ToBytes(base64), 'game.sav');
+      refreshCloudSaves();
+    } catch (e) {
+      Alert.alert('No se pudo subir el guardado del juego', e instanceof Error ? e.message : String(e));
+    } finally {
+      setCloudBusySlot(null);
+    }
+  }, [authToken, cloudGameKey, refreshCloudSaves]);
+
+  const handleDownloadGameSave = useCallback(async () => {
+    const romId = currentRomId.current;
+    if (!authToken || !romId) return;
+    const remote = cloudSaves.find(s => s.slot === GAME_SAVE_CLOUD_SLOT);
+    if (!remote) return;
+    setCloudBusySlot(GAME_SAVE_CLOUD_SLOT);
+    try {
+      const bytes = await downloadCloudSave(authToken, remote.id);
+      await setGameSaveBytes(romId, bytesToBase64(bytes));
+      // mGBA already has the old save file mapped in memory -- reload the
+      // ROM so it reopens the file we just overwrote from scratch.
+      gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+      closeSaveModal();
+    } catch (e) {
+      Alert.alert('No se pudo descargar el guardado del juego', e instanceof Error ? e.message : String(e));
+    } finally {
+      setCloudBusySlot(null);
+    }
+  }, [authToken, cloudSaves]);
 
   // base64: pass it through when the caller already has one (e.g. fresh
   // out of the file picker) to skip re-encoding [bytes] -- for a 16-32MB
@@ -668,7 +720,7 @@ function App(): React.JSX.Element {
     return (
       <>
         <StatusBar hidden />
-        <FilesScreen onSelectFile={handleSelectHubFile} onClose={() => setScreen('home')} />
+        <FilesScreen onSelectFile={handleSelectHubFile} onClose={() => setScreen('home')} downloading={busy} />
       </>
     );
   }
@@ -841,6 +893,45 @@ function App(): React.JSX.Element {
                 );
               })}
             </View>
+            {authToken && (
+              <View style={styles.gameSaveRow}>
+                <Text style={styles.slotLabel}>Guardado del juego</Text>
+                <View style={styles.slotActions}>
+                  <Pressable
+                    style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusySlot === GAME_SAVE_CLOUD_SLOT && styles.slotActionButtonDisabled]}
+                    disabled={cloudBusySlot === GAME_SAVE_CLOUD_SLOT}
+                    onPress={handleUploadGameSave}>
+                    {cloudBusySlot === GAME_SAVE_CLOUD_SLOT ? (
+                      <ActivityIndicator size="small" color="#a0ffe8" />
+                    ) : (
+                      <>
+                        <IconCloud size={11} color="#a0ffe8" />
+                        <Text style={[styles.slotActionLabel, styles.slotActionLabelCloud]}>Subir</Text>
+                      </>
+                    )}
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.slotActionButton,
+                      styles.slotActionButtonCloud,
+                      (!cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) || cloudBusySlot === GAME_SAVE_CLOUD_SLOT) &&
+                        styles.slotActionButtonDisabled,
+                    ]}
+                    disabled={!cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) || cloudBusySlot === GAME_SAVE_CLOUD_SLOT}
+                    onPress={handleDownloadGameSave}>
+                    <IconCloud size={11} color={cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) ? '#a0ffe8' : '#777'} />
+                    <Text
+                      style={[
+                        styles.slotActionLabel,
+                        cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) && styles.slotActionLabelCloud,
+                        !cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) && styles.slotActionLabelDisabled,
+                      ]}>
+                      Bajar
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
             {!authToken && (
               <Text style={styles.modalCloudHint}>Inicia sesión en Cuenta para sincronizar guardados en la nube.</Text>
             )}
@@ -1158,6 +1249,17 @@ const styles = StyleSheet.create({
   slotActionLabelDisabled: {color: '#777'},
   slotActionLabelCloud: {color: '#a0ffe8'},
   modalCloudHint: {color: '#666', fontSize: 10, textAlign: 'center', marginTop: 10, paddingHorizontal: 8},
+  gameSaveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#242526',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginTop: 12,
+    width: '100%',
+  },
   note: {
     color: '#fff',
     marginTop: 40,

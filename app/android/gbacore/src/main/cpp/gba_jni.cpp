@@ -83,6 +83,19 @@ JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaNative_nativeCreate(JNIEnv*
     // this matches the sequence every real mGBA frontend uses (see
     // src/platform/sdl/main.c) instead of relying on that being safe.
     mCoreInitConfig(core, "gba");
+    // core->opts.volume has NO built-in default -- mCoreConfigMap only
+    // overwrites it if "volume" is actually set somewhere in config, and
+    // an empty config (our case, no config.ini) leaves it zero-
+    // initialized. _GBACoreLoadConfig (called at the end of
+    // mCoreLoadForeignConfig) then does
+    // `gba->audio.masterVolume = core->opts.volume`, which silently mutes
+    // all audio -- the AudioTrack pipeline downstream was never the
+    // problem, it was faithfully playing back real silence. Every real
+    // mGBA frontend avoids this by constructing its mArguments with
+    // `.volume = 0x100` (GBA_AUDIO_VOLUME_MAX) before loading config (see
+    // src/platform/sdl/main.c); we have no such struct, so set the same
+    // default directly on the config's defaults table instead.
+    mCoreConfigSetDefaultIntValue(&core->config, "volume", 0x100);
     mCoreLoadForeignConfig(core, &core->config);
 
     auto* instance = new GbaInstance();
