@@ -24,6 +24,7 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  ImageBackground,
   Modal,
   Platform,
   Pressable,
@@ -36,16 +37,21 @@ import {
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
-import {IconHome, IconSave} from './src/icons';
+import {IconCloud, IconHome, IconSave} from './src/icons';
 import RomLibraryScreen from './src/RomLibraryScreen';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
+import FilesScreen from './src/FilesScreen';
+import AccountScreen from './src/AccountScreen';
+import {readRomTitle} from './src/romTitle';
 import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './src/RomFilePicker';
 import {
   CachedRom,
+  clearAuthSession,
   deleteCachedRom,
   FolderFile,
   FolderPickerCancelledError,
+  getAuthSession,
   getLastFolder,
   listCachedRoms,
   listRomFolder,
@@ -54,6 +60,7 @@ import {
   loadStateSlot,
   pickRomFolder,
   readRomFromFolder,
+  saveAuthSession,
   saveRomToCache,
   saveStateSlot,
   StateSlot,
@@ -62,13 +69,22 @@ import {getAudioDebugInfo, loadGbaState, saveGbaState} from './src/EmulatorContr
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
-import {downloadPatchBytes, Hack, Patch} from './src/api/romHackHub';
+import {downloadFileBytes, downloadPatchBytes, findCoverArt, Hack, Patch, RomHackHubFile} from './src/api/romHackHub';
+import {
+  CloudSave,
+  downloadCloudSave,
+  listCloudSaves,
+  login as accountLogin,
+  TotpRequiredError,
+  uploadCloudSave,
+  verifyTotp as accountVerifyTotp,
+} from './src/api/romHackHubAccount';
 import {extractFromZip} from './src/zip';
 import {TEST_ROM_BASE64} from './src/testRom';
 
 const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
-type Screen = 'home' | 'game' | 'library' | 'folder';
+type Screen = 'home' | 'game' | 'library' | 'folder' | 'files' | 'account';
 type EmulatedSystem = 'gb' | 'gba';
 
 // NDS/3DS aren't emulated yet (see docs/roadmap.md) -- only accept what
@@ -120,6 +136,24 @@ function App(): React.JSX.Element {
   const [stateSlots, setStateSlots] = useState<StateSlot[]>([]);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
 
+  // Best-effort themed background: RomHack Hub's public files API can
+  // return community-uploaded cover art (via TheGamesDB) for a
+  // recognized official/hack-of-an-official game -- see findCoverArt.
+  // coverLookupId guards against a slow lookup for a previous ROM
+  // landing after a newer one has already loaded.
+  const [coverImageUrl, setCoverImageUrl] = useState<string | null>(null);
+  const coverLookupId = useRef(0);
+
+  // RomHack Hub account session -- token kept only in memory + native
+  // SharedPreferences (see saveAuthSession/getAuthSession), never in JS
+  // persistent storage. pendingTotpToken holds the intermediate token
+  // from login() while 2FA verification is in progress.
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authUsername, setAuthUsername] = useState<string | null>(null);
+  const pendingTotpToken = useRef<string | null>(null);
+  const [cloudSaves, setCloudSaves] = useState<CloudSave[]>([]);
+  const [cloudBusySlot, setCloudBusySlot] = useState<number | null>(null);
+
   const refreshRecentRoms = useCallback(() => {
     listCachedRoms()
       .then(setRecentRoms)
@@ -131,7 +165,103 @@ function App(): React.JSX.Element {
     getLastFolder()
       .then(setLastFolder)
       .catch(() => {});
+    getAuthSession()
+      .then(session => {
+        if (session) {
+          setAuthToken(session.token);
+          setAuthUsername(session.username);
+        }
+      })
+      .catch(() => {});
   }, [refreshRecentRoms]);
+
+  const handleLogin = useCallback(async (email: string, password: string, label: string) => {
+    try {
+      const {token, username} = await accountLogin(email, password, label);
+      await saveAuthSession(token, username);
+      setAuthToken(token);
+      setAuthUsername(username);
+      return {needsTotp: false};
+    } catch (e) {
+      if (e instanceof TotpRequiredError) {
+        pendingTotpToken.current = e.pendingToken;
+        return {needsTotp: true};
+      }
+      throw e;
+    }
+  }, []);
+
+  const handleVerifyTotp = useCallback(async (code: string) => {
+    if (!pendingTotpToken.current) throw new Error('La sesión de verificación expiró, intenta de nuevo.');
+    const {token, username} = await accountVerifyTotp(pendingTotpToken.current, code, 'multiemu Android');
+    pendingTotpToken.current = null;
+    await saveAuthSession(token, username);
+    setAuthToken(token);
+    setAuthUsername(username);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearAuthSession().catch(() => {});
+    setAuthToken(null);
+    setAuthUsername(null);
+    setCloudSaves([]);
+  }, []);
+
+  // gameKey groups cloud saves by ROM regardless of which device produced
+  // them -- "gba:<romId>" so a future GB save format can't collide with it.
+  const cloudGameKey = useCallback(() => {
+    const romId = currentRomId.current;
+    return romId ? `gba:${romId}` : null;
+  }, []);
+
+  const refreshCloudSaves = useCallback(() => {
+    const gameKey = cloudGameKey();
+    if (!authToken || !gameKey) {
+      setCloudSaves([]);
+      return;
+    }
+    listCloudSaves(authToken)
+      .then(saves => setCloudSaves(saves.filter(s => s.gameKey === gameKey)))
+      .catch(() => {});
+  }, [authToken, cloudGameKey]);
+
+  const handleUploadCloudSlot = useCallback(
+    async (slot: number) => {
+      const gameKey = cloudGameKey();
+      if (!authToken || !gameKey) return;
+      setCloudBusySlot(slot);
+      try {
+        const base64 = await saveGbaState();
+        const bytes = base64ToBytes(base64);
+        await uploadCloudSave(authToken, gameKey, slot, bytes, `slot${slot}.sav`);
+        refreshCloudSaves();
+      } catch (e) {
+        Alert.alert('No se pudo subir a la nube', e instanceof Error ? e.message : String(e));
+      } finally {
+        setCloudBusySlot(null);
+      }
+    },
+    [authToken, cloudGameKey, refreshCloudSaves],
+  );
+
+  const handleDownloadCloudSlot = useCallback(
+    async (slot: number) => {
+      if (!authToken) return;
+      const remote = cloudSaves.find(s => s.slot === slot);
+      if (!remote) return;
+      setCloudBusySlot(slot);
+      try {
+        const bytes = await downloadCloudSave(authToken, remote.id);
+        await loadGbaState(bytesToBase64(bytes));
+        closeSaveModal();
+      } catch (e) {
+        Alert.alert('No se pudo descargar de la nube', e instanceof Error ? e.message : String(e));
+      } finally {
+        setCloudBusySlot(null);
+      }
+    },
+    [authToken, cloudSaves],
+  );
 
   // base64: pass it through when the caller already has one (e.g. fresh
   // out of the file picker) to skip re-encoding [bytes] -- for a 16-32MB
@@ -147,6 +277,14 @@ function App(): React.JSX.Element {
       setSystem(targetSystem);
       setScreen('game');
       setSpeed(1);
+      setCoverImageUrl(null);
+
+      const lookupId = ++coverLookupId.current;
+      const romTitle = readRomTitle(bytes, targetSystem === 'gba' ? 'gba' : 'gb');
+      findCoverArt(targetSystem, romTitle).then(url => {
+        if (coverLookupId.current === lookupId) setCoverImageUrl(url);
+      });
+
       const encoded = base64 ?? bytesToBase64(bytes);
       if (targetSystem === 'gba') {
         gbaRef.current?.loadRomBase64(encoded, currentRomId.current);
@@ -184,7 +322,8 @@ function App(): React.JSX.Element {
         .then(setStateSlots)
         .catch(() => {});
     }
-  }, []);
+    refreshCloudSaves();
+  }, [refreshCloudSaves]);
 
   const closeSaveModal = useCallback(() => {
     setSaveModalOpen(false);
@@ -345,6 +484,35 @@ function App(): React.JSX.Element {
     [loadIntoEmulator, refreshRecentRoms],
   );
 
+  const handleSelectHubFile = useCallback(
+    async (file: RomHackHubFile) => {
+      setBusy(true);
+      setRomLabel('Descargando…');
+      try {
+        const downloaded = await downloadFileBytes(file);
+        const unzipped = extractFromZip(downloaded, SUPPORTED_ROM_EXTENSIONS);
+        const bytes = unzipped?.bytes ?? downloaded;
+        const name = unzipped?.name ?? file.originalName;
+        const extension = name.split('.').pop() ?? '';
+        if (!unzipped && extension.toLowerCase() === 'zip') {
+          throw new Error('El .zip no contiene un archivo .gb/.gbc/.gba reconocible.');
+        }
+        const targetSystem = systemForExtension(extension);
+        const base64 = bytesToBase64(bytes);
+        loadIntoEmulator(bytes, file.title, targetSystem, base64);
+        hasUserRom.current = true;
+        saveRomToCache(base64, name, targetSystem, file.title)
+          .then(refreshRecentRoms)
+          .catch(() => {});
+      } catch (e) {
+        Alert.alert('No se pudo cargar el archivo', e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadIntoEmulator, refreshRecentRoms],
+  );
+
   const handleDeleteRecent = useCallback(
     (rom: CachedRom) => {
       deleteCachedRom(rom.id)
@@ -445,11 +613,29 @@ function App(): React.JSX.Element {
           onPickFile={handlePickRom}
           onPickFolder={handlePickFolder}
           onBrowseHackRoms={() => setScreen('library')}
+          onBrowseFiles={() => setScreen('files')}
           lastFolder={lastFolder}
           onOpenLastFolder={handleOpenLastFolder}
           busy={busy}
+          username={authUsername}
+          onOpenAccount={() => setScreen('account')}
         />
       </SafeAreaView>
+    );
+  }
+
+  if (screen === 'account') {
+    return (
+      <>
+        <StatusBar hidden />
+        <AccountScreen
+          username={authUsername}
+          onLogin={handleLogin}
+          onVerifyTotp={handleVerifyTotp}
+          onLogout={handleLogout}
+          onClose={() => setScreen('home')}
+        />
+      </>
     );
   }
 
@@ -478,6 +664,15 @@ function App(): React.JSX.Element {
     );
   }
 
+  if (screen === 'files') {
+    return (
+      <>
+        <StatusBar hidden />
+        <FilesScreen onSelectFile={handleSelectHubFile} onClose={() => setScreen('home')} />
+      </>
+    );
+  }
+
   const screenView =
     system === 'gba' ? (
       <GbaView ref={gbaRef} style={styles.screenGba} />
@@ -487,6 +682,15 @@ function App(): React.JSX.Element {
 
   return (
     <SafeAreaView style={styles.container}>
+      {coverImageUrl && (
+        <ImageBackground
+          source={{uri: coverImageUrl}}
+          style={StyleSheet.absoluteFill}
+          blurRadius={6}
+          resizeMode="cover">
+          <View style={styles.coverOverlay} />
+        </ImageBackground>
+      )}
       <StatusBar hidden />
       {Platform.OS === 'android' ? (
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -575,6 +779,8 @@ function App(): React.JSX.Element {
             <View style={styles.slotsRow}>
               {[0, 1, 2].map(slot => {
                 const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
+                const cloud = cloudSaves.find(s => s.slot === slot);
+                const cloudBusy = cloudBusySlot === slot;
                 return (
                   <View key={slot} style={styles.slotCard}>
                     <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
@@ -601,10 +807,43 @@ function App(): React.JSX.Element {
                         </Text>
                       </Pressable>
                     </View>
+                    {authToken && (
+                      <View style={styles.slotActions}>
+                        <Pressable
+                          style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusy && styles.slotActionButtonDisabled]}
+                          disabled={cloudBusy}
+                          onPress={() => handleUploadCloudSlot(slot)}>
+                          {cloudBusy ? (
+                            <ActivityIndicator size="small" color="#a0ffe8" />
+                          ) : (
+                            <>
+                              <IconCloud size={11} color="#a0ffe8" />
+                              <Text style={[styles.slotActionLabel, styles.slotActionLabelCloud]}>Subir</Text>
+                            </>
+                          )}
+                        </Pressable>
+                        <Pressable
+                          style={[
+                            styles.slotActionButton,
+                            styles.slotActionButtonCloud,
+                            (!cloud || cloudBusy) && styles.slotActionButtonDisabled,
+                          ]}
+                          disabled={!cloud || cloudBusy}
+                          onPress={() => handleDownloadCloudSlot(slot)}>
+                          <IconCloud size={11} color={cloud ? '#a0ffe8' : '#777'} />
+                          <Text style={[styles.slotActionLabel, cloud && styles.slotActionLabelCloud, !cloud && styles.slotActionLabelDisabled]}>
+                            Bajar
+                          </Text>
+                        </Pressable>
+                      </View>
+                    )}
                   </View>
                 );
               })}
             </View>
+            {!authToken && (
+              <Text style={styles.modalCloudHint}>Inicia sesión en Cuenta para sincronizar guardados en la nube.</Text>
+            )}
             <Pressable style={styles.modalCloseButton} onPress={closeSaveModal}>
               <Text style={styles.modalCloseLabel}>Cerrar y continuar</Text>
             </Pressable>
@@ -637,25 +876,22 @@ function ShoulderButton({
   );
 }
 
-/** Classic cross-shaped D-pad: four arrows at N/S/E/W around an empty center. */
+/**
+ * Cross-shaped D-pad: one solid plus-shaped body (two overlapping bars,
+ * same color, so the seam is invisible) with a raised center rivet and
+ * four transparent hit zones for the actual arrows -- reads as a single
+ * molded piece instead of four separate square buttons.
+ */
 function DPad({press}: {press: (b: GameBoyButton & GbaButton, pressed: boolean) => () => void}) {
   return (
     <View style={styles.dpad}>
-      <View style={styles.dpadRow}>
-        <View style={styles.dpadSpacer} />
-        <DPadButton label="▲" button="UP" press={press} />
-        <View style={styles.dpadSpacer} />
-      </View>
-      <View style={styles.dpadRow}>
-        <DPadButton label="◀" button="LEFT" press={press} />
-        <View style={styles.dpadCenter} />
-        <DPadButton label="▶" button="RIGHT" press={press} />
-      </View>
-      <View style={styles.dpadRow}>
-        <View style={styles.dpadSpacer} />
-        <DPadButton label="▼" button="DOWN" press={press} />
-        <View style={styles.dpadSpacer} />
-      </View>
+      <View style={styles.dpadBarHorizontal} />
+      <View style={styles.dpadBarVertical} />
+      <View style={styles.dpadRivet} />
+      <DPadButton label="▲" button="UP" press={press} style={styles.dpadHitUp} />
+      <DPadButton label="▼" button="DOWN" press={press} style={styles.dpadHitDown} />
+      <DPadButton label="◀" button="LEFT" press={press} style={styles.dpadHitLeft} />
+      <DPadButton label="▶" button="RIGHT" press={press} style={styles.dpadHitRight} />
     </View>
   );
 }
@@ -664,14 +900,18 @@ function DPadButton({
   label,
   button,
   press,
+  style,
 }: {
   label: string;
   button: GameBoyButton & GbaButton;
   press: (b: GameBoyButton & GbaButton, pressed: boolean) => () => void;
+  style: object;
 }) {
   return (
-    <Pressable style={styles.dpadButton} onPressIn={press(button, true)} onPressOut={press(button, false)}>
-      <View style={styles.dpadHighlight} />
+    <Pressable
+      style={({pressed}) => [styles.dpadHit, style, pressed && styles.dpadHitPressed]}
+      onPressIn={press(button, true)}
+      onPressOut={press(button, false)}>
       <Text style={styles.dpadLabel}>{label}</Text>
     </Pressable>
   );
@@ -708,6 +948,14 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     alignItems: 'center',
     paddingBottom: 24,
+  },
+  coverOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(15,16,20,0.6)',
   },
   topBar: {
     flexDirection: 'row',
@@ -900,8 +1148,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#3a5a7a',
   },
   slotActionButtonDisabled: {backgroundColor: '#2a2a2a', opacity: 0.5},
+  slotActionButtonCloud: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1e5c4f',
+  },
   slotActionLabel: {color: '#fff', fontSize: 9, fontWeight: '700'},
   slotActionLabelDisabled: {color: '#777'},
+  slotActionLabelCloud: {color: '#a0ffe8'},
+  modalCloudHint: {color: '#666', fontSize: 10, textAlign: 'center', marginTop: 10, paddingHorizontal: 8},
   note: {
     color: '#fff',
     marginTop: 40,
@@ -916,31 +1172,54 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28,
     marginTop: 12,
   },
-  dpad: {width: 144, alignItems: 'center'},
-  dpadRow: {flexDirection: 'row'},
-  dpadSpacer: {width: 48, height: 48},
-  dpadCenter: {width: 48, height: 48, backgroundColor: '#262626'},
-  dpadButton: {
-    width: 48,
+  dpad: {width: 144, height: 144},
+  dpadBarHorizontal: {
+    position: 'absolute',
+    top: 48,
+    left: 0,
+    width: 144,
     height: 48,
     backgroundColor: '#33353c',
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
+    borderRadius: 8,
     shadowColor: '#000',
-    shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 4,
+    shadowOffset: {width: 0, height: 3},
+    shadowOpacity: 0.35,
+    shadowRadius: 5,
+    elevation: 5,
   },
-  dpadHighlight: {
+  dpadBarVertical: {
     position: 'absolute',
     top: 0,
-    left: 0,
-    right: 0,
-    height: '40%',
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    left: 48,
+    width: 48,
+    height: 144,
+    backgroundColor: '#33353c',
+    borderRadius: 8,
   },
+  dpadRivet: {
+    position: 'absolute',
+    top: 60,
+    left: 60,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#3d3f48',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  dpadHit: {
+    position: 'absolute',
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+  },
+  dpadHitPressed: {backgroundColor: 'rgba(255,255,255,0.12)'},
+  dpadHitUp: {top: 0, left: 48},
+  dpadHitDown: {top: 96, left: 48},
+  dpadHitLeft: {top: 48, left: 0},
+  dpadHitRight: {top: 48, left: 96},
   dpadLabel: {color: '#eee', fontSize: 18},
   actionCluster: {width: 140, height: 110, marginRight: 8},
   actionButton: {

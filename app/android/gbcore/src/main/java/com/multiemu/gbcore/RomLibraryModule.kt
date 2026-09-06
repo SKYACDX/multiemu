@@ -347,4 +347,37 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
 
     private fun stateSlotFile(romId: String, slot: Int): File =
         File(File(reactContext.filesDir, "states").apply { mkdirs() }, "${romId}_slot$slot.state")
+
+    // ---- RomHack Hub account session ---------------------------------------
+    //
+    // Just the bearer token + username; the actual login/2FA/upload/download
+    // HTTP calls live entirely in JS (romHackHubAccount.ts) since they're
+    // plain fetch() calls needing no native code. This only persists the
+    // result so the user doesn't have to log in again every launch.
+
+    @ReactMethod
+    fun saveAuthSession(token: String, username: String, promise: Promise) {
+        prefs().edit().putString("auth_token", token).putString("auth_username", username).apply()
+        promise.resolve(null)
+    }
+
+    @ReactMethod
+    fun getAuthSession(promise: Promise) {
+        val token = prefs().getString("auth_token", null)
+        val username = prefs().getString("auth_username", null)
+        if (token == null || username == null) {
+            promise.resolve(null)
+            return
+        }
+        val result = Arguments.createMap()
+        result.putString("token", token)
+        result.putString("username", username)
+        promise.resolve(result)
+    }
+
+    @ReactMethod
+    fun clearAuthSession(promise: Promise) {
+        prefs().edit().remove("auth_token").remove("auth_username").apply()
+        promise.resolve(null)
+    }
 }

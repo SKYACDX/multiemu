@@ -92,3 +92,56 @@ export async function downloadPatchBytes(patch: Patch): Promise<Uint8Array> {
   const buffer = await response.arrayBuffer();
   return new Uint8Array(buffer);
 }
+
+/**
+ * A different, separate public API on RomHack Hub: arbitrary files users
+ * marked public (cover art, docs, and -- unlike /hacks -- potentially
+ * full files depending on what they uploaded). No auth needed to browse
+ * or download; RomLibraryScreen/HomeScreen filter results to
+ * .zip/.gb/.gbc/.gba by originalName before showing them, since this
+ * endpoint isn't restricted to emulator-loadable files the way /hacks is.
+ */
+export interface RomHackHubFile {
+  id: string;
+  title: string;
+  description: string | null;
+  originalName: string;
+  fileSize: number;
+  mimeType: string;
+  platform: Platform;
+  gameTitle: string | null;
+  coverImageUrl: string | null;
+  uploader: string;
+  createdAt: string;
+  downloadUrl: string;
+}
+
+export function listFiles(params: {platform?: string; q?: string; limit?: number; offset?: number} = {}) {
+  return apiGet<{files: RomHackHubFile[]; pagination: Pagination}>('/files', params);
+}
+
+/** Downloads a public file's raw bytes from its downloadUrl. */
+export async function downloadFileBytes(file: RomHackHubFile): Promise<Uint8Array> {
+  const response = await fetch(file.downloadUrl);
+  if (!response.ok) {
+    throw new Error(`No se pudo descargar el archivo (HTTP ${response.status})`);
+  }
+  const buffer = await response.arrayBuffer();
+  return new Uint8Array(buffer);
+}
+
+/**
+ * Best-effort cover art lookup for the currently-loaded game -- searches
+ * by platform + title (read from the ROM's own header, see romTitle.ts)
+ * and returns the first result with cover art, or null. Never throws;
+ * a missing/failed lookup just means no themed background this time.
+ */
+export async function findCoverArt(platform: string, gameTitle: string): Promise<string | null> {
+  if (!gameTitle) return null;
+  try {
+    const {files} = await listFiles({platform, q: gameTitle, limit: 5});
+    return files.find(f => f.coverImageUrl)?.coverImageUrl ?? null;
+  } catch {
+    return null;
+  }
+}

@@ -101,6 +101,28 @@ export function IconSave({size = 20, color = '#fff'}: IconProps) {
   );
 }
 
+export function IconAccount({size = 22, color = '#fff'}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx={12} cy={8} r={4} stroke={color} strokeWidth={2} />
+      <Path d="M4 20c0-4 3.5-6.5 8-6.5s8 2.5 8 6.5" stroke={color} strokeWidth={2} strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+export function IconCloud({size = 16, color = '#fff'}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M7 18a4.5 4.5 0 0 1-.5-8.97A5.5 5.5 0 0 1 17.2 8.06 4 4 0 0 1 17 16H7Z"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
 /** Decorative cartridge glyph -- used on the Home screen's empty state and header. */
 export function IconCartridge({size = 40, color = '#555'}: IconProps) {
   return (

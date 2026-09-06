@@ -6,10 +6,11 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
-import android.media.ToneGenerator
+import android.os.Build
 import android.util.Log
 import android.view.Choreographer
 import android.view.View
@@ -29,6 +30,7 @@ class GbaView(context: Context) : View(context) {
     private var gba: GbaNative? = null
     private var bitmap: Bitmap? = null
     private var audioTrack: AudioTrack? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
     private val audioBuffer = ShortArray(4096)
     private val paint = Paint().apply { isFilterBitmap = false }
     private var running = false
@@ -115,24 +117,18 @@ class GbaView(context: Context) : View(context) {
             return
         }
 
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_GAME)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+
         val minBufferSize = AudioTrack.getMinBufferSize(
             GbaNative.audioSampleRateHz,
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
         audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                // CONTENT_TYPE_SONIFICATION is for short UI feedback
-                // sounds and can get treated very differently by the
-                // audio HAL (ducked, routed to a notification-adjacent
-                // stream, or effectively muted on some OEM skins) --
-                // CONTENT_TYPE_MUSIC is what continuous game audio
-                // actually needs to play reliably.
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build(),
-            )
+            .setAudioAttributes(audioAttributes)
             .setAudioFormat(
                 AudioFormat.Builder()
                     .setSampleRate(GbaNative.audioSampleRateHz)
@@ -144,20 +140,41 @@ class GbaView(context: Context) : View(context) {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         audioTrack?.setVolume(1f)
-        audioTrack?.play()
 
-        // TEMPORARY diagnostic: a short beep on the exact same stream
-        // (STREAM_MUSIC) our AudioTrack uses, completely independent of
-        // mGBA's sample pipeline. If this isn't audible either, the
-        // device's media volume/output is the actual problem, not this
-        // code -- see docs/roadmap.md or the conversation that added this
-        // for context. Safe to delete once audio is confirmed working.
-        try {
-            val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
-            toneGen.startTone(ToneGenerator.TONE_CDMA_PIP, 400)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ toneGen.release() }, 500)
-        } catch (e: Exception) {
-            Log.w(TAG, "diagnostic tone failed", e)
+        // Diagnostics (a beep on the same track/attributes, plus a running
+        // frame counter -- see getAudioDebugInfo) confirmed the AudioTrack
+        // itself was healthy the whole time: initialized, playing, writes
+        // succeeding. What was missing is this -- without ever requesting
+        // audio focus, some OEM audio policies silently drop a game's
+        // sound at the mixer even though the AudioTrack's own state looks
+        // perfectly fine to the app. Request it right before play().
+        abandonAudioFocus()
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (audioManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(audioAttributes)
+                    .setWillPauseWhenDucked(false)
+                    .build()
+                audioFocusRequest = request
+                audioManager.requestAudioFocus(request)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+            }
+        }
+
+        audioTrack?.play()
+    }
+
+    private fun abandonAudioFocus() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
         }
     }
 
@@ -180,6 +197,7 @@ class GbaView(context: Context) : View(context) {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
+        abandonAudioFocus()
         if (EmulatorControlModule.activeGba === this) EmulatorControlModule.activeGba = null
         super.onDetachedFromWindow()
     }

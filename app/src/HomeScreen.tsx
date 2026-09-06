@@ -1,7 +1,7 @@
 import React from 'react';
 import {ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 import {CachedRom} from './RomLibraryNative';
-import {IconCartridge, IconClose, IconFile, IconFolder, IconGlobe} from './icons';
+import {IconAccount, IconCartridge, IconClose, IconFile, IconFolder, IconGlobe} from './icons';
 
 const SYSTEM_LABEL: Record<string, string> = {gb: 'GB', gbc: 'GBC', gba: 'GBA'};
 const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba: '#c2536a'};
@@ -13,9 +13,12 @@ interface Props {
   onPickFile: () => void;
   onPickFolder: () => void;
   onBrowseHackRoms: () => void;
+  onBrowseFiles: () => void;
   lastFolder: {uri: string; name: string} | null;
   onOpenLastFolder: () => void;
   busy: boolean;
+  username: string | null;
+  onOpenAccount: () => void;
 }
 
 /**
@@ -31,12 +34,19 @@ export default function HomeScreen({
   onPickFile,
   onPickFolder,
   onBrowseHackRoms,
+  onBrowseFiles,
   lastFolder,
   onOpenLastFolder,
   busy,
+  username,
+  onOpenAccount,
 }: Props) {
   return (
     <View style={styles.container}>
+      <Pressable style={styles.accountButton} onPress={onOpenAccount} hitSlop={8}>
+        <IconAccount size={18} color={username ? '#a0ffe8' : '#888'} />
+        {username && <Text style={styles.accountLabel} numberOfLines={1}>{username}</Text>}
+      </Pressable>
       <View style={styles.titleRow}>
         <Text style={styles.title}>multiemu</Text>
         <View style={styles.titleAccent} />
@@ -61,6 +71,12 @@ export default function HomeScreen({
             <IconGlobe size={20} color="#d9c6ff" />
           </View>
           <Text style={styles.actionLabel}>Buscar HackRoms</Text>
+        </Pressable>
+        <Pressable style={styles.actionButton} onPress={onBrowseFiles}>
+          <View style={[styles.actionIconCircle, {backgroundColor: '#1e5c4f'}]}>
+            <IconFile size={20} color="#a0ffe8" />
+          </View>
+          <Text style={styles.actionLabel}>Archivos</Text>
         </Pressable>
       </View>
 
@@ -133,6 +149,20 @@ const CARD_SHADOW = {
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#14151a', paddingTop: 56, paddingHorizontal: 20},
+  accountButton: {
+    position: 'absolute',
+    top: 14,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#1e2027',
+    borderRadius: 14,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    maxWidth: 140,
+  },
+  accountLabel: {color: '#a0ffe8', fontSize: 11, fontWeight: '700'},
   titleRow: {alignItems: 'center'},
   title: {color: '#fff', fontSize: 30, fontWeight: '800', textAlign: 'center', letterSpacing: 0.5},
   titleAccent: {
@@ -143,9 +173,10 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   subtitle: {color: '#888', fontSize: 12, textAlign: 'center', marginTop: 10, marginBottom: 26},
-  actions: {flexDirection: 'row', gap: 10, marginBottom: 14},
+  actions: {flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 14},
   actionButton: {
-    flex: 1,
+    flexBasis: '47%',
+    flexGrow: 1,
     backgroundColor: '#1e2027',
     borderRadius: 14,
     paddingVertical: 16,
