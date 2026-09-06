@@ -38,6 +38,7 @@ import {
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
+import DsView, {DsButton, DsViewHandle} from './src/DsView';
 import {IconCloud, IconHome, IconSave, IconTrash, IconTriangle} from './src/icons';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
@@ -45,7 +46,12 @@ import HubScreen from './src/HubScreen';
 import LocalLinkScreen from './src/LocalLinkScreen';
 import AccountScreen from './src/AccountScreen';
 import {readRomTitle} from './src/romTitle';
-import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './src/RomFilePicker';
+import {
+  InvalidRomExtensionError,
+  pickRomFilePath,
+  readFileAsBase64,
+  RomPickerCancelledError,
+} from './src/RomFilePicker';
 import {
   CachedRom,
   clearAuthSession,
@@ -93,16 +99,19 @@ import {TEST_ROM_BASE64} from './src/testRom';
 const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
 type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account' | 'localLink';
-type EmulatedSystem = 'gb' | 'gba';
-type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'SELECT' | 'START';
+type EmulatedSystem = 'gb' | 'gba' | 'nds';
+type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'X' | 'Y' | 'SELECT' | 'START';
 
-// NDS/3DS aren't emulated yet (see docs/roadmap.md) -- only accept what
-// one of the two cores can actually run, so picking the wrong file fails
-// fast with a clear message instead of silently loading garbage.
-const SUPPORTED_ROM_EXTENSIONS = ['gb', 'gbc', 'gba'];
+// 3DS isn't emulated yet (see docs/roadmap.md) -- only accept what one of
+// the three cores can actually run, so picking the wrong file fails fast
+// with a clear message instead of silently loading garbage.
+const SUPPORTED_ROM_EXTENSIONS = ['gb', 'gbc', 'gba', 'nds'];
 
 function systemForExtension(extension: string): EmulatedSystem {
-  return extension.toLowerCase() === 'gba' ? 'gba' : 'gb';
+  const ext = extension.toLowerCase();
+  if (ext === 'gba') return 'gba';
+  if (ext === 'nds') return 'nds';
+  return 'gb';
 }
 
 /** RomHack Hub platform slugs -> which core plays that platform. */
@@ -122,12 +131,18 @@ const GAME_SAVE_CLOUD_SLOT = 99;
 const AUTOSAVE_SLOT = 3;
 const AUTOSAVE_INTERVAL_MS = 45_000;
 
-const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance'};
-const SYSTEM_ACCENT: Record<EmulatedSystem, string> = {gb: '#4a90d9', gba: '#c2536a'};
+const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance', nds: 'Nintendo DS'};
+const SYSTEM_ACCENT: Record<EmulatedSystem, string> = {gb: '#4a90d9', gba: '#c2536a', nds: '#7a5cc2'};
 
 function App(): React.JSX.Element {
   const gameBoyRef = useRef<GameBoyViewHandle>(null);
   const gbaRef = useRef<GbaViewHandle>(null);
+  const dsRef = useRef<DsViewHandle>(null);
+  // NDS's equivalent of baseRomBytes -- there's no byte buffer to keep
+  // for it (the whole point of loadRomPath is to avoid ever holding a
+  // 128-512MB ROM in JS memory), just the path DsView should read it
+  // from. Set by handlePickRom, consumed by the remount effect below.
+  const currentDsRomPath = useRef<string | null>(null);
   const baseRomBytes = useRef<Uint8Array>(base64ToBytes(TEST_ROM_BASE64));
   // False until the user has actually loaded their own ROM (as opposed
   // to the built-in test pattern) -- gates applying a HackRom patch, see
@@ -505,11 +520,16 @@ function App(): React.JSX.Element {
       setSpeed(1);
       setCoverImageUrl(null);
 
-      const lookupId = ++coverLookupId.current;
-      const romTitle = readRomTitle(bytes, targetSystem === 'gba' ? 'gba' : 'gb');
-      findCoverArt(targetSystem, romTitle).then(url => {
-        if (coverLookupId.current === lookupId) setCoverImageUrl(url);
-      });
+      // RomHack Hub (cover art + patches) only knows GB/GBA -- skip the
+      // lookup for NDS rather than querying it with a title parsed at
+      // the wrong header offset.
+      if (targetSystem !== 'nds') {
+        const lookupId = ++coverLookupId.current;
+        const romTitle = readRomTitle(bytes, targetSystem === 'gba' ? 'gba' : 'gb');
+        findCoverArt(targetSystem, romTitle).then(url => {
+          if (coverLookupId.current === lookupId) setCoverImageUrl(url);
+        });
+      }
 
       const encoded = base64 ?? bytesToBase64(bytes);
       lastSyncedSaveCrc.current = null;
@@ -524,6 +544,13 @@ function App(): React.JSX.Element {
         // is a fire-and-forget command dispatch, not an awaited call).
         const romId = currentRomId.current;
         setTimeout(() => checkGameSaveConflict(romId), 500);
+      } else if (targetSystem === 'nds') {
+        // Cartridge save persistence is handled entirely on the native
+        // side (see ds_jni.cpp) -- no getGameSaveBytes/cloud-sync
+        // plumbing for NDS yet, and no save-state slots (DsNative
+        // doesn't implement full-state save/load yet either).
+        dsRef.current?.loadRomBase64(encoded, currentRomId.current);
+        setStateSlots([]);
       } else {
         gameBoyRef.current?.loadRomBase64(encoded, currentRomId.current);
         gameBoyRef.current?.setSpeedMultiplier(1);
@@ -621,13 +648,16 @@ function App(): React.JSX.Element {
     // romId, so save persistence keeps working after a trip through
     // Home/Folder/Library and back).
     if (screen !== 'game') return;
-    const base64 = bytesToBase64(baseRomBytes.current);
     const romId = currentRomId.current ?? undefined;
     setSpeed(1);
     if (system === 'gba') {
+      const base64 = bytesToBase64(baseRomBytes.current);
       gbaRef.current?.loadRomBase64(base64, romId);
       gbaRef.current?.setSpeedMultiplier(1);
+    } else if (system === 'nds') {
+      if (currentDsRomPath.current) dsRef.current?.loadRomPath(currentDsRomPath.current, romId);
     } else {
+      const base64 = bytesToBase64(baseRomBytes.current);
       gameBoyRef.current?.loadRomBase64(base64, romId);
       gameBoyRef.current?.setSpeedMultiplier(1);
     }
@@ -638,14 +668,41 @@ function App(): React.JSX.Element {
     setBusy(true);
     setRomLabel('Cargando ROM…');
     try {
-      const picked = await pickRomFile(SUPPORTED_ROM_EXTENSIONS);
+      // Path-based, not the base64 pickRomFile -- NDS ROMs run
+      // 128-512MB, and base64-encoding one of those plus passing it
+      // across the JS bridge as a single string reliably runs out of
+      // memory (confirmed live: a real 128MB .nds OOM-crashed here
+      // before this existed). GB/GBA files are small enough that
+      // reading them back as base64 in a second step (below) is fine.
+      const picked = await pickRomFilePath(SUPPORTED_ROM_EXTENSIONS);
       const extension = picked.name.split('.').pop() ?? '';
       const targetSystem = systemForExtension(extension);
-      loadIntoEmulator(base64ToBytes(picked.base64), picked.name, targetSystem, picked.base64);
       hasUserRom.current = true;
-      saveRomToCache(picked.base64, picked.name, targetSystem, picked.name)
-        .then(refreshRecentRoms)
-        .catch(() => {});
+
+      if (targetSystem === 'nds') {
+        // No cover art, no Recientes cache entry, no CRC32 -- all of
+        // that currently assumes the ROM's bytes are in JS memory,
+        // which is exactly what this path avoids for NDS. romId is
+        // just enough to give the save file a stable, per-ROM name.
+        const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+        currentRomId.current = romId;
+        currentDsRomPath.current = picked.path;
+        setRomLabel(picked.name);
+        setCoverImageUrl(null);
+        setStateSlots([]);
+        // Actually loading the ROM happens in the remount effect above,
+        // not here -- dsRef.current is still null at this point (DsView
+        // doesn't exist in the tree until this same setSystem/setScreen
+        // commits and mounts it).
+        setSystem('nds');
+        setScreen('game');
+      } else {
+        const base64 = await readFileAsBase64(picked.path);
+        loadIntoEmulator(base64ToBytes(base64), picked.name, targetSystem, base64);
+        saveRomToCache(base64, picked.name, targetSystem, picked.name)
+          .then(refreshRecentRoms)
+          .catch(() => {});
+      }
     } catch (e) {
       if (e instanceof RomPickerCancelledError) {
         // Cancelled by the user -- restore whatever was showing before.
@@ -743,7 +800,7 @@ function App(): React.JSX.Element {
         const name = unzipped?.name ?? file.originalName;
         const extension = name.split('.').pop() ?? '';
         if (!unzipped && extension.toLowerCase() === 'zip') {
-          throw new Error('El .zip no contiene un archivo .gb/.gbc/.gba reconocible.');
+          throw new Error('El .zip no contiene un archivo .gb/.gbc/.gba/.nds reconocible.');
         }
         const targetSystem = systemForExtension(extension);
         const base64 = bytesToBase64(bytes);
@@ -839,8 +896,10 @@ function App(): React.JSX.Element {
   const dispatchButton = useCallback(
     (button: PadButtonId, pressed: boolean) => {
       if (system === 'gba') {
-        gbaRef.current?.setButtonPressed(button as GbaButton, pressed);
-      } else if (button !== 'L' && button !== 'R') {
+        if (button !== 'X' && button !== 'Y') gbaRef.current?.setButtonPressed(button as GbaButton, pressed);
+      } else if (system === 'nds') {
+        dsRef.current?.setButtonPressed(button as DsButton, pressed);
+      } else if (button !== 'L' && button !== 'R' && button !== 'X' && button !== 'Y') {
         gameBoyRef.current?.setButtonPressed(button as GameBoyButton, pressed);
       }
     },
@@ -930,6 +989,8 @@ function App(): React.JSX.Element {
   const screenView =
     system === 'gba' ? (
       <GbaView ref={gbaRef} style={styles.screenGba} />
+    ) : system === 'nds' ? (
+      <DsView ref={dsRef} style={styles.screenDs} />
     ) : (
       <GameBoyView ref={gameBoyRef} style={styles.screen} />
     );
@@ -1260,17 +1321,32 @@ function GameControls({
       <View style={styles.shoulderRow}>
         <View
           ref={setRef('L')}
-          style={[styles.shoulderButton, system !== 'gba' && styles.shoulderButtonInactive, isPressed('L') && styles.shoulderButtonPressed]}>
+          style={[styles.shoulderButton, system === 'gb' && styles.shoulderButtonInactive, isPressed('L') && styles.shoulderButtonPressed]}>
           <View style={styles.shoulderHighlight} />
           <Text style={styles.shoulderLabel}>L</Text>
         </View>
         <View
           ref={setRef('R')}
-          style={[styles.shoulderButton, system !== 'gba' && styles.shoulderButtonInactive, isPressed('R') && styles.shoulderButtonPressed]}>
+          style={[styles.shoulderButton, system === 'gb' && styles.shoulderButtonInactive, isPressed('R') && styles.shoulderButtonPressed]}>
           <View style={styles.shoulderHighlight} />
           <Text style={styles.shoulderLabel}>R</Text>
         </View>
       </View>
+
+      {/* X/Y only exist on the DS -- shown just for that system, above
+          the D-pad/A-B row rather than reshuffling its fixed layout. */}
+      {system === 'nds' && (
+        <View style={styles.systemRow}>
+          <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
+            <View style={styles.pillHighlight} />
+            <Text style={styles.pillLabel}>Y</Text>
+          </View>
+          <View ref={setRef('X')} style={[styles.pillButton, styles.pillButtonStart, isPressed('X') && styles.pillButtonPressed]}>
+            <View style={styles.pillHighlight} />
+            <Text style={styles.pillLabel}>X</Text>
+          </View>
+        </View>
+      )}
 
       <View style={styles.padRow}>
         <View style={styles.dpad}>
@@ -1435,6 +1511,15 @@ const styles = StyleSheet.create({
   screenGba: {
     width: 331,
     height: 221,
+    backgroundColor: '#000',
+    borderRadius: 4,
+  },
+  // Two 256x192 screens stacked (2:3 combined) -- narrower than GB/GBA's
+  // width so the total height stays close to theirs instead of pushing
+  // the controls below off-screen.
+  screenDs: {
+    width: 220,
+    height: 330,
     backgroundColor: '#000',
     borderRadius: 4,
   },

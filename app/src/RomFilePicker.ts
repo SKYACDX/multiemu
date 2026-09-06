@@ -6,8 +6,16 @@ export interface PickedRom {
   size: number;
 }
 
+export interface PickedRomPath {
+  path: string;
+  name: string;
+  size: number;
+}
+
 interface RomFilePickerNativeModule {
   pickRom(extensions: string[]): Promise<PickedRom>;
+  pickRomPath(extensions: string[]): Promise<PickedRomPath>;
+  readFileAsBase64(path: string): Promise<string>;
 }
 
 const {RomFilePicker} = NativeModules as {RomFilePicker: RomFilePickerNativeModule};
@@ -37,4 +45,28 @@ export async function pickRomFile(extensions: string[]): Promise<PickedRom> {
     }
     throw e;
   }
+}
+
+/**
+ * Same picker as [pickRomFile], but resolves a path to a cache-file copy
+ * instead of a base64 string -- use this for large ROMs (NDS runs
+ * 128-512MB) where base64-encoding the whole thing and passing it across
+ * the JS bridge as one giant string reliably runs out of memory.
+ */
+export async function pickRomFilePath(extensions: string[]): Promise<PickedRomPath> {
+  try {
+    return await RomFilePicker.pickRomPath(extensions);
+  } catch (e) {
+    const code = (e as {code?: string} | null)?.code;
+    if (code === 'CANCELLED') throw new RomPickerCancelledError();
+    if (code === 'INVALID_EXTENSION') {
+      throw new InvalidRomExtensionError(e instanceof Error ? e.message : String(e));
+    }
+    throw e;
+  }
+}
+
+/** Reads back a small file at a plain filesystem path (e.g. from pickRomFilePath) as base64 -- see readFileAsBase64's Kotlin doc comment. */
+export function readFileAsBase64(path: string): Promise<string> {
+  return RomFilePicker.readFileAsBase64(path);
 }

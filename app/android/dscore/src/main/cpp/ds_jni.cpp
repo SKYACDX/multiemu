@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Args.h"
 #include "NDS.h"
@@ -57,31 +58,18 @@ void LoadExistingSave(const std::string& path, NDSCart::NDSCartArgs& cartArgs) {
     fclose(f);
 }
 
-}  // namespace
-
-extern "C" {
-
-// Returns 0 if the ROM couldn't be parsed as an NDS cart. savePath may
-// be null to skip save persistence (matches gba_jni.cpp's convention).
-JNIEXPORT jlong JNICALL Java_com_multiemu_dscore_DsNative_nativeCreate(
-    JNIEnv* env, jclass, jbyteArray romBytes, jstring savePath) {
-    jsize romLen = env->GetArrayLength(romBytes);
-    auto romData = std::make_unique<u8[]>(static_cast<size_t>(romLen));
-    env->GetByteArrayRegion(romBytes, 0, romLen, reinterpret_cast<jbyte*>(romData.get()));
-
+// Shared by nativeCreate/nativeCreateFromPath -- everything past "have
+// the ROM bytes in memory" is identical either way.
+jlong CreateFromRomData(std::unique_ptr<u8[]> romData, u32 romLen, const char* savePathOrNull) {
     auto session = std::make_unique<DsSession>();
-    if (savePath) {
-        const char* path = env->GetStringUTFChars(savePath, nullptr);
-        session->savePath = path;
-        env->ReleaseStringUTFChars(savePath, path);
-    }
+    if (savePathOrNull) session->savePath = savePathOrNull;
 
     NDSCart::NDSCartArgs cartArgs;
     LoadExistingSave(session->savePath, cartArgs);
 
     // userdata here (not NDS's own, set below) is what Platform::WriteNDSSave
     // receives -- see NDSCart.cpp.
-    auto cart = NDSCart::ParseROM(std::move(romData), static_cast<u32>(romLen), &session->savePath, std::move(cartArgs));
+    auto cart = NDSCart::ParseROM(std::move(romData), romLen, &session->savePath, std::move(cartArgs));
     if (!cart) return 0;
 
     // Defaults to FreeBIOS + generated firmware + software 3D renderer
@@ -96,6 +84,58 @@ JNIEXPORT jlong JNICALL Java_com_multiemu_dscore_DsNative_nativeCreate(
     session->nds->Start();
 
     return reinterpret_cast<jlong>(session.release());
+}
+
+}  // namespace
+
+extern "C" {
+
+// Returns 0 if the ROM couldn't be parsed as an NDS cart. savePath may
+// be null to skip save persistence (matches gba_jni.cpp's convention).
+// For anything but a small ROM, prefer nativeCreateFromPath below --
+// this one requires the whole ROM to already be sitting in a Java
+// byte[] (and, upstream of this call, very likely a base64 string
+// before that), which is fine for a 32MB GBA ROM but not for a
+// 128-512MB NDS one -- see RomFilePickerModule.kt's pickRomPath.
+JNIEXPORT jlong JNICALL Java_com_multiemu_dscore_DsNative_nativeCreate(
+    JNIEnv* env, jclass, jbyteArray romBytes, jstring savePath) {
+    jsize romLen = env->GetArrayLength(romBytes);
+    auto romData = std::make_unique<u8[]>(static_cast<size_t>(romLen));
+    env->GetByteArrayRegion(romBytes, 0, romLen, reinterpret_cast<jbyte*>(romData.get()));
+
+    const char* savePathChars = savePath ? env->GetStringUTFChars(savePath, nullptr) : nullptr;
+    jlong handle = CreateFromRomData(std::move(romData), static_cast<u32>(romLen), savePathChars);
+    if (savePathChars) env->ReleaseStringUTFChars(savePath, savePathChars);
+    return handle;
+}
+
+// Reads the ROM straight off disk instead of through a Java byte[] --
+// the path a large NDS ROM should take (see RomFilePickerModule.kt's
+// pickRomPath, which copies a picked SAF document to a local cache file
+// precisely so this can read it directly, without ever base64-encoding
+// it or holding it in a JS bridge string).
+JNIEXPORT jlong JNICALL Java_com_multiemu_dscore_DsNative_nativeCreateFromPath(
+    JNIEnv* env, jclass, jstring romPath, jstring savePath) {
+    const char* romPathChars = env->GetStringUTFChars(romPath, nullptr);
+    FILE* f = fopen(romPathChars, "rb");
+    env->ReleaseStringUTFChars(romPath, romPathChars);
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long romLen = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (romLen <= 0) {
+        fclose(f);
+        return 0;
+    }
+    auto romData = std::make_unique<u8[]>(static_cast<size_t>(romLen));
+    size_t readBytes = fread(romData.get(), 1, static_cast<size_t>(romLen), f);
+    fclose(f);
+    if (readBytes != static_cast<size_t>(romLen)) return 0;
+
+    const char* savePathChars = savePath ? env->GetStringUTFChars(savePath, nullptr) : nullptr;
+    jlong handle = CreateFromRomData(std::move(romData), static_cast<u32>(romLen), savePathChars);
+    if (savePathChars) env->ReleaseStringUTFChars(savePath, savePathChars);
+    return handle;
 }
 
 JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeDestroy(JNIEnv*, jclass, jlong handle) {
@@ -145,6 +185,30 @@ JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeTouchScreen(
 
 JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeReleaseScreen(JNIEnv*, jclass, jlong handle) {
     handleToSession(handle)->nds->ReleaseScreen();
+}
+
+// Must match NDSArgs::OutputSampleRate's default (see this file's
+// NDSArgs construction above).
+JNIEXPORT jint JNICALL Java_com_multiemu_dscore_DsNative_nativeGetAudioSampleRate(JNIEnv*, jclass) { return 48000; }
+
+// outSamples must be sized for stereo pairs (2 shorts/frame); returns
+// the number of frames actually written. SPU::ReadOutput already
+// produces interleaved stereo s16 (unlike mGBA's separate-channel
+// blip_buf, see gba_jni.cpp), so this is a direct passthrough.
+JNIEXPORT jint JNICALL Java_com_multiemu_dscore_DsNative_nativeReadAudioSamples(
+    JNIEnv* env, jclass, jlong handle, jshortArray outSamples) {
+    NDS& nds = *handleToSession(handle)->nds;
+    int capacityFrames = env->GetArrayLength(outSamples) / 2;
+    int available = nds.SPU.GetOutputSize();
+    int frames = available < capacityFrames ? available : capacityFrames;
+    if (frames <= 0) return 0;
+
+    std::vector<s16> buffer(static_cast<size_t>(frames) * 2);
+    int read = nds.SPU.ReadOutput(buffer.data(), frames);
+    if (read > 0) {
+        env->SetShortArrayRegion(outSamples, 0, read * 2, reinterpret_cast<jshort*>(buffer.data()));
+    }
+    return read;
 }
 
 }  // extern "C"

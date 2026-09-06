@@ -15,6 +15,7 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
 
         val width: Int by lazy { nativeGetWidth() }
         val height: Int by lazy { nativeGetHeight() }
+        val audioSampleRateHz: Int by lazy { nativeGetAudioSampleRate() }
 
         /** Returns null if the ROM isn't an NDS ROM melonDS recognizes. savePath may be null to skip persistence. */
         fun load(rom: ByteArray, savePath: String?): DsNative? {
@@ -23,7 +24,21 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
             return DsNative(handle)
         }
 
+        /**
+         * Reads the ROM directly off disk on the native side instead of
+         * through a Java byte[] -- use this one, not [load], for
+         * anything but a tiny ROM. NDS ROMs run 128-512MB; round-tripping
+         * that through a base64 JS-bridge string (as the GB/GBA picker
+         * flow does) reliably OOMs. See RomFilePickerModule.pickRomPath.
+         */
+        fun loadFromPath(romPath: String, savePath: String?): DsNative? {
+            val handle = nativeCreateFromPath(romPath, savePath)
+            if (handle == 0L) return null
+            return DsNative(handle)
+        }
+
         @JvmStatic private external fun nativeCreate(rom: ByteArray, savePath: String?): Long
+        @JvmStatic private external fun nativeCreateFromPath(romPath: String, savePath: String?): Long
         @JvmStatic private external fun nativeDestroy(handle: Long)
         @JvmStatic private external fun nativeRunFrame(handle: Long)
         @JvmStatic private external fun nativeGetWidth(): Int
@@ -32,6 +47,8 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeSetButtonPressed(handle: Long, buttonId: Int, pressed: Boolean)
         @JvmStatic private external fun nativeTouchScreen(handle: Long, x: Int, y: Int)
         @JvmStatic private external fun nativeReleaseScreen(handle: Long)
+        @JvmStatic private external fun nativeGetAudioSampleRate(): Int
+        @JvmStatic private external fun nativeReadAudioSamples(handle: Long, outSamples: ShortArray): Int
     }
 
     /** width*height ARGB_8888 pixels each, reused across calls. */
@@ -64,6 +81,12 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
     fun releaseScreen() {
         check(handle != 0L) { "DsNative used after close()" }
         nativeReleaseScreen(handle)
+    }
+
+    /** Drains pending audio into outSamples (interleaved stereo 16-bit PCM); returns frames written. */
+    fun readAudioSamples(outSamples: ShortArray): Int {
+        check(handle != 0L) { "DsNative used after close()" }
+        return nativeReadAudioSamples(handle, outSamples)
     }
 
     override fun close() {

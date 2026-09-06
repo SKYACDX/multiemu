@@ -6,6 +6,7 @@ import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
+import com.multiemu.dscore.DsPackage
 import com.multiemu.gbacore.GbaPackage
 import com.multiemu.gbcore.GameBoyPackage
 
@@ -18,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           add(GameBoyPackage())
           add(GbaPackage())
+          add(DsPackage())
         },
     )
   }
