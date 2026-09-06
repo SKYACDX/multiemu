@@ -63,6 +63,14 @@ JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaNative_nativeCreate(JNIEnv*
     }
 
     core->init(core);
+    // mCoreInitConfig only initializes core->config's internal table (no
+    // file I/O); mCoreLoadForeignConfig maps it into core->opts. Without
+    // this, core->opts is whatever GBACoreCreate zero-initialized it to,
+    // which happens to be fine for most fields but is undocumented --
+    // this matches the sequence every real mGBA frontend uses (see
+    // src/platform/sdl/main.c) instead of relying on that being safe.
+    mCoreInitConfig(core, "gba");
+    mCoreLoadForeignConfig(core, &core->config);
 
     auto* instance = new GbaInstance();
     instance->core = core;
@@ -71,6 +79,7 @@ JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaNative_nativeCreate(JNIEnv*
     core->setVideoBuffer(core, instance->videoBuffer.data(), instance->width);
 
     if (!core->loadROM(core, vf)) {
+        mCoreConfigDeinit(&core->config);
         core->deinit(core);
         vf->close(vf);
         delete instance;
@@ -84,6 +93,7 @@ JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaNative_nativeCreate(JNIEnv*
 JNIEXPORT void JNICALL Java_com_multiemu_gbacore_GbaNative_nativeDestroy(JNIEnv*, jclass,
                                                                            jlong handle) {
     auto* instance = handleToInstance(handle);
+    mCoreConfigDeinit(&instance->core->config);
     instance->core->deinit(instance->core);
     delete instance;
 }

@@ -83,7 +83,7 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
               {item.releaseNotes ? <Text style={styles.releaseNotes}>{item.releaseNotes}</Text> : null}
             </Pressable>
           )}
-          ListEmptyComponent={<Text style={styles.empty}>Este hack no tiene parches publicados.</Text>}
+          ListEmptyComponent={<Text style={styles.empty}>Este HackRom no tiene parches publicados.</Text>}
         />
       </View>
     );
@@ -95,7 +95,7 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
         <Pressable onPress={onClose}>
           <Text style={styles.link}>{'‹ Cerrar'}</Text>
         </Pressable>
-        <Text style={styles.title}>Buscar hacks</Text>
+        <Text style={styles.title}>HackRoms</Text>
       </View>
 
       <View style={styles.platformRow}>
@@ -140,7 +140,7 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
           )}
           ListEmptyComponent={
             <Text style={styles.empty}>
-              No hay hacks publicados todavía para {PLATFORMS.find(p => p.slug === platform)?.label}.
+              No hay HackRoms publicados todavía para {PLATFORMS.find(p => p.slug === platform)?.label}.
             </Text>
           }
         />

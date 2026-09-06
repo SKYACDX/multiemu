@@ -19,6 +19,7 @@
 
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Platform,
   Pressable,
@@ -30,7 +31,7 @@ import {
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import RomLibraryScreen from './src/RomLibraryScreen';
-import {InvalidRomExtensionError, pickRomFile} from './src/RomFilePicker';
+import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './src/RomFilePicker';
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
 import {downloadPatchBytes, Hack, Patch} from './src/api/romHackHub';
@@ -64,18 +65,28 @@ function App(): React.JSX.Element {
   const [screen, setScreen] = useState<Screen>('game');
   const [romLabel, setRomLabel] = useState('ROM de prueba (franjas)');
   const [busy, setBusy] = useState(false);
+  const prevLabelBeforeLoad = useRef('ROM de prueba (franjas)');
 
-  const loadIntoEmulator = useCallback((bytes: Uint8Array, label: string, targetSystem: EmulatedSystem) => {
-    baseRomBytes.current = bytes;
-    setRomLabel(label);
-    setSystem(targetSystem);
-    const base64 = bytesToBase64(bytes);
-    if (targetSystem === 'gba') {
-      gbaRef.current?.loadRomBase64(base64);
-    } else {
-      gameBoyRef.current?.loadRomBase64(base64);
-    }
-  }, []);
+  // base64: pass it through when the caller already has one (e.g. fresh
+  // out of the file picker) to skip re-encoding [bytes] -- for a 16-32MB
+  // GBA ROM, encoding it a second time is slow and, combined with every
+  // other copy already in flight (native bytes, the bridge's own base64
+  // string, this decoded Uint8Array), pushes memory usage high enough to
+  // risk an OOM crash right as the ROM starts running.
+  const loadIntoEmulator = useCallback(
+    (bytes: Uint8Array, label: string, targetSystem: EmulatedSystem, base64?: string) => {
+      baseRomBytes.current = bytes;
+      setRomLabel(label);
+      setSystem(targetSystem);
+      const encoded = base64 ?? bytesToBase64(bytes);
+      if (targetSystem === 'gba') {
+        gbaRef.current?.loadRomBase64(encoded);
+      } else {
+        gameBoyRef.current?.loadRomBase64(encoded);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     // Both native views unmount (destroying their emulator instance)
@@ -92,22 +103,33 @@ function App(): React.JSX.Element {
   }, [screen, system]);
 
   const handlePickRom = useCallback(async () => {
+    prevLabelBeforeLoad.current = romLabel;
+    setBusy(true);
+    setRomLabel('Cargando ROM…');
     try {
       const picked = await pickRomFile(SUPPORTED_ROM_EXTENSIONS);
       const extension = picked.name.split('.').pop() ?? '';
-      loadIntoEmulator(base64ToBytes(picked.base64), picked.name, systemForExtension(extension));
+      loadIntoEmulator(base64ToBytes(picked.base64), picked.name, systemForExtension(extension), picked.base64);
     } catch (e) {
-      if (e instanceof InvalidRomExtensionError) {
+      if (e instanceof RomPickerCancelledError) {
+        // Cancelled by the user -- restore whatever was showing before.
+      } else if (e instanceof InvalidRomExtensionError) {
         Alert.alert('Archivo no soportado', e.message);
+      } else {
+        Alert.alert('No se pudo cargar la ROM', e instanceof Error ? e.message : String(e));
       }
-      // Cancelled by the user -- nothing to do.
+      setRomLabel(prevLabelBeforeLoad.current);
+    } finally {
+      setBusy(false);
     }
-  }, [loadIntoEmulator]);
+  }, [loadIntoEmulator, romLabel]);
 
   const handleSelectPatch = useCallback(
     async (hack: Hack, patch: Patch) => {
+      prevLabelBeforeLoad.current = romLabel;
       setScreen('game');
       setBusy(true);
+      setRomLabel('Aplicando parche…');
       try {
         const downloaded = await downloadPatchBytes(patch);
         // The patch file itself might be a .zip (some are uploaded that
@@ -126,6 +148,7 @@ function App(): React.JSX.Element {
               ? 'El .zip no contiene un parche IPS/BPS/UPS reconocible.'
               : `${patch.formatLabel} todavía no está implementado en la app.`,
           );
+          setRomLabel(prevLabelBeforeLoad.current);
           return;
         }
         const {output, warning} = applyPatch(baseRomBytes.current, patchBytes, ext);
@@ -133,11 +156,12 @@ function App(): React.JSX.Element {
         if (warning) Alert.alert('Aviso', warning);
       } catch (e) {
         Alert.alert('Error al aplicar el parche', e instanceof Error ? e.message : String(e));
+        setRomLabel(prevLabelBeforeLoad.current);
       } finally {
         setBusy(false);
       }
     },
-    [loadIntoEmulator],
+    [loadIntoEmulator, romLabel],
   );
 
   // RIGHT/LEFT/UP/DOWN/A/B/SELECT/START are valid enum constant names on
@@ -171,9 +195,12 @@ function App(): React.JSX.Element {
             <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
             <View style={styles.titleBlock}>
               <Text style={styles.title}>multiemu</Text>
-              <Text style={styles.romLabel} numberOfLines={1}>
-                {busy ? 'Aplicando parche…' : romLabel}
-              </Text>
+              <View style={styles.romLabelRow}>
+                {busy && <ActivityIndicator size="small" color="#7ab8ff" style={styles.romLabelSpinner} />}
+                <Text style={styles.romLabel} numberOfLines={1}>
+                  {romLabel}
+                </Text>
+              </View>
             </View>
             <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
           </View>
@@ -199,11 +226,17 @@ function App(): React.JSX.Element {
           </View>
 
           <View style={styles.menuRow}>
-            <Pressable style={styles.menuButton} onPress={handlePickRom}>
+            <Pressable
+              style={[styles.menuButton, busy && styles.menuButtonDisabled]}
+              disabled={busy}
+              onPress={handlePickRom}>
               <Text style={styles.menuButtonLabel}>Cargar mi ROM</Text>
             </Pressable>
-            <Pressable style={styles.menuButton} onPress={() => setScreen('library')}>
-              <Text style={styles.menuButtonLabel}>Buscar hacks</Text>
+            <Pressable
+              style={[styles.menuButton, busy && styles.menuButtonDisabled]}
+              disabled={busy}
+              onPress={() => setScreen('library')}>
+              <Text style={styles.menuButtonLabel}>Buscar HackRoms</Text>
             </Pressable>
           </View>
         </>
@@ -313,11 +346,18 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
   },
+  romLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  romLabelSpinner: {
+    marginRight: 6,
+  },
   romLabel: {
     color: '#888',
     fontSize: 12,
-    marginTop: 2,
-    maxWidth: 200,
+    maxWidth: 180,
   },
   shoulderButton: {
     width: 44,
@@ -407,6 +447,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     borderRadius: 8,
     backgroundColor: '#2f5f8f',
+  },
+  menuButtonDisabled: {
+    backgroundColor: '#2a3f52',
+    opacity: 0.6,
   },
   menuButtonLabel: {color: '#fff', fontWeight: '600'},
 });
