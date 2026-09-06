@@ -149,8 +149,9 @@ std::string LinkedGbaSession::debugState() const {
     for (int i = 0; i < 2; i++) {
         const Player& p = players_[i];
         oss << "P" << i << "[mode=" << p.node.mode << " cyc=" << p.cyclesPosted << " awake=" << p.awake
-            << " wait=" << p.waitMask << "] ";
+            << " wait=" << p.waitMask << " next=" << p.node.nextEvent << "] ";
     }
+    oss << "attached=" << lockstep_.d.attached << " transfer=" << lockstep_.d.transferActive;
     return oss.str();
 }
 
