@@ -115,6 +115,12 @@ private:
     static void unloadCb(mLockstep* ls, int id);
 
     GBASIOLockstep lockstep_{};
-    std::mutex bigLock_;  // mLockstep::lock/unlock -- guards the fields above
+    // mLockstep::lock/unlock, called imperatively (not via RAII) from
+    // scattered points in mGBA's own C code -- recursive so that if any
+    // call path ever re-enters a lock/unlock pair on the same thread
+    // (impossible to fully rule out by reading mGBA's C source alone,
+    // without a debugger to step through it), it can't self-deadlock the
+    // way a plain std::mutex would.
+    std::recursive_mutex bigLock_;
     Player players_[2];
 };

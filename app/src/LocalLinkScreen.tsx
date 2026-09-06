@@ -108,9 +108,16 @@ export default function LocalLinkScreen({onClose}: Props) {
   // pass (not just the first), and each call was tearing down and
   // recreating the whole native session, which never let it get far
   // enough to produce a single frame (hence a screen that stayed black).
+  const [connecting, setConnecting] = useState(false);
   useEffect(() => {
     if (!playing || !romA || !romB) return;
+    setConnecting(true);
     linkRef.current?.loadRoms(romA.base64, romA.romId, romB.base64, romB.romId);
+    // There's no ready/first-frame signal from native back to JS yet --
+    // this is just "please wait, don't assume it's broken instantly",
+    // not a precise readiness check.
+    const timer = setTimeout(() => setConnecting(false), 3000);
+    return () => clearTimeout(timer);
   }, [playing, romA, romB]);
 
   if (playing && romA && romB) {
@@ -118,6 +125,11 @@ export default function LocalLinkScreen({onClose}: Props) {
       <View style={styles.playContainer}>
         <StatusBar hidden />
         <GbaLinkView ref={linkRef} style={styles.linkView} />
+        {connecting && (
+          <View style={styles.connectingOverlay} pointerEvents="none">
+            <Text style={styles.connectingLabel}>Conectando ambas ROMs, espera un momento…</Text>
+          </View>
+        )}
         <View style={styles.controlsRow}>
           <MiniPad player={0} press={press} />
           <Pressable style={styles.exitButton} onPress={onClose}>
@@ -315,6 +327,24 @@ const styles = StyleSheet.create({
   startLabel: {color: '#fff', fontWeight: '700', fontSize: 15},
   playContainer: {flex: 1, backgroundColor: '#000'},
   linkView: {flex: 1},
+  connectingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    paddingTop: 100,
+  },
+  connectingLabel: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+    backgroundColor: 'rgba(30,32,39,0.9)',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    textAlign: 'center',
+  },
   controlsRow: {
     position: 'absolute',
     bottom: 0,
