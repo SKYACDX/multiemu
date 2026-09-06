@@ -23,6 +23,8 @@ target_include_directories(mgba INTERFACE
 
 add_library(gbajni SHARED
     gba_jni.cpp
+    gba_link.cpp
+    gba_link_jni.cpp
 )
 
 find_library(log-lib log)
