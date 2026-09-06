@@ -26,6 +26,12 @@ inline uint32_t toArgb8888(color_t pixel) {
 
 constexpr double kGbaFps = 59.7275005696;
 
+// Comfortably more than mGBA's own per-transfer cycle grants (2000-2048,
+// see LOCKSTEP_INCREMENT/LOCKSTEP_TRANSFER in lockstep.c) so a defensive
+// top-up (see waitCb) can't itself immediately run out again before the
+// topped-up side gets a chance to run.
+constexpr int32_t kWaitTopUpCycles = 8192;
+
 }  // namespace
 
 LinkedGbaSession::LinkedGbaSession(mCore* coreA, mCore* coreB) {
@@ -205,7 +211,8 @@ bool LinkedGbaSession::signalCb(mLockstep* ls, unsigned mask) {
         player.awake = 1;
         woke = true;
     }
-    LLOG("signal(mask=%u) waitMaskAfter=%d awake=%d woke=%d", mask, player.waitMask, player.awake, woke);
+    LLOG("signal(mask=%u) waitMaskAfter=%d awake=%d woke=%d transfer=%d", mask, player.waitMask, player.awake, woke,
+         self->lockstep_.d.transferActive);
     return woke;
 }
 
@@ -214,8 +221,27 @@ bool LinkedGbaSession::waitCb(mLockstep* ls, unsigned mask) {
     Player& player = self->players_[0];
     bool slept = false;
     player.waitMask |= static_cast<int>(mask);
-    LLOG("wait(mask=%u) waitMaskAfter=%d awakeBefore=%d", mask, player.waitMask, player.awake);
+    LLOG("wait(mask=%u) waitMaskAfter=%d awakeBefore=%d transfer=%d", mask, player.waitMask, player.awake,
+         self->lockstep_.d.transferActive);
     if (player.awake > 0) {
+        // Defensive top-up before going quiet ourselves: addCycles(0,
+        // ...) -- the only thing that ever refills the other player's
+        // cycle bank -- is called AFTER this wait() returns (see
+        // mGBA's own lockstep.c), not before. If the other player's
+        // bank also happens to hit zero at this exact instant, it
+        // blocks in useCyclesCb too, and neither side can call the
+        // addCycles that would wake the other -- confirmed live via
+        // logcat as the actual deadlock past the first one. Crediting
+        // it generously here, right before we go quiet, guarantees it
+        // has enough runway to keep running and eventually signal us.
+        for (unsigned bit = 1; bit < 2; bit++) {
+            if (!(mask & (1u << bit))) continue;
+            Player& other = self->players_[bit];
+            other.cyclesPosted += kWaitTopUpCycles;
+            self->wakePlayer(other);
+            other.awake = 1;
+        }
+
         // Set BEFORE blocking, not after -- blockPlayer releases
         // bigLock_ while it sleeps (see its own comment), so another
         // thread's signalCb can run concurrently and will check this
@@ -265,7 +291,7 @@ int32_t LinkedGbaSession::useCyclesCb(mLockstep* ls, int id, int32_t cycles) {
     auto* self = static_cast<LinkedGbaSession*>(ls->context);
     Player& p = self->players_[id];
     p.cyclesPosted -= cycles;
-    LLOG("useCycles(%d, %d) cycAfter=%d", id, cycles, p.cyclesPosted);
+    LLOG("useCycles(%d, %d) cycAfter=%d transfer=%d", id, cycles, p.cyclesPosted, self->lockstep_.d.transferActive);
     if (p.cyclesPosted <= 0) {
         // Set BEFORE blocking -- see waitCb's comment, same lost-wakeup
         // hazard applies here (addCyclesCb's id==0 branch checks this
@@ -279,8 +305,9 @@ int32_t LinkedGbaSession::useCyclesCb(mLockstep* ls, int id, int32_t cycles) {
 }
 
 int32_t LinkedGbaSession::unusedCyclesCb(mLockstep* ls, int id) {
-    int32_t v = static_cast<LinkedGbaSession*>(ls->context)->players_[id].cyclesPosted;
-    LLOG("unusedCycles(%d) = %d", id, v);
+    auto* self = static_cast<LinkedGbaSession*>(ls->context);
+    int32_t v = self->players_[id].cyclesPosted;
+    LLOG("unusedCycles(%d) = %d transfer=%d", id, v, self->lockstep_.d.transferActive);
     return v;
 }
 

@@ -46,6 +46,8 @@ class GbaLinkView(context: Context) : View(context) {
     // copyable text instead of a screenshot. Delete once confirmed working.
     private var loadFailed = false
 
+    private var frameLogCounter = 0
+
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             session?.let { s ->
@@ -54,6 +56,21 @@ class GbaLinkView(context: Context) : View(context) {
                 bitmapA?.setPixels(s.framebufferA, 0, s.width, 0, 0, s.width, s.height)
                 bitmapB?.setPixels(s.framebufferB, 0, s.width, 0, 0, s.width, s.height)
                 invalidate()
+
+                // TEMPORARY -- confirm whether the raw pixel data is ever
+                // non-black, to tell "game stuck on a black screen" apart
+                // from "the render pipeline itself never gets real data".
+                if (frameLogCounter++ % 90 == 0) {
+                    var nonZeroA = 0
+                    var nonZeroB = 0
+                    for (px in s.framebufferA) if (px != 0 && px != -0x1000000) nonZeroA++
+                    for (px in s.framebufferB) if (px != 0 && px != -0x1000000) nonZeroB++
+                    android.util.Log.d(
+                        "gba_link",
+                        "pixelCheck nonZeroA=$nonZeroA/${s.framebufferA.size} nonZeroB=$nonZeroB/${s.framebufferB.size} " +
+                            "sampleA=${s.framebufferA.take(5)} sampleB=${s.framebufferB.take(5)}",
+                    )
+                }
             }
             if (running) Choreographer.getInstance().postFrameCallback(this)
         }
