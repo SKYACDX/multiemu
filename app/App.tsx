@@ -198,25 +198,6 @@ function App(): React.JSX.Element {
     [],
   );
 
-  const handlePressSlot = useCallback(
-    (slotInfo: StateSlot) => {
-      const options: {text: string; onPress?: () => void; style?: 'cancel' | 'destructive'}[] = [
-        {text: 'Guardar aquí', onPress: () => handleSaveSlot(slotInfo.slot)},
-      ];
-      if (slotInfo.exists) {
-        options.push({text: 'Cargar', onPress: () => handleLoadSlot(slotInfo.slot)});
-      }
-      options.push({text: 'Cancelar', style: 'cancel'});
-      Alert.alert(
-        `Slot ${slotInfo.slot + 1}`,
-        slotInfo.exists
-          ? `Guardado el ${new Date(slotInfo.savedAt ?? 0).toLocaleString()}`
-          : 'Vacío',
-        options,
-      );
-    },
-    [handleLoadSlot, handleSaveSlot],
-  );
 
   useEffect(() => {
     // Both native views unmount (destroying their emulator instance)
@@ -532,16 +513,41 @@ function App(): React.JSX.Element {
           </View>
 
           {system === 'gba' && (
-            <View style={styles.slotsRow}>
-              {[0, 1, 2].map(slot => {
-                const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
-                return (
-                  <Pressable key={slot} style={styles.slotButton} onPress={() => handlePressSlot(info)}>
-                    <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
-                    <View style={[styles.slotDot, info.exists && styles.slotDotFilled]} />
-                  </Pressable>
-                );
-              })}
+            <View style={styles.slotsSection}>
+              <Text style={styles.slotsSectionTitle}>Guardado manual</Text>
+              <View style={styles.slotsRow}>
+                {[0, 1, 2].map(slot => {
+                  const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
+                  return (
+                    <View key={slot} style={styles.slotCard}>
+                      <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
+                      <Text style={styles.slotMeta} numberOfLines={1}>
+                        {info.exists
+                          ? new Date(info.savedAt ?? 0).toLocaleString(undefined, {
+                              day: '2-digit',
+                              month: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                          : 'Vacío'}
+                      </Text>
+                      <View style={styles.slotActions}>
+                        <Pressable style={styles.slotActionButton} onPress={() => handleSaveSlot(slot)}>
+                          <Text style={styles.slotActionLabel}>Guardar</Text>
+                        </Pressable>
+                        <Pressable
+                          style={[styles.slotActionButton, !info.exists && styles.slotActionButtonDisabled]}
+                          disabled={!info.exists}
+                          onPress={() => handleLoadSlot(slot)}>
+                          <Text style={[styles.slotActionLabel, !info.exists && styles.slotActionLabelDisabled]}>
+                            Cargar
+                          </Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
             </View>
           )}
         </ScrollView>
@@ -687,12 +693,12 @@ const styles = StyleSheet.create({
   // maroon for GBA, matching HomeScreen's badge colors) instead of the
   // emulator view floating bare on the background.
   consoleShell: {
-    marginTop: 20,
+    marginTop: 8,
     borderWidth: 2,
-    borderRadius: 28,
+    borderRadius: 24,
     backgroundColor: '#1e2027',
-    paddingTop: 18,
-    paddingBottom: 10,
+    paddingTop: 10,
+    paddingBottom: 6,
     paddingHorizontal: 18,
     alignItems: 'center',
     shadowColor: '#000',
@@ -721,7 +727,7 @@ const styles = StyleSheet.create({
   speakerGrill: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 14,
+    marginTop: 6,
   },
   speakerHole: {
     width: 6,
@@ -744,40 +750,57 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     width: 288 + 12,
-    marginTop: 12,
+    marginTop: 6,
   },
   speedRow: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 24,
+    marginTop: 12,
   },
   speedButton: {
-    width: 44,
-    height: 32,
+    width: 40,
+    height: 28,
     borderRadius: 8,
     backgroundColor: '#242526',
     alignItems: 'center',
     justifyContent: 'center',
   },
   speedButtonActive: {backgroundColor: '#4a90d9'},
-  speedLabel: {color: '#888', fontSize: 13, fontWeight: '700'},
+  speedLabel: {color: '#888', fontSize: 12, fontWeight: '700'},
   speedLabelActive: {color: '#fff'},
+  slotsSection: {marginTop: 14, alignItems: 'center'},
+  slotsSectionTitle: {
+    color: '#888',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
   slotsRow: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 16,
+    gap: 8,
   },
-  slotButton: {
+  slotCard: {
     alignItems: 'center',
     gap: 4,
     paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     borderRadius: 10,
     backgroundColor: '#242526',
+    width: 96,
   },
-  slotLabel: {color: '#ccc', fontSize: 12, fontWeight: '600'},
-  slotDot: {width: 6, height: 6, borderRadius: 3, backgroundColor: '#444'},
-  slotDotFilled: {backgroundColor: '#5cb85c'},
+  slotLabel: {color: '#ddd', fontSize: 12, fontWeight: '700'},
+  slotMeta: {color: '#777', fontSize: 10},
+  slotActions: {flexDirection: 'row', gap: 4, marginTop: 4},
+  slotActionButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+    backgroundColor: '#3a5a7a',
+  },
+  slotActionButtonDisabled: {backgroundColor: '#2a2a2a', opacity: 0.5},
+  slotActionLabel: {color: '#fff', fontSize: 9, fontWeight: '700'},
+  slotActionLabelDisabled: {color: '#777'},
   note: {
     color: '#fff',
     marginTop: 40,
@@ -790,15 +813,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     width: '100%',
     paddingHorizontal: 28,
-    marginTop: 28,
+    marginTop: 12,
   },
-  dpad: {width: 156, alignItems: 'center'},
+  dpad: {width: 144, alignItems: 'center'},
   dpadRow: {flexDirection: 'row'},
-  dpadSpacer: {width: 52, height: 52},
-  dpadCenter: {width: 52, height: 52, backgroundColor: '#262626'},
+  dpadSpacer: {width: 48, height: 48},
+  dpadCenter: {width: 48, height: 48, backgroundColor: '#262626'},
   dpadButton: {
-    width: 52,
-    height: 52,
+    width: 48,
+    height: 48,
     backgroundColor: '#33353c',
     alignItems: 'center',
     justifyContent: 'center',
@@ -831,7 +854,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 16,
-    marginTop: 28,
+    marginTop: 14,
   },
   pillButton: {
     paddingVertical: 8,

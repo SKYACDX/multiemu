@@ -34,7 +34,9 @@ export default function FolderScreen({folderName, files, loading, onSelectFile, 
           contentContainerStyle={styles.list}
           renderItem={({item}) => (
             <Pressable style={styles.fileRow} onPress={() => onSelectFile(item)}>
-              <IconFile size={18} color="#889" />
+              <View style={styles.fileIconCircle}>
+                <IconFile size={16} color="#cfe3fa" />
+              </View>
               <Text style={styles.fileName} numberOfLines={1}>
                 {item.name}
               </Text>
@@ -51,7 +53,7 @@ export default function FolderScreen({folderName, files, loading, onSelectFile, 
 }
 
 const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: '#1a1a1a', paddingTop: 16},
+  container: {flex: 1, backgroundColor: '#14151a', paddingTop: 16},
   header: {flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 12, gap: 12},
   backButton: {flexDirection: 'row', alignItems: 'center'},
   link: {color: '#7ab8ff', fontSize: 16},
@@ -61,10 +63,25 @@ const styles = StyleSheet.create({
   fileRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#333',
+    gap: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#1e2027',
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 2},
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  fileIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#254a70',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   fileName: {color: '#fff', fontSize: 15, flexShrink: 1, flexGrow: 1},
   fileSize: {color: '#888', fontSize: 12},

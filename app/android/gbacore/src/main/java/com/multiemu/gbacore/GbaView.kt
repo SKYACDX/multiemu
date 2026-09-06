@@ -7,7 +7,9 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.ToneGenerator
 import android.util.Log
 import android.view.Choreographer
 import android.view.View
@@ -114,6 +116,20 @@ class GbaView(context: Context) : View(context) {
             .build()
         audioTrack?.setVolume(1f)
         audioTrack?.play()
+
+        // TEMPORARY diagnostic: a short beep on the exact same stream
+        // (STREAM_MUSIC) our AudioTrack uses, completely independent of
+        // mGBA's sample pipeline. If this isn't audible either, the
+        // device's media volume/output is the actual problem, not this
+        // code -- see docs/roadmap.md or the conversation that added this
+        // for context. Safe to delete once audio is confirmed working.
+        try {
+            val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
+            toneGen.startTone(ToneGenerator.TONE_CDMA_PIP, 400)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ toneGen.release() }, 500)
+        } catch (e: Exception) {
+            Log.w(TAG, "diagnostic tone failed", e)
+        }
     }
 
     fun setButtonPressed(button: GbaButton, pressed: Boolean) {

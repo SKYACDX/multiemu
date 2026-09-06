@@ -4,7 +4,7 @@ import {CachedRom} from './RomLibraryNative';
 import {IconCartridge, IconClose, IconFile, IconFolder, IconGlobe} from './icons';
 
 const SYSTEM_LABEL: Record<string, string> = {gb: 'GB', gbc: 'GBC', gba: 'GBA'};
-const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba: '#a8465a'};
+const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba: '#c2536a'};
 
 interface Props {
   recentRoms: CachedRom[];
@@ -31,20 +31,29 @@ export default function HomeScreen({
 }: Props) {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>multiemu</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>multiemu</Text>
+        <View style={styles.titleAccent} />
+      </View>
       <Text style={styles.subtitle}>Game Boy · Game Boy Color · Game Boy Advance</Text>
 
       <View style={styles.actions}>
         <Pressable style={styles.actionButton} onPress={onPickFile}>
-          <IconFile size={22} color="#cfe3fa" />
+          <View style={[styles.actionIconCircle, {backgroundColor: '#254a70'}]}>
+            <IconFile size={20} color="#cfe3fa" />
+          </View>
           <Text style={styles.actionLabel}>Cargar un archivo</Text>
         </Pressable>
         <Pressable style={styles.actionButton} onPress={onPickFolder}>
-          <IconFolder size={22} color="#cfe3fa" />
+          <View style={[styles.actionIconCircle, {backgroundColor: '#254a70'}]}>
+            <IconFolder size={20} color="#cfe3fa" />
+          </View>
           <Text style={styles.actionLabel}>Elegir carpeta</Text>
         </Pressable>
         <Pressable style={styles.actionButton} onPress={onBrowseHackRoms}>
-          <IconGlobe size={22} color="#cfe3fa" />
+          <View style={[styles.actionIconCircle, {backgroundColor: '#254a70'}]}>
+            <IconGlobe size={20} color="#cfe3fa" />
+          </View>
           <Text style={styles.actionLabel}>Buscar HackRoms</Text>
         </Pressable>
       </View>
@@ -56,6 +65,7 @@ export default function HomeScreen({
         contentContainerStyle={styles.list}
         renderItem={({item}) => (
           <Pressable style={styles.romRow} onPress={() => onSelectRecent(item)}>
+            <View style={[styles.romAccent, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]} />
             <View style={[styles.systemBadge, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]}>
               <Text style={styles.systemBadgeLabel}>{SYSTEM_LABEL[item.system] ?? item.system.toUpperCase()}</Text>
             </View>
@@ -83,32 +93,65 @@ export default function HomeScreen({
   );
 }
 
+const CARD_SHADOW = {
+  shadowColor: '#000',
+  shadowOffset: {width: 0, height: 3},
+  shadowOpacity: 0.3,
+  shadowRadius: 5,
+  elevation: 4,
+};
+
 const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: '#1a1a1a', paddingTop: 56, paddingHorizontal: 20},
-  title: {color: '#fff', fontSize: 28, fontWeight: '800', textAlign: 'center'},
-  subtitle: {color: '#888', fontSize: 12, textAlign: 'center', marginTop: 4, marginBottom: 24},
+  container: {flex: 1, backgroundColor: '#14151a', paddingTop: 56, paddingHorizontal: 20},
+  titleRow: {alignItems: 'center'},
+  title: {color: '#fff', fontSize: 30, fontWeight: '800', textAlign: 'center', letterSpacing: 0.5},
+  titleAccent: {
+    width: 48,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#4a90d9',
+    marginTop: 6,
+  },
+  subtitle: {color: '#888', fontSize: 12, textAlign: 'center', marginTop: 10, marginBottom: 26},
   actions: {flexDirection: 'row', gap: 10, marginBottom: 28},
   actionButton: {
     flex: 1,
-    backgroundColor: '#2f5f8f',
-    borderRadius: 12,
-    paddingVertical: 14,
+    backgroundColor: '#1e2027',
+    borderRadius: 14,
+    paddingVertical: 16,
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
+    ...CARD_SHADOW,
   },
-  actionLabel: {color: '#fff', fontSize: 12, fontWeight: '600', textAlign: 'center'},
-  sectionTitle: {color: '#aaa', fontSize: 13, fontWeight: '700', marginBottom: 8, textTransform: 'uppercase'},
+  actionIconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionLabel: {color: '#ddd', fontSize: 11, fontWeight: '600', textAlign: 'center'},
+  sectionTitle: {color: '#888', fontSize: 12, fontWeight: '700', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5},
   list: {paddingBottom: 24},
   romRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#242424',
-    borderRadius: 10,
+    backgroundColor: '#1e2027',
+    borderRadius: 12,
     padding: 12,
-    marginBottom: 8,
+    marginBottom: 10,
     gap: 12,
+    overflow: 'hidden',
+    ...CARD_SHADOW,
   },
-  systemBadge: {borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4},
+  romAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+  },
+  systemBadge: {borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, marginLeft: 4},
   systemBadgeLabel: {color: '#fff', fontSize: 11, fontWeight: '800'},
   romInfo: {flex: 1},
   romLabel: {color: '#fff', fontSize: 14, fontWeight: '600'},
