@@ -1,6 +1,7 @@
 package com.multiemu.gbacore
 
 import android.util.Base64
+import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -18,14 +19,36 @@ import java.io.File
  * GB/GBC has no equivalent yet -- gbcore doesn't implement full-state
  * serialization (see docs/roadmap.md), only cartridge battery RAM.
  */
-class EmulatorControlModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+class EmulatorControlModule(reactContext: ReactApplicationContext) :
+    ReactContextBaseJavaModule(reactContext), LifecycleEventListener {
 
     companion object {
         /** Set by GbaView.onAttachedToWindow/cleared on detach -- there's at most one on screen at a time. */
         var activeGba: GbaView? = null
     }
 
+    init {
+        reactContext.addLifecycleEventListener(this)
+    }
+
     override fun getName() = "EmulatorControl"
+
+    // Pausing this way (straight from the Activity's own lifecycle)
+    // instead of round-tripping through JS's AppState was a deliberate
+    // fix: the AppState-driven version left audio audibly running (at an
+    // uneven, throttled rate) for a stretch after backgrounding --
+    // consistent with that JS bridge event not arriving promptly while
+    // the app is losing foreground. This fires as part of the Activity
+    // transition itself, no bridge round-trip needed.
+    override fun onHostPause() {
+        activeGba?.setPausedByBackground(true)
+    }
+
+    override fun onHostResume() {
+        activeGba?.setPausedByBackground(false)
+    }
+
+    override fun onHostDestroy() {}
 
     @ReactMethod
     fun saveGbaState(promise: Promise) {

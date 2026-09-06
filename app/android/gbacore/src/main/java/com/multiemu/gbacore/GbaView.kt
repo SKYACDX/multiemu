@@ -41,10 +41,20 @@ class GbaView(context: Context) : View(context) {
     // mainstream emulator just mutes during fast-forward instead.
     private var speedMultiplier = 1
 
-    // Set while the manual-save modal is open (see EmulatorControlModule /
-    // App.tsx) so the game visibly freezes instead of continuing to run
-    // (and generate audio/save-RAM writes) behind the picker.
-    private var paused = false
+    // Two independent reasons to freeze emulation, combined below --
+    // otherwise backgrounding the app while the save modal happens to be
+    // open (or vice versa) would let one path's "resume" incorrectly
+    // override the other's "stay paused".
+    // pausedByModal: the manual-save modal is open (see App.tsx).
+    // pausedByBackground: set natively from Activity onHostPause/
+    // onHostResume (see EmulatorControlModule) -- deliberately NOT
+    // driven from JS's AppState, which showed up as audio continuing (at
+    // an uneven, OS-throttled rate) for a noticeable stretch after
+    // backgrounding, consistent with the JS bridge/AppState event not
+    // reaching us promptly while the app is losing foreground.
+    private var pausedByModal = false
+    private var pausedByBackground = false
+    private val paused: Boolean get() = pausedByModal || pausedByBackground
 
     // TEMPORARY audio diagnostics, exposed via EmulatorControlModule so
     // App.tsx can show real numbers instead of guessing blind -- delete
@@ -80,7 +90,12 @@ class GbaView(context: Context) : View(context) {
     }
 
     fun setPaused(value: Boolean) {
-        paused = value
+        pausedByModal = value
+    }
+
+    /** Native-only, driven by EmulatorControlModule's Activity lifecycle listener -- not exposed to JS. */
+    fun setPausedByBackground(value: Boolean) {
+        pausedByBackground = value
     }
 
     /** e.g. "frames=48213 lastWrite=1024 trackState=3" -- see the fields above. */
@@ -102,7 +117,8 @@ class GbaView(context: Context) : View(context) {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
-        paused = false
+        pausedByModal = false
+        pausedByBackground = false
         totalAudioFramesRead = 0
         lastAudioWriteResult = Int.MIN_VALUE
 

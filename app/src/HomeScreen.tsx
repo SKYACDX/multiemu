@@ -1,6 +1,5 @@
 import React from 'react';
 import {ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
-import Svg, {Defs, RadialGradient, Rect, Stop} from 'react-native-svg';
 import {CachedRom} from './RomLibraryNative';
 import {IconAccount, IconCartridge, IconClose, IconFile, IconFolder, IconGlobe} from './icons';
 
@@ -19,21 +18,6 @@ interface Props {
   busy: boolean;
   username: string | null;
   onOpenAccount: () => void;
-}
-
-/** Faint vignette behind everything -- reads as a device screen's glass instead of a flat app background. */
-function Vignette() {
-  return (
-    <Svg style={StyleSheet.absoluteFill} width="100%" height="100%">
-      <Defs>
-        <RadialGradient id="vignette" cx="50%" cy="0%" r="85%">
-          <Stop offset="0%" stopColor="#22262f" stopOpacity={1} />
-          <Stop offset="100%" stopColor="#0e0f13" stopOpacity={1} />
-        </RadialGradient>
-      </Defs>
-      <Rect width="100%" height="100%" fill="url(#vignette)" />
-    </Svg>
-  );
 }
 
 /**
@@ -59,7 +43,6 @@ export default function HomeScreen({
 }: Props) {
   return (
     <View style={styles.container}>
-      <Vignette />
       <Pressable style={styles.accountButton} onPress={onOpenAccount} hitSlop={8}>
         <IconAccount size={18} color={username ? '#a0ffe8' : '#888'} />
         {username && <Text style={styles.accountLabel} numberOfLines={1}>{username}</Text>}

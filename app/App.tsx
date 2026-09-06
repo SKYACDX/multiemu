@@ -413,18 +413,12 @@ function App(): React.JSX.Element {
     };
   }, [screen, system, autoSaveState]);
 
-  // Pause (video/audio, both stop -- see GbaView.kt's `paused` flag) the
-  // instant the app leaves the foreground, so it doesn't keep making
-  // sound (or burning battery) from inside the recents list. Restores
-  // whatever pause state the save modal wants on the way back, instead
-  // of unconditionally unpausing into an open modal.
-  useEffect(() => {
-    if (screen !== 'game' || system !== 'gba') return;
-    const sub = AppState.addEventListener('change', state => {
-      gbaRef.current?.setPaused(state === 'active' ? saveModalOpen : true);
-    });
-    return () => sub.remove();
-  }, [screen, system, saveModalOpen]);
+  // Pausing on backgrounding is handled natively (EmulatorControlModule's
+  // Activity lifecycle listener sets GbaView's pausedByBackground
+  // directly) rather than from here -- an AppState-driven version left
+  // audio audibly running, at an uneven OS-throttled rate, for a
+  // stretch after backgrounding, consistent with that JS event not
+  // arriving promptly while the app loses foreground.
 
   // Right after loading a GBA ROM (see loadIntoEmulator below): if the
   // user is logged in and the device's save differs from the cloud's,
@@ -1332,7 +1326,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(15,16,20,0.4)',
+    backgroundColor: 'rgba(15,16,20,0.22)',
   },
   topBar: {
     flexDirection: 'row',
