@@ -123,6 +123,21 @@ export function IconCloud({size = 16, color = '#fff'}: IconProps) {
   );
 }
 
+/**
+ * A single upward-pointing triangle -- rotate it (via the `rotation` prop,
+ * degrees) for the other three D-pad directions instead of relying on
+ * Unicode arrow glyphs (▲▼◀▶), which aren't guaranteed to be in every
+ * device's default font and rendered blank for left/right on at least one
+ * test device.
+ */
+export function IconTriangle({size = 16, color = '#eee', rotation = 0}: IconProps & {rotation?: number}) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={{transform: [{rotate: `${rotation}deg`}]}}>
+      <Path d="M12 5l8 14H4z" fill={color} />
+    </Svg>
+  );
+}
+
 /** Decorative cartridge glyph -- used on the Home screen's empty state and header. */
 export function IconCartridge({size = 40, color = '#555'}: IconProps) {
   return (

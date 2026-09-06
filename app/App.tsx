@@ -24,6 +24,7 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  GestureResponderEvent,
   ImageBackground,
   Modal,
   Platform,
@@ -36,7 +37,7 @@ import {
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
-import {IconCloud, IconHome, IconSave} from './src/icons';
+import {IconCloud, IconHome, IconSave, IconTriangle} from './src/icons';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
 import HubScreen from './src/HubScreen';
@@ -90,6 +91,7 @@ const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
 type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account';
 type EmulatedSystem = 'gb' | 'gba';
+type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'SELECT' | 'START';
 
 // NDS/3DS aren't emulated yet (see docs/roadmap.md) -- only accept what
 // one of the two cores can actually run, so picking the wrong file fails
@@ -637,22 +639,19 @@ function App(): React.JSX.Element {
 
   // RIGHT/LEFT/UP/DOWN/A/B/SELECT/START are valid enum constant names on
   // both GameBoyButton and GbaButton, so the shared controls can dispatch
-  // to whichever view is currently active by name.
-  const press = (button: GameBoyButton & GbaButton, pressed: boolean) => () => {
-    if (system === 'gba') {
-      gbaRef.current?.setButtonPressed(button, pressed);
-    } else {
-      gameBoyRef.current?.setButtonPressed(button, pressed);
-    }
-  };
-
-  const shoulderPress = (button: 'L' | 'R', pressed: boolean) => () => {
-    // The original Game Boy has no shoulder buttons -- only meaningful
-    // (and wired up) when a GBA ROM is loaded.
-    if (system === 'gba') {
-      gbaRef.current?.setButtonPressed(button, pressed);
-    }
-  };
+  // to whichever view is currently active by name. L/R don't exist on
+  // GameBoyButton (the original Game Boy has no shoulder buttons) --
+  // only meaningful, and only sent, once a GBA ROM is loaded.
+  const dispatchButton = useCallback(
+    (button: PadButtonId, pressed: boolean) => {
+      if (system === 'gba') {
+        gbaRef.current?.setButtonPressed(button as GbaButton, pressed);
+      } else if (button !== 'L' && button !== 'R') {
+        gameBoyRef.current?.setButtonPressed(button as GameBoyButton, pressed);
+      }
+    },
+    [system],
+  );
 
   if (screen === 'home') {
     return (
@@ -664,12 +663,8 @@ function App(): React.JSX.Element {
           onDeleteRecent={handleDeleteRecent}
           onPickFile={handlePickRom}
           onPickFolder={handlePickFolder}
-          onBrowseHackRoms={() => {
+          onBrowseHub={() => {
             setHubInitialTab('hacks');
-            setScreen('hub');
-          }}
-          onBrowseFiles={() => {
-            setHubInitialTab('files');
             setScreen('hub');
           }}
           lastFolder={lastFolder}
@@ -786,29 +781,10 @@ function App(): React.JSX.Element {
               stay in comfortable thumb reach instead of bunching up right
               under the screen. */}
           <View style={styles.bottomGroup}>
-            {/* L/R below the screen, one per side, reachable with either thumb -- the
-                original Game Boy has no shoulder buttons, so these only do anything
-                (and light up) once a GBA ROM is loaded. */}
-            <View style={styles.shoulderRow}>
-              <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
-              <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
-            </View>
-
-            <View style={styles.padRow}>
-              <DPad press={press} />
-              <ActionButtons press={press} />
-            </View>
-
-            <View style={styles.systemRow}>
-              <Pressable style={[styles.pillButton, styles.pillButtonSelect]} onPress={press('SELECT', true)} onPressOut={press('SELECT', false)}>
-                <View style={styles.pillHighlight} />
-                <Text style={styles.pillLabel}>SELECT</Text>
-              </Pressable>
-              <Pressable style={[styles.pillButton, styles.pillButtonStart]} onPress={press('START', true)} onPressOut={press('START', false)}>
-                <View style={styles.pillHighlight} />
-                <Text style={styles.pillLabel}>START</Text>
-              </Pressable>
-            </View>
+            {/* One shared touch surface for D-pad/A/B/L/R/SELECT/START -- see
+                GameControls for why these can no longer be separate Pressables
+                (L/R only do anything, and light up, once a GBA ROM is loaded). */}
+            <GameControls system={system} dispatch={dispatchButton} />
 
             <View style={styles.speedRow}>
               {([1, 2, 3] as const).map(multiplier => (
@@ -956,87 +932,145 @@ function App(): React.JSX.Element {
   );
 }
 
-function ShoulderButton({
-  label,
-  active,
-  onPress,
-  onRelease,
-}: {
-  label: string;
-  active: boolean;
-  onPress: () => void;
-  onRelease: () => void;
-}) {
-  return (
-    <Pressable
-      style={[styles.shoulderButton, !active && styles.shoulderButtonInactive]}
-      onPressIn={onPress}
-      onPressOut={onRelease}>
-      <View style={styles.shoulderHighlight} />
-      <Text style={styles.shoulderLabel}>{label}</Text>
-    </Pressable>
-  );
-}
-
 /**
- * Cross-shaped D-pad: one solid plus-shaped body (two overlapping bars,
- * same color, so the seam is invisible) with a raised center rivet and
- * four transparent hit zones for the actual arrows -- reads as a single
- * molded piece instead of four separate square buttons.
+ * D-pad + A/B + L/R + SELECT/START as ONE surface tracking raw touches,
+ * instead of separate Pressables. RN's gesture responder system only
+ * grants "responder" to one view at a time on Android: pressing a second
+ * Pressable while the first is still held steals the responder from it,
+ * which fired its onPressOut -- exactly the "pressing A/B releases the
+ * D-pad" bug. A single parent view that never releases responder-ship
+ * and manually hit-tests every active touch against each button's
+ * measured rect is the standard fix for virtual-gamepad multitouch in
+ * plain RN (no gesture-handler dependency needed).
  */
-function DPad({press}: {press: (b: GameBoyButton & GbaButton, pressed: boolean) => () => void}) {
-  return (
-    <View style={styles.dpad}>
-      <View style={styles.dpadBarHorizontal} />
-      <View style={styles.dpadBarVertical} />
-      <View style={styles.dpadRivet} />
-      <DPadButton label="▲" button="UP" press={press} style={styles.dpadHitUp} />
-      <DPadButton label="▼" button="DOWN" press={press} style={styles.dpadHitDown} />
-      <DPadButton label="◀" button="LEFT" press={press} style={styles.dpadHitLeft} />
-      <DPadButton label="▶" button="RIGHT" press={press} style={styles.dpadHitRight} />
-    </View>
-  );
-}
-
-function DPadButton({
-  label,
-  button,
-  press,
-  style,
+function GameControls({
+  system,
+  dispatch,
 }: {
-  label: string;
-  button: GameBoyButton & GbaButton;
-  press: (b: GameBoyButton & GbaButton, pressed: boolean) => () => void;
-  style: object;
+  system: EmulatedSystem;
+  dispatch: (button: PadButtonId, pressed: boolean) => void;
 }) {
-  return (
-    <Pressable
-      style={({pressed}) => [styles.dpadHit, style, pressed && styles.dpadHitPressed]}
-      onPressIn={press(button, true)}
-      onPressOut={press(button, false)}>
-      <Text style={styles.dpadLabel}>{label}</Text>
-    </Pressable>
-  );
-}
+  type ViewRef = React.ElementRef<typeof View>;
+  const refs = useRef<Partial<Record<PadButtonId, ViewRef | null>>>({});
+  const rects = useRef<Partial<Record<PadButtonId, {x: number; y: number; w: number; h: number}>>>({});
+  const [pressed, setPressed] = useState<Set<PadButtonId>>(new Set());
 
-/** B/A staggered diagonally (B lower-left, A upper-right), matching the real hardware layout. */
-function ActionButtons({press}: {press: (b: GameBoyButton & GbaButton, pressed: boolean) => () => void}) {
+  const measureAll = useCallback(() => {
+    (Object.keys(refs.current) as PadButtonId[]).forEach(id => {
+      refs.current[id]?.measure((_x: number, _y: number, w: number, h: number, pageX: number, pageY: number) => {
+        rects.current[id] = {x: pageX, y: pageY, w, h};
+      });
+    });
+  }, []);
+
+  const setRef = useCallback(
+    (id: PadButtonId) => (node: ViewRef | null) => {
+      refs.current[id] = node;
+    },
+    [],
+  );
+
+  const updateFromTouches = useCallback(
+    (evt: GestureResponderEvent) => {
+      const touches = evt.nativeEvent.touches.length ? evt.nativeEvent.touches : [evt.nativeEvent];
+      const next = new Set<PadButtonId>();
+      for (const touch of touches) {
+        for (const id of Object.keys(rects.current) as PadButtonId[]) {
+          const r = rects.current[id];
+          if (r && touch.pageX >= r.x && touch.pageX <= r.x + r.w && touch.pageY >= r.y && touch.pageY <= r.y + r.h) {
+            next.add(id);
+          }
+        }
+      }
+      setPressed(prev => {
+        prev.forEach(id => {
+          if (!next.has(id)) dispatch(id, false);
+        });
+        next.forEach(id => {
+          if (!prev.has(id)) dispatch(id, true);
+        });
+        return next;
+      });
+    },
+    [dispatch],
+  );
+
+  const releaseAll = useCallback(() => {
+    setPressed(prev => {
+      prev.forEach(id => dispatch(id, false));
+      return new Set();
+    });
+  }, [dispatch]);
+
+  const isPressed = (id: PadButtonId) => pressed.has(id);
+
   return (
-    <View style={styles.actionCluster}>
-      <Pressable
-        style={[styles.actionButton, styles.buttonB]}
-        onPressIn={press('B', true)}
-        onPressOut={press('B', false)}>
-        <View style={styles.actionHighlight} />
-        <Text style={styles.actionLabel}>B</Text>
-      </Pressable>
-      <Pressable
-        style={[styles.actionButton, styles.buttonA]}
-        onPressIn={press('A', true)}
-        onPressOut={press('A', false)}>
-        <View style={styles.actionHighlight} />
-        <Text style={styles.actionLabel}>A</Text>
-      </Pressable>
+    <View
+      onLayout={measureAll}
+      onStartShouldSetResponder={() => true}
+      onMoveShouldSetResponder={() => true}
+      onResponderTerminationRequest={() => false}
+      onResponderGrant={updateFromTouches}
+      onResponderMove={updateFromTouches}
+      onResponderRelease={releaseAll}
+      onResponderTerminate={releaseAll}>
+      <View style={styles.shoulderRow}>
+        <View
+          ref={setRef('L')}
+          style={[styles.shoulderButton, system !== 'gba' && styles.shoulderButtonInactive, isPressed('L') && styles.shoulderButtonPressed]}>
+          <View style={styles.shoulderHighlight} />
+          <Text style={styles.shoulderLabel}>L</Text>
+        </View>
+        <View
+          ref={setRef('R')}
+          style={[styles.shoulderButton, system !== 'gba' && styles.shoulderButtonInactive, isPressed('R') && styles.shoulderButtonPressed]}>
+          <View style={styles.shoulderHighlight} />
+          <Text style={styles.shoulderLabel}>R</Text>
+        </View>
+      </View>
+
+      <View style={styles.padRow}>
+        <View style={styles.dpad}>
+          <View style={styles.dpadBarHorizontal} />
+          <View style={styles.dpadBarVertical} />
+          <View style={styles.dpadRivet} />
+          <View ref={setRef('UP')} style={[styles.dpadHit, styles.dpadHitUp, isPressed('UP') && styles.dpadHitPressed]}>
+            <IconTriangle rotation={0} />
+          </View>
+          <View ref={setRef('DOWN')} style={[styles.dpadHit, styles.dpadHitDown, isPressed('DOWN') && styles.dpadHitPressed]}>
+            <IconTriangle rotation={180} />
+          </View>
+          <View ref={setRef('LEFT')} style={[styles.dpadHit, styles.dpadHitLeft, isPressed('LEFT') && styles.dpadHitPressed]}>
+            <IconTriangle rotation={-90} />
+          </View>
+          <View ref={setRef('RIGHT')} style={[styles.dpadHit, styles.dpadHitRight, isPressed('RIGHT') && styles.dpadHitPressed]}>
+            <IconTriangle rotation={90} />
+          </View>
+        </View>
+
+        {/* B/A staggered diagonally (B lower-left, A upper-right), matching the real hardware layout. */}
+        <View style={styles.actionCluster}>
+          <View ref={setRef('B')} style={[styles.actionButton, styles.buttonB, isPressed('B') && styles.actionButtonPressed]}>
+            <View style={styles.actionHighlight} />
+            <Text style={styles.actionLabel}>B</Text>
+          </View>
+          <View ref={setRef('A')} style={[styles.actionButton, styles.buttonA, isPressed('A') && styles.actionButtonPressed]}>
+            <View style={styles.actionHighlight} />
+            <Text style={styles.actionLabel}>A</Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.systemRow}>
+        <View ref={setRef('SELECT')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('SELECT') && styles.pillButtonPressed]}>
+          <View style={styles.pillHighlight} />
+          <Text style={styles.pillLabel}>SELECT</Text>
+        </View>
+        <View ref={setRef('START')} style={[styles.pillButton, styles.pillButtonStart, isPressed('START') && styles.pillButtonPressed]}>
+          <View style={styles.pillHighlight} />
+          <Text style={styles.pillLabel}>START</Text>
+        </View>
+      </View>
     </View>
   );
 }
@@ -1115,6 +1149,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2a2a2a',
     opacity: 0.55,
   },
+  shoulderButtonPressed: {backgroundColor: '#4a72a0'},
   shoulderHighlight: {
     position: 'absolute',
     top: 0,
@@ -1135,7 +1170,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1e2027',
     paddingTop: 10,
     paddingBottom: 6,
-    paddingHorizontal: 18,
+    paddingHorizontal: 8,
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 6},
@@ -1336,7 +1371,6 @@ const styles = StyleSheet.create({
   dpadHitDown: {top: 96, left: 48},
   dpadHitLeft: {top: 48, left: 0},
   dpadHitRight: {top: 48, left: 96},
-  dpadLabel: {color: '#eee', fontSize: 18},
   actionCluster: {width: 140, height: 110, marginRight: 8},
   actionButton: {
     position: 'absolute',
@@ -1364,6 +1398,7 @@ const styles = StyleSheet.create({
   },
   buttonA: {top: 0, right: 0, backgroundColor: '#c2536a'},
   buttonB: {bottom: 0, left: 0},
+  actionButtonPressed: {opacity: 0.7},
   actionLabel: {color: '#fff', fontSize: 20, fontWeight: '700'},
   systemRow: {
     flexDirection: 'row',
@@ -1385,6 +1420,7 @@ const styles = StyleSheet.create({
   },
   pillButtonSelect: {backgroundColor: '#3a3d47'},
   pillButtonStart: {backgroundColor: '#454040'},
+  pillButtonPressed: {opacity: 0.7},
   pillHighlight: {
     position: 'absolute',
     top: 0,

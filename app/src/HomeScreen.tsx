@@ -12,8 +12,7 @@ interface Props {
   onDeleteRecent: (rom: CachedRom) => void;
   onPickFile: () => void;
   onPickFolder: () => void;
-  onBrowseHackRoms: () => void;
-  onBrowseFiles: () => void;
+  onBrowseHub: () => void;
   lastFolder: {uri: string; name: string} | null;
   onOpenLastFolder: () => void;
   busy: boolean;
@@ -33,8 +32,7 @@ export default function HomeScreen({
   onDeleteRecent,
   onPickFile,
   onPickFolder,
-  onBrowseHackRoms,
-  onBrowseFiles,
+  onBrowseHub,
   lastFolder,
   onOpenLastFolder,
   busy,
@@ -66,17 +64,11 @@ export default function HomeScreen({
           </View>
           <Text style={styles.actionLabel}>{lastFolder ? 'Cambiar carpeta' : 'Elegir carpeta'}</Text>
         </Pressable>
-        <Pressable style={styles.actionButton} onPress={onBrowseHackRoms}>
+        <Pressable style={styles.actionButton} onPress={onBrowseHub}>
           <View style={[styles.actionIconCircle, {backgroundColor: '#3f2a5c'}]}>
             <IconGlobe size={20} color="#d9c6ff" />
           </View>
-          <Text style={styles.actionLabel}>Buscar HackRoms</Text>
-        </Pressable>
-        <Pressable style={styles.actionButton} onPress={onBrowseFiles}>
-          <View style={[styles.actionIconCircle, {backgroundColor: '#1e5c4f'}]}>
-            <IconFile size={20} color="#a0ffe8" />
-          </View>
-          <Text style={styles.actionLabel}>Archivos</Text>
+          <Text style={styles.actionLabel}>HackRoms y Archivos</Text>
         </Pressable>
       </View>
 
