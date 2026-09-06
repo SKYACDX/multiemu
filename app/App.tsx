@@ -1,9 +1,14 @@
 /**
- * multiemu -- Game Boy screen.
+ * multiemu -- Game Boy / Game Boy Advance screen.
  *
- * On first launch it loads the hand-assembled test ROM (no copyrighted
- * game code -- see core/gb/tools/gen_test_rom) so the app always shows
- * something. From there the user can:
+ * GB/GBC ROMs run on core/gb, an emulator written from scratch for this
+ * project. GBA ROMs run on mGBA (third_party/mgba, MPL-2.0, vendored)
+ * instead -- writing a second CPU-accurate core (ARM7TDMI this time) was
+ * judged out of scope; see gba_jni.cpp for the integration boundary.
+ *
+ * On first launch it loads the hand-assembled GB test ROM (no
+ * copyrighted game code -- see core/gb/tools/gen_test_rom) so the app
+ * always shows something. From there the user can:
  *   - load their own legally-dumped ROM from the device, or
  *   - browse RomHack Hub's public catalog for a fan patch and apply it
  *     on top of their own base ROM (this app never downloads or ships
@@ -23,60 +28,108 @@ import {
   View,
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
+import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import RomLibraryScreen from './src/RomLibraryScreen';
-import {pickRomFile} from './src/RomFilePicker';
+import {InvalidRomExtensionError, pickRomFile} from './src/RomFilePicker';
 import {base64ToBytes, bytesToBase64} from './src/base64';
-import {applyPatch, detectPatchExt} from './src/patchers';
+import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
 import {downloadPatchBytes, Hack, Patch} from './src/api/romHackHub';
+import {extractFromZip} from './src/zip';
 import {TEST_ROM_BASE64} from './src/testRom';
 
+const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
+
 type Screen = 'game' | 'library';
+type EmulatedSystem = 'gb' | 'gba';
+
+// NDS/3DS aren't emulated yet (see docs/roadmap.md) -- only accept what
+// one of the two cores can actually run, so picking the wrong file fails
+// fast with a clear message instead of silently loading garbage.
+const SUPPORTED_ROM_EXTENSIONS = ['gb', 'gbc', 'gba'];
+
+function systemForExtension(extension: string): EmulatedSystem {
+  return extension.toLowerCase() === 'gba' ? 'gba' : 'gb';
+}
+
+/** RomHack Hub platform slugs -> which core plays that platform. */
+function systemForPlatformSlug(slug: string): EmulatedSystem {
+  return slug === 'gba' ? 'gba' : 'gb';
+}
 
 function App(): React.JSX.Element {
   const gameBoyRef = useRef<GameBoyViewHandle>(null);
+  const gbaRef = useRef<GbaViewHandle>(null);
   const baseRomBytes = useRef<Uint8Array>(base64ToBytes(TEST_ROM_BASE64));
+  const [system, setSystem] = useState<EmulatedSystem>('gb');
   const [screen, setScreen] = useState<Screen>('game');
   const [romLabel, setRomLabel] = useState('ROM de prueba (franjas)');
   const [busy, setBusy] = useState(false);
 
-  const loadIntoEmulator = useCallback((bytes: Uint8Array, label: string) => {
+  const loadIntoEmulator = useCallback((bytes: Uint8Array, label: string, targetSystem: EmulatedSystem) => {
     baseRomBytes.current = bytes;
     setRomLabel(label);
-    gameBoyRef.current?.loadRomBase64(bytesToBase64(bytes));
+    setSystem(targetSystem);
+    const base64 = bytesToBase64(bytes);
+    if (targetSystem === 'gba') {
+      gbaRef.current?.loadRomBase64(base64);
+    } else {
+      gameBoyRef.current?.loadRomBase64(base64);
+    }
   }, []);
 
   useEffect(() => {
-    // GameBoyView never auto-loads anything on its own, and it unmounts
-    // (destroying the native GameBoy instance) whenever we navigate to
-    // the library screen -- so every time it remounts, re-push whatever
-    // ROM is current (the initial test ROM, or the user's own/patched one).
-    if (screen === 'game') {
-      gameBoyRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current));
+    // Both native views unmount (destroying their emulator instance)
+    // whenever we navigate to the library screen or switch system -- so
+    // every time the active one remounts, re-push whatever ROM is
+    // current (the initial test ROM, or the user's own/patched one).
+    if (screen !== 'game') return;
+    const base64 = bytesToBase64(baseRomBytes.current);
+    if (system === 'gba') {
+      gbaRef.current?.loadRomBase64(base64);
+    } else {
+      gameBoyRef.current?.loadRomBase64(base64);
     }
-  }, [screen]);
+  }, [screen, system]);
 
   const handlePickRom = useCallback(async () => {
     try {
-      const picked = await pickRomFile();
-      loadIntoEmulator(base64ToBytes(picked.base64), picked.name);
-    } catch {
-      // User cancelled the picker -- nothing to do.
+      const picked = await pickRomFile(SUPPORTED_ROM_EXTENSIONS);
+      const extension = picked.name.split('.').pop() ?? '';
+      loadIntoEmulator(base64ToBytes(picked.base64), picked.name, systemForExtension(extension));
+    } catch (e) {
+      if (e instanceof InvalidRomExtensionError) {
+        Alert.alert('Archivo no soportado', e.message);
+      }
+      // Cancelled by the user -- nothing to do.
     }
   }, [loadIntoEmulator]);
 
   const handleSelectPatch = useCallback(
     async (hack: Hack, patch: Patch) => {
-      const ext = detectPatchExt(patch.format);
-      if (!ext) {
-        Alert.alert('Formato no soportado', `${patch.formatLabel} todavía no está implementado en la app.`);
-        return;
-      }
       setScreen('game');
       setBusy(true);
       try {
-        const patchBytes = await downloadPatchBytes(patch);
+        const downloaded = await downloadPatchBytes(patch);
+        // The patch file itself might be a .zip (some are uploaded that
+        // way) -- unzip first and trust the extracted file's own
+        // extension over the API's declared format, which describes the
+        // upload, not necessarily what's inside it.
+        const unzipped = extractFromZip(downloaded, PATCH_EXTENSIONS);
+        const patchBytes = unzipped?.bytes ?? downloaded;
+        const ext = unzipped
+          ? detectPatchExt(unzipped.name.split('.').pop() ?? '')
+          : detectPatchExt(patch.format);
+        if (!ext) {
+          Alert.alert(
+            'Formato no soportado',
+            unzipped
+              ? 'El .zip no contiene un parche IPS/BPS/UPS reconocible.'
+              : `${patch.formatLabel} todavía no está implementado en la app.`,
+          );
+          return;
+        }
         const {output, warning} = applyPatch(baseRomBytes.current, patchBytes, ext);
-        loadIntoEmulator(output, `${hack.title} v${patch.version}`);
+        loadIntoEmulator(output, `${hack.title} v${patch.version}`, systemForPlatformSlug(hack.game.platform.slug));
         if (warning) Alert.alert('Aviso', warning);
       } catch (e) {
         Alert.alert('Error al aplicar el parche', e instanceof Error ? e.message : String(e));
@@ -87,14 +140,23 @@ function App(): React.JSX.Element {
     [loadIntoEmulator],
   );
 
-  const press = (button: GameBoyButton, pressed: boolean) => () =>
-    gameBoyRef.current?.setButtonPressed(button, pressed);
+  // RIGHT/LEFT/UP/DOWN/A/B/SELECT/START are valid enum constant names on
+  // both GameBoyButton and GbaButton, so the shared controls can dispatch
+  // to whichever view is currently active by name.
+  const press = (button: GameBoyButton & GbaButton, pressed: boolean) => () => {
+    if (system === 'gba') {
+      gbaRef.current?.setButtonPressed(button, pressed);
+    } else {
+      gameBoyRef.current?.setButtonPressed(button, pressed);
+    }
+  };
 
-  const shoulderPress = (label: 'L' | 'R') => () => {
-    // The original Game Boy has no shoulder buttons -- these are wired up
-    // for when GBA/NDS cores land (see docs/roadmap.md), so for now they
-    // intentionally do nothing on a GB/GBC ROM.
-    void label;
+  const shoulderPress = (button: 'L' | 'R', pressed: boolean) => () => {
+    // The original Game Boy has no shoulder buttons -- only meaningful
+    // (and wired up) when a GBA ROM is loaded.
+    if (system === 'gba') {
+      gbaRef.current?.setButtonPressed(button, pressed);
+    }
   };
 
   if (screen === 'library') {
@@ -106,17 +168,21 @@ function App(): React.JSX.Element {
       {Platform.OS === 'android' ? (
         <>
           <View style={styles.topBar}>
-            <ShoulderButton label="L" onPress={shoulderPress('L')} />
+            <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
             <View style={styles.titleBlock}>
               <Text style={styles.title}>multiemu</Text>
               <Text style={styles.romLabel} numberOfLines={1}>
                 {busy ? 'Aplicando parche…' : romLabel}
               </Text>
             </View>
-            <ShoulderButton label="R" onPress={shoulderPress('R')} />
+            <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
           </View>
 
-          <GameBoyView ref={gameBoyRef} style={styles.screen} />
+          {system === 'gba' ? (
+            <GbaView ref={gbaRef} style={styles.screenGba} />
+          ) : (
+            <GameBoyView ref={gameBoyRef} style={styles.screen} />
+          )}
 
           <View style={styles.padRow}>
             <DPad press={press} />
@@ -148,16 +214,29 @@ function App(): React.JSX.Element {
   );
 }
 
-function ShoulderButton({label, onPress}: {label: string; onPress: () => void}) {
+function ShoulderButton({
+  label,
+  active,
+  onPress,
+  onRelease,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+  onRelease: () => void;
+}) {
   return (
-    <Pressable style={styles.shoulderButton} onPress={onPress}>
+    <Pressable
+      style={[styles.shoulderButton, !active && styles.shoulderButtonInactive]}
+      onPressIn={onPress}
+      onPressOut={onRelease}>
       <Text style={styles.shoulderLabel}>{label}</Text>
     </Pressable>
   );
 }
 
 /** Classic cross-shaped D-pad: four arrows at N/S/E/W around an empty center. */
-function DPad({press}: {press: (b: GameBoyButton, pressed: boolean) => () => void}) {
+function DPad({press}: {press: (b: GameBoyButton & GbaButton, pressed: boolean) => () => void}) {
   return (
     <View style={styles.dpad}>
       <View style={styles.dpadRow}>
@@ -185,8 +264,8 @@ function DPadButton({
   press,
 }: {
   label: string;
-  button: GameBoyButton;
-  press: (b: GameBoyButton, pressed: boolean) => () => void;
+  button: GameBoyButton & GbaButton;
+  press: (b: GameBoyButton & GbaButton, pressed: boolean) => () => void;
 }) {
   return (
     <Pressable style={styles.dpadButton} onPressIn={press(button, true)} onPressOut={press(button, false)}>
@@ -196,7 +275,7 @@ function DPadButton({
 }
 
 /** B/A staggered diagonally (B lower-left, A upper-right), matching the real hardware layout. */
-function ActionButtons({press}: {press: (b: GameBoyButton, pressed: boolean) => () => void}) {
+function ActionButtons({press}: {press: (b: GameBoyButton & GbaButton, pressed: boolean) => () => void}) {
   return (
     <View style={styles.actionCluster}>
       <Pressable
@@ -244,15 +323,24 @@ const styles = StyleSheet.create({
     width: 44,
     height: 32,
     borderRadius: 6,
-    backgroundColor: '#2a2a2a',
+    backgroundColor: '#3a5a7a',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  shoulderButtonInactive: {
+    backgroundColor: '#2a2a2a',
     opacity: 0.55,
   },
   shoulderLabel: {color: '#ccc', fontWeight: '700', fontSize: 14},
   screen: {
     width: 320,
     height: 288,
+    backgroundColor: '#000',
+    marginTop: 12,
+  },
+  screenGba: {
+    width: 320,
+    height: 213,
     backgroundColor: '#000',
     marginTop: 12,
   },

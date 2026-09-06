@@ -13,6 +13,7 @@ import {Hack, Patch, listHacks} from './api/romHackHub';
 const PLATFORMS = [
   {slug: 'gb', label: 'Game Boy'},
   {slug: 'gbc', label: 'Game Boy Color'},
+  {slug: 'gba', label: 'Game Boy Advance'},
 ];
 
 interface Props {

@@ -14,3 +14,7 @@ build/
 *.png
 node_modules/
 .DS_Store
+
+# Vendored external deps -- reproducible from third_party/README.md,
+# not worth bloating the repo with a full C source tree + prebuilt libs.
+/third_party/

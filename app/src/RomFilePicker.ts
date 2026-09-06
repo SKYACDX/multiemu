@@ -7,15 +7,34 @@ export interface PickedRom {
 }
 
 interface RomFilePickerNativeModule {
-  pickRom(): Promise<PickedRom>;
+  pickRom(extensions: string[]): Promise<PickedRom>;
 }
 
 const {RomFilePicker} = NativeModules as {RomFilePicker: RomFilePickerNativeModule};
 
+export class RomPickerCancelledError extends Error {}
+export class InvalidRomExtensionError extends Error {}
+
 /**
  * Opens Android's document picker (Storage Access Framework) so the user
- * can pick their own legally-dumped ROM file. Rejects if they cancel.
+ * can pick their own legally-dumped ROM file, restricted to the given
+ * extensions (lowercase, no dot -- e.g. ["gb", "gbc"]).
+ *
+ * SAF can only filter by MIME type, and ROM extensions don't have a
+ * registered one, so the picker itself can't be narrowed to show only
+ * matching files -- the native side instead validates the extension of
+ * whatever gets picked and rejects with a distinguishable error so the
+ * caller can show a helpful message instead of a generic failure.
  */
-export function pickRomFile(): Promise<PickedRom> {
-  return RomFilePicker.pickRom();
+export async function pickRomFile(extensions: string[]): Promise<PickedRom> {
+  try {
+    return await RomFilePicker.pickRom(extensions);
+  } catch (e) {
+    const code = (e as {code?: string} | null)?.code;
+    if (code === 'CANCELLED') throw new RomPickerCancelledError();
+    if (code === 'INVALID_EXTENSION') {
+      throw new InvalidRomExtensionError(e instanceof Error ? e.message : String(e));
+    }
+    throw e;
+  }
 }

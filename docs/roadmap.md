@@ -68,9 +68,35 @@ antes de pasar al siguiente:
     framebuffer (vía `<Image>` desde base64 al inicio, luego una vista
     nativa dedicada por rendimiento), mapeo de controles táctiles.
 
+## GBA — hecho vía mGBA (no un core propio)
+
+Escribir un segundo core CPU-accurate desde cero (ARM7TDMI, más una PPU
+bastante más compleja que la del GB) se descartó por alcance. En vez de
+eso, `app/android/gbacore/` vendoriza [mGBA](https://github.com/mgba-emu/mgba)
+(MPL-2.0, ver `docs/mgba-setup.md`) como el motor real de emulación:
+
+- `gba_jni.cpp` es un puente delgado sobre la API pública `mCore` de
+  mGBA (`mCoreFindVF`, `loadROM` vía `VFileMemChunk`, `runFrame`,
+  `setKeys`/`addKeys`/`clearKeys`) — sin lógica de emulación propia,
+  mismo espíritu que `gameboy_jni.cpp`.
+- `GbaNative.kt`/`GbaView.kt`/`GbaViewManager.kt` replican exactamente
+  la forma de `GameBoyNative`/`GameBoyView`/`GameBoyViewManager`.
+- `App.tsx` decide qué vista nativa montar (`GameBoyView` vs `GbaView`)
+  según la extensión del archivo (`.gba`) o el slug de plataforma que
+  reporta la API de RomHack Hub, y comparte D-pad/A/B/SELECT/START entre
+  ambas (los nombres de botón coinciden en ambos enums); L/R sólo hacen
+  algo cuando el sistema activo es GBA.
+- Verificado de punta a punta con una ROM de GBA real provista por el
+  usuario (Pokémon Rojo Fuego).
+
+Esto deja mGBA como el único core "no escrito para este proyecto" en el
+repo — es una integración, no una reescritura, que es exactamente el
+patrón que el punto siguiente (NDS/3DS) debería seguir.
+
 ## Cuándo evaluar NDS/3DS
 
-Solo después de tener el punto 9 (GB jugable de punta a punta en un
-dispositivo real). En ese momento, la interfaz de "core" que la app ya usa
-(step, framebuffer, input, save state) sirve de contrato para envolver
-melonDS/Lime3DS como cores alternativos, en vez de reescribir su lógica.
+Ya con GB (core propio) y GBA (mGBA) jugables de punta a punta en un
+dispositivo real, el mismo patrón de integración usado para GBA —
+vendorizar el core existente (melonDS/Lime3DS) y envolverlo con un
+puente JNI delgado, en vez de reescribir su lógica — es el camino
+directo para agregar esos dos sistemas.
