@@ -136,9 +136,11 @@ export default function LocalLinkScreen({onClose}: Props) {
         <View style={[styles.halfOverlay, styles.bottomHalfOverlay]} pointerEvents="box-none">
           <MiniPad player={1} press={press} />
         </View>
-        <Pressable style={styles.exitButton} onPress={onClose}>
-          <Text style={styles.exitLabel}>Salir</Text>
-        </Pressable>
+        <View style={styles.exitButtonWrap} pointerEvents="box-none">
+          <Pressable style={styles.exitButton} onPress={onClose}>
+            <Text style={styles.exitLabel}>Salir</Text>
+          </Pressable>
+        </View>
       </View>
     );
   }
@@ -282,11 +284,16 @@ function MiniPad({player, press}: {player: 0 | 1; press: (player: 0 | 1, button:
       onResponderMove={updateFromTouches}
       onResponderRelease={releaseAll}
       onResponderTerminate={releaseAll}>
-      {/* Move + L on the left. */}
-      <View style={styles.miniLeftGroup}>
-        <View style={[styles.miniShoulderButton, isPressed('L') && styles.miniHitPressed]} ref={setRef('L')}>
-          <Text style={styles.miniShoulderLabel}>L</Text>
-        </View>
+      {/* L/R sit at the top corners of this half, like shoulder buttons
+          on the screen's own edges -- everything else stays in the
+          bottom row. */}
+      <View style={[styles.miniShoulderButton, styles.miniShoulderLeft, isPressed('L') && styles.miniHitPressed]} ref={setRef('L')}>
+        <Text style={styles.miniShoulderLabel}>L</Text>
+      </View>
+      <View style={[styles.miniShoulderButton, styles.miniShoulderRight, isPressed('R') && styles.miniHitPressed]} ref={setRef('R')}>
+        <Text style={styles.miniShoulderLabel}>R</Text>
+      </View>
+      <View style={styles.miniBottomRow}>
         <View style={styles.miniDpad}>
           <View style={[styles.miniDpadHit, styles.miniDpadUp, isPressed('UP') && styles.miniHitPressed]} ref={setRef('UP')}>
             <IconTriangle size={12} rotation={0} />
@@ -301,20 +308,13 @@ function MiniPad({player, press}: {player: 0 | 1; press: (player: 0 | 1, button:
             <IconTriangle size={12} rotation={90} />
           </View>
         </View>
-      </View>
-      {/* Select/Start in the middle. */}
-      <View style={styles.miniCenterGroup}>
-        <View style={[styles.miniCenterButton, isPressed('SELECT') && styles.miniHitPressed]} ref={setRef('SELECT')}>
-          <Text style={styles.miniCenterLabel}>SELECT</Text>
-        </View>
-        <View style={[styles.miniCenterButton, isPressed('START') && styles.miniHitPressed]} ref={setRef('START')}>
-          <Text style={styles.miniCenterLabel}>START</Text>
-        </View>
-      </View>
-      {/* A/B + R on the right. */}
-      <View style={styles.miniRightGroup}>
-        <View style={[styles.miniShoulderButton, isPressed('R') && styles.miniHitPressed]} ref={setRef('R')}>
-          <Text style={styles.miniShoulderLabel}>R</Text>
+        <View style={styles.miniCenterGroup}>
+          <View style={[styles.miniCenterButton, isPressed('SELECT') && styles.miniHitPressed]} ref={setRef('SELECT')}>
+            <Text style={styles.miniCenterLabel}>SELECT</Text>
+          </View>
+          <View style={[styles.miniCenterButton, isPressed('START') && styles.miniHitPressed]} ref={setRef('START')}>
+            <Text style={styles.miniCenterLabel}>START</Text>
+          </View>
         </View>
         <View style={styles.miniActionCluster}>
           <View style={[styles.miniActionButton, styles.miniButtonB, isPressed('B') && styles.miniHitPressed]} ref={setRef('B')}>
@@ -376,27 +376,33 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: '50%',
-    justifyContent: 'flex-end',
-    paddingHorizontal: 14,
-    paddingBottom: 10,
   },
   topHalfOverlay: {top: 0},
   bottomHalfOverlay: {top: '50%'},
+  // Top-center rather than a corner -- both top corners of the top half
+  // are already claimed by player 0's L/R shoulder buttons (see
+  // miniShoulderLeft/miniShoulderRight).
+  exitButtonWrap: {position: 'absolute', top: 8, left: 0, right: 0, alignItems: 'center'},
   exitButton: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
     backgroundColor: 'rgba(30,32,39,0.55)',
     borderRadius: 10,
     paddingVertical: 6,
     paddingHorizontal: 12,
   },
   exitLabel: {color: '#ffb3b3', fontSize: 11, fontWeight: '700'},
-  // Row spans the full half-width: move+L on the left, select/start in
-  // the middle, A/B+R on the right (see LocalLinkScreen's halfOverlay).
-  miniPadArea: {flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', width: '100%'},
-  miniLeftGroup: {flexDirection: 'row', alignItems: 'flex-end', gap: 8},
-  miniRightGroup: {flexDirection: 'row', alignItems: 'flex-end', gap: 8},
+  // Fills this player's whole half (see LocalLinkScreen's halfOverlay):
+  // L/R are pinned to the top corners like shoulder buttons on the
+  // screen's own edges, everything else sits in the bottom row.
+  miniPadArea: {flex: 1, paddingHorizontal: 8, paddingTop: 8, paddingBottom: 10},
+  miniBottomRow: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    bottom: 10,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+  },
   miniCenterGroup: {flexDirection: 'row', alignItems: 'flex-end', gap: 8},
   miniDpad: {width: 92, height: 92},
   // Semi-transparent (overlaid directly on the game view underneath,
@@ -430,13 +436,17 @@ const styles = StyleSheet.create({
   miniButtonB: {bottom: 0, left: 0},
   miniActionLabel: {color: '#fff', fontWeight: '700', fontSize: 13},
   miniShoulderButton: {
-    width: 34,
-    height: 26,
+    position: 'absolute',
+    top: 8,
+    width: 40,
+    height: 28,
     borderRadius: 6,
     backgroundColor: 'rgba(60,64,76,0.4)',
     alignItems: 'center',
     justifyContent: 'center',
   },
+  miniShoulderLeft: {left: 8},
+  miniShoulderRight: {right: 8},
   miniShoulderLabel: {color: '#fff', fontWeight: '700', fontSize: 11},
   miniCenterButton: {
     paddingHorizontal: 10,
