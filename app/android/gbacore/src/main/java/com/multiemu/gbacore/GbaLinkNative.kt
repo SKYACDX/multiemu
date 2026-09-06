@@ -30,6 +30,7 @@ class GbaLinkNative private constructor(private var handle: Long, val width: Int
         @JvmStatic private external fun nativeGetHeight(handle: Long): Int
         @JvmStatic private external fun nativeGetFramebuffer(handle: Long, player: Int, outPixels: IntArray)
         @JvmStatic private external fun nativeSetButtonPressed(handle: Long, player: Int, buttonId: Int, pressed: Boolean)
+        @JvmStatic private external fun nativeGetFramesRun(handle: Long, player: Int): Long
     }
 
     /** width*height ARGB_8888 pixels each, reused across calls. */
@@ -45,6 +46,12 @@ class GbaLinkNative private constructor(private var handle: Long, val width: Int
     fun setButtonPressed(player: Int, button: GbaButton, pressed: Boolean) {
         check(handle != 0L) { "GbaLinkNative used after close()" }
         nativeSetButtonPressed(handle, player, button.ordinal, pressed)
+    }
+
+    /** TEMPORARY diagnostic -- see LinkedGbaSession::framesRun. Delete once local link is confirmed working. */
+    fun framesRun(player: Int): Long {
+        check(handle != 0L) { "GbaLinkNative used after close()" }
+        return nativeGetFramesRun(handle, player)
     }
 
     override fun close() {

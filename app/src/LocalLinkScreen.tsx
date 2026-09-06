@@ -1,11 +1,11 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {Alert, GestureResponderEvent, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
+import {Alert, FlatList, GestureResponderEvent, Modal, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import GbaLinkView, {GbaLinkViewHandle} from './GbaLinkView';
 import {IconChevronLeft, IconTriangle} from './icons';
 import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './RomFilePicker';
 import {base64ToBytes} from './base64';
 import {crc32} from './patchers/crc32';
-import {saveRomToCache} from './RomLibraryNative';
+import {CachedRom, loadCachedRom, listCachedRoms, saveRomToCache} from './RomLibraryNative';
 
 type PadButton = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B';
 
@@ -32,20 +32,56 @@ export default function LocalLinkScreen({onClose}: Props) {
   const [romB, setRomB] = useState<PickedGba | null>(null);
   const [playing, setPlaying] = useState(false);
   const [picking, setPicking] = useState<'A' | 'B' | null>(null);
+  const [pickerSlot, setPickerSlot] = useState<'A' | 'B' | null>(null);
+  const [cachedRoms, setCachedRoms] = useState<CachedRom[]>([]);
   const linkRef = useRef<GbaLinkViewHandle>(null);
 
+  const refreshCachedRoms = useCallback(() => {
+    listCachedRoms()
+      .then(roms => setCachedRoms(roms.filter(r => r.system === 'gba')))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshCachedRoms();
+  }, [refreshCachedRoms]);
+
+  const applyPicked = (slot: 'A' | 'B', base64: string, name: string) => {
+    const romId = crc32(base64ToBytes(base64)).toString(16);
+    const entry = {base64, name, romId};
+    if (slot === 'A') setRomA(entry);
+    else setRomB(entry);
+  };
+
+  // ROMs downloaded via HackRoms/Archivos are already cached on-device
+  // (see App.tsx), but that cache is this app's own private storage --
+  // Android's SAF file picker below can't see it, since it only browses
+  // shared/user-visible storage. So the cache needs its own picker here
+  // too, not just a fallback to SAF for something not cached yet.
+  const pickFromCache = useCallback(async (slot: 'A' | 'B', rom: CachedRom) => {
+    setPickerSlot(null);
+    setPicking(slot);
+    try {
+      const base64 = await loadCachedRom(rom.id);
+      applyPicked(slot, base64, rom.label);
+    } catch (e) {
+      Alert.alert('No se pudo abrir esa ROM', e instanceof Error ? e.message : String(e));
+    } finally {
+      setPicking(null);
+    }
+  }, []);
+
   const pick = useCallback(async (slot: 'A' | 'B') => {
+    setPickerSlot(null);
     setPicking(slot);
     try {
       const picked = await pickRomFile(['gba']);
-      const bytes = base64ToBytes(picked.base64);
-      const romId = crc32(bytes).toString(16);
-      const entry = {base64: picked.base64, name: picked.name, romId};
-      if (slot === 'A') setRomA(entry);
-      else setRomB(entry);
-      // So it shows up in Recientes / doesn't need re-picking through SAF
-      // next time, same as any other ROM loaded elsewhere in the app.
-      saveRomToCache(picked.base64, picked.name, 'gba', picked.name).catch(() => {});
+      applyPicked(slot, picked.base64, picked.name);
+      // So it shows up here (and in Recientes) without re-picking through
+      // SAF next time, same as any other ROM loaded elsewhere in the app.
+      saveRomToCache(picked.base64, picked.name, 'gba', picked.name)
+        .then(refreshCachedRoms)
+        .catch(() => {});
     } catch (e) {
       if (e instanceof RomPickerCancelledError) {
         // Nothing to do.
@@ -57,7 +93,7 @@ export default function LocalLinkScreen({onClose}: Props) {
     } finally {
       setPicking(null);
     }
-  }, []);
+  }, [refreshCachedRoms]);
 
   const startLink = useCallback(() => {
     if (!romA || !romB) return;
@@ -108,8 +144,8 @@ export default function LocalLinkScreen({onClose}: Props) {
         conectarlas por cable de enlace en este mismo dispositivo.
       </Text>
 
-      <RomSlot label="Jugador 1" rom={romA} loading={picking === 'A'} onPick={() => pick('A')} />
-      <RomSlot label="Jugador 2" rom={romB} loading={picking === 'B'} onPick={() => pick('B')} />
+      <RomSlot label="Jugador 1" rom={romA} loading={picking === 'A'} onPick={() => setPickerSlot('A')} />
+      <RomSlot label="Jugador 2" rom={romB} loading={picking === 'B'} onPick={() => setPickerSlot('B')} />
 
       <Pressable
         style={[styles.startButton, (!romA || !romB) && styles.startButtonDisabled]}
@@ -117,6 +153,31 @@ export default function LocalLinkScreen({onClose}: Props) {
         onPress={startLink}>
         <Text style={styles.startLabel}>Conectar y jugar</Text>
       </Pressable>
+
+      <Modal visible={pickerSlot != null} transparent animationType="fade" onRequestClose={() => setPickerSlot(null)}>
+        <Pressable style={styles.pickerBackdrop} onPress={() => setPickerSlot(null)}>
+          <Pressable style={styles.pickerCard} onPress={() => {}}>
+            <Text style={styles.pickerTitle}>Elegir ROM de GBA</Text>
+            <FlatList
+              data={cachedRoms}
+              keyExtractor={r => r.id}
+              style={styles.pickerList}
+              renderItem={({item}) => (
+                <Pressable style={styles.pickerRow} onPress={() => pickerSlot && pickFromCache(pickerSlot, item)}>
+                  <Text style={styles.pickerRowLabel} numberOfLines={1}>
+                    {item.label}
+                  </Text>
+                  <Text style={styles.pickerRowMeta}>{(item.size / 1024 / 1024).toFixed(1)} MB</Text>
+                </Pressable>
+              )}
+              ListEmptyComponent={<Text style={styles.pickerEmpty}>Todavía no tienes ROMs de GBA guardadas en la app.</Text>}
+            />
+            <Pressable style={styles.pickerFileButton} onPress={() => pickerSlot && pick(pickerSlot)}>
+              <Text style={styles.pickerFileLabel}>Elegir archivo del dispositivo…</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -296,4 +357,23 @@ const styles = StyleSheet.create({
   miniButtonA: {top: 0, right: 0},
   miniButtonB: {bottom: 0, left: 0},
   miniActionLabel: {color: '#fff', fontWeight: '700', fontSize: 13},
+  pickerBackdrop: {flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', padding: 24},
+  pickerCard: {backgroundColor: '#1e2027', borderRadius: 16, padding: 16, width: '100%', maxWidth: 360, maxHeight: '70%'},
+  pickerTitle: {color: '#fff', fontSize: 15, fontWeight: '700', marginBottom: 10},
+  pickerList: {flexGrow: 0},
+  pickerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#242526',
+    marginBottom: 8,
+  },
+  pickerRowLabel: {color: '#ddd', fontSize: 13, flex: 1, marginRight: 8},
+  pickerRowMeta: {color: '#888', fontSize: 11},
+  pickerEmpty: {color: '#777', fontSize: 12, textAlign: 'center', paddingVertical: 16},
+  pickerFileButton: {marginTop: 4, paddingVertical: 12, alignItems: 'center'},
+  pickerFileLabel: {color: '#7ab8ff', fontSize: 13, fontWeight: '600'},
 });

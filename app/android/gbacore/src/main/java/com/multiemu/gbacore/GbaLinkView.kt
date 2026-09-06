@@ -31,6 +31,14 @@ class GbaLinkView(context: Context) : View(context) {
     private val paint = Paint().apply { isFilterBitmap = false }
     private var running = false
 
+    // TEMPORARY diagnostics -- local link is a brand-new, unverified
+    // feature and a black screen with no error was reported with no way
+    // to tell "session never even got created" apart from "it's running
+    // but stuck/deadlocked". Delete once it's confirmed working.
+    private var loadAttempted = false
+    private var loadFailed = false
+    private val debugPaint = Paint().apply { color = android.graphics.Color.RED; textSize = 32f; isAntiAlias = true }
+
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             session?.let { s ->
@@ -56,6 +64,8 @@ class GbaLinkView(context: Context) : View(context) {
         session = instance
         bitmapA = instance?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
         bitmapB = instance?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
+        loadAttempted = true
+        loadFailed = instance == null
     }
 
     fun setButtonPressed(player: Int, button: GbaButton, pressed: Boolean) {
@@ -78,12 +88,26 @@ class GbaLinkView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val a = bitmapA ?: return
-        val b = bitmapB ?: return
+        val a = bitmapA
+        val b = bitmapB
+        if (a == null || b == null) {
+            if (loadFailed) {
+                canvas.drawText("No se pudo crear la sesión de link.", 24f, height / 2f - 20f, debugPaint)
+                canvas.drawText("¿Son ambos archivos ROMs de GBA válidas?", 24f, height / 2f + 20f, debugPaint)
+            } else if (loadAttempted) {
+                canvas.drawText("Cargando…", 24f, height / 2f, debugPaint)
+            }
+            return
+        }
         val srcRect = Rect(0, 0, a.width, a.height)
         val halfWidth = width / 2
         canvas.drawBitmap(a, srcRect, fitRect(a.width, a.height, halfWidth, height, 0), paint)
         canvas.drawBitmap(b, srcRect, fitRect(b.width, b.height, halfWidth, height, halfWidth), paint)
+
+        // TEMPORARY diagnostic -- see the field comments above.
+        session?.let { s ->
+            canvas.drawText("A:${s.framesRun(0)} B:${s.framesRun(1)}", 16f, 40f, debugPaint)
+        }
     }
 
     /**

@@ -106,4 +106,10 @@ JNIEXPORT void JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeSetButtonPr
     handleToSession(handle)->setButtonPressed(player, buttonId, pressed == JNI_TRUE);
 }
 
+// TEMPORARY diagnostic -- see LinkedGbaSession::framesRun.
+JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeGetFramesRun(
+    JNIEnv*, jclass, jlong handle, jint player) {
+    return static_cast<jlong>(handleToSession(handle)->framesRun(player));
+}
+
 }  // extern "C"

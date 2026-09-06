@@ -48,6 +48,14 @@ public:
     unsigned width() const { return kWidth; }
     unsigned height() const { return kHeight; }
 
+    // TEMPORARY diagnostic -- see App.tsx's debug overlay for this
+    // feature. If this stays at 0 forever, runFrame() never returned
+    // even once (most likely a lockstep deadlock); if it climbs
+    // normally, the engine itself is fine and the bug is in the
+    // rendering path instead. Delete once local link is confirmed
+    // working end-to-end.
+    uint64_t framesRun(int player) const { return players_[player].framesRun.load(std::memory_order_relaxed); }
+
 private:
     struct Player {
         mCore* core = nullptr;
@@ -70,6 +78,7 @@ private:
 
         std::thread runThread;
         std::atomic<bool> running{false};
+        std::atomic<uint64_t> framesRun{0};  // TEMPORARY diagnostic, see framesRun() above.
 
         // What the core itself renders into each runFrame() (mGBA's own
         // color_t, not yet converted to Android's ARGB_8888).

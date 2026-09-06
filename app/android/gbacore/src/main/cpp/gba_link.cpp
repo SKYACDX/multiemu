@@ -98,6 +98,7 @@ void LinkedGbaSession::runLoop(int id) {
         // see the header comment -- whenever the lockstep protocol needs
         // this side to wait on the other one.
         p.core->runFrame(p.core);
+        p.framesRun.fetch_add(1, std::memory_order_relaxed);
 
         {
             std::lock_guard<std::mutex> lock(p.frameMutex);
