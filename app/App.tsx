@@ -6,13 +6,11 @@
  * instead -- writing a second CPU-accurate core (ARM7TDMI this time) was
  * judged out of scope; see gba_jni.cpp for the integration boundary.
  *
- * On first launch it loads the hand-assembled GB test ROM (no
- * copyrighted game code -- see core/gb/tools/gen_test_rom) so the app
- * always shows something. From there the user can:
- *   - load their own legally-dumped ROM from the device, or
- *   - browse RomHack Hub's public catalog for a fan patch and apply it
- *     on top of their own base ROM (this app never downloads or ships
- *     copyrighted ROMs -- only patches, applied client-side).
+ * Navigation: Home (recent ROMs + ways to load one) -> Game (the actual
+ * emulator) -> Library (RomHack Hub) or Folder (a picked directory),
+ * both of which feed back into Game. This app never downloads or ships
+ * copyrighted ROMs -- RomHack Hub only ever serves patches, applied
+ * client-side onto a ROM the user already has.
  *
  * @format
  */
@@ -31,7 +29,21 @@ import {
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import RomLibraryScreen from './src/RomLibraryScreen';
+import HomeScreen from './src/HomeScreen';
+import FolderScreen from './src/FolderScreen';
 import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './src/RomFilePicker';
+import {
+  CachedRom,
+  deleteCachedRom,
+  FolderFile,
+  FolderPickerCancelledError,
+  listCachedRoms,
+  listRomFolder,
+  loadCachedRom,
+  pickRomFolder,
+  readRomFromFolder,
+  saveRomToCache,
+} from './src/RomLibraryNative';
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
 import {downloadPatchBytes, Hack, Patch} from './src/api/romHackHub';
@@ -40,7 +52,7 @@ import {TEST_ROM_BASE64} from './src/testRom';
 
 const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
-type Screen = 'game' | 'library';
+type Screen = 'home' | 'game' | 'library' | 'folder';
 type EmulatedSystem = 'gb' | 'gba';
 
 // NDS/3DS aren't emulated yet (see docs/roadmap.md) -- only accept what
@@ -57,15 +69,38 @@ function systemForPlatformSlug(slug: string): EmulatedSystem {
   return slug === 'gba' ? 'gba' : 'gb';
 }
 
+const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance'};
+
 function App(): React.JSX.Element {
   const gameBoyRef = useRef<GameBoyViewHandle>(null);
   const gbaRef = useRef<GbaViewHandle>(null);
   const baseRomBytes = useRef<Uint8Array>(base64ToBytes(TEST_ROM_BASE64));
+  // False until the user has actually loaded their own ROM (as opposed
+  // to the built-in test pattern) -- gates applying a HackRom patch, see
+  // handleSelectPatch: applying one against whatever happened to be
+  // loaded (often nothing of the right platform) silently produces a
+  // corrupt ROM that "loads" but shows a black screen.
+  const hasUserRom = useRef(false);
   const [system, setSystem] = useState<EmulatedSystem>('gb');
-  const [screen, setScreen] = useState<Screen>('game');
+  const [screen, setScreen] = useState<Screen>('home');
   const [romLabel, setRomLabel] = useState('ROM de prueba (franjas)');
   const [busy, setBusy] = useState(false);
   const prevLabelBeforeLoad = useRef('ROM de prueba (franjas)');
+
+  const [recentRoms, setRecentRoms] = useState<CachedRom[]>([]);
+  const [folder, setFolder] = useState<{uri: string; name: string} | null>(null);
+  const [folderFiles, setFolderFiles] = useState<FolderFile[]>([]);
+  const [folderLoading, setFolderLoading] = useState(false);
+
+  const refreshRecentRoms = useCallback(() => {
+    listCachedRoms()
+      .then(setRecentRoms)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshRecentRoms();
+  }, [refreshRecentRoms]);
 
   // base64: pass it through when the caller already has one (e.g. fresh
   // out of the file picker) to skip re-encoding [bytes] -- for a 16-32MB
@@ -78,21 +113,22 @@ function App(): React.JSX.Element {
       baseRomBytes.current = bytes;
       setRomLabel(label);
       setSystem(targetSystem);
+      setScreen('game');
       const encoded = base64 ?? bytesToBase64(bytes);
       if (targetSystem === 'gba') {
         gbaRef.current?.loadRomBase64(encoded);
       } else {
         gameBoyRef.current?.loadRomBase64(encoded);
       }
+      return encoded;
     },
     [],
   );
 
   useEffect(() => {
     // Both native views unmount (destroying their emulator instance)
-    // whenever we navigate to the library screen or switch system -- so
-    // every time the active one remounts, re-push whatever ROM is
-    // current (the initial test ROM, or the user's own/patched one).
+    // whenever we navigate away from the game screen -- so every time
+    // the active one remounts, re-push whatever ROM is current.
     if (screen !== 'game') return;
     const base64 = bytesToBase64(baseRomBytes.current);
     if (system === 'gba') {
@@ -109,7 +145,12 @@ function App(): React.JSX.Element {
     try {
       const picked = await pickRomFile(SUPPORTED_ROM_EXTENSIONS);
       const extension = picked.name.split('.').pop() ?? '';
-      loadIntoEmulator(base64ToBytes(picked.base64), picked.name, systemForExtension(extension), picked.base64);
+      const targetSystem = systemForExtension(extension);
+      loadIntoEmulator(base64ToBytes(picked.base64), picked.name, targetSystem, picked.base64);
+      hasUserRom.current = true;
+      saveRomToCache(picked.base64, picked.name, targetSystem, picked.name)
+        .then(refreshRecentRoms)
+        .catch(() => {});
     } catch (e) {
       if (e instanceof RomPickerCancelledError) {
         // Cancelled by the user -- restore whatever was showing before.
@@ -122,10 +163,95 @@ function App(): React.JSX.Element {
     } finally {
       setBusy(false);
     }
-  }, [loadIntoEmulator, romLabel]);
+  }, [loadIntoEmulator, refreshRecentRoms, romLabel]);
+
+  const handlePickFolder = useCallback(async () => {
+    try {
+      const picked = await pickRomFolder();
+      setFolder(picked);
+      setScreen('folder');
+      setFolderLoading(true);
+      const files = await listRomFolder(picked.uri, SUPPORTED_ROM_EXTENSIONS);
+      setFolderFiles(files);
+    } catch (e) {
+      if (!(e instanceof FolderPickerCancelledError)) {
+        Alert.alert('No se pudo abrir la carpeta', e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setFolderLoading(false);
+    }
+  }, []);
+
+  const handleSelectFolderFile = useCallback(
+    async (file: FolderFile) => {
+      setBusy(true);
+      setRomLabel('Cargando ROM…');
+      try {
+        const read = await readRomFromFolder(file.uri, SUPPORTED_ROM_EXTENSIONS);
+        const extension = read.name.split('.').pop() ?? '';
+        const targetSystem = systemForExtension(extension);
+        loadIntoEmulator(base64ToBytes(read.base64), read.name, targetSystem, read.base64);
+        hasUserRom.current = true;
+        saveRomToCache(read.base64, read.name, targetSystem, read.name)
+          .then(refreshRecentRoms)
+          .catch(() => {});
+      } catch (e) {
+        Alert.alert('No se pudo cargar la ROM', e instanceof Error ? e.message : String(e));
+        setScreen('home');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadIntoEmulator, refreshRecentRoms],
+  );
+
+  const handleSelectRecent = useCallback(
+    async (rom: CachedRom) => {
+      setBusy(true);
+      setRomLabel('Cargando ROM…');
+      try {
+        const base64 = await loadCachedRom(rom.id);
+        const targetSystem: EmulatedSystem = rom.system === 'gba' ? 'gba' : 'gb';
+        loadIntoEmulator(base64ToBytes(base64), rom.label, targetSystem, base64);
+        hasUserRom.current = true;
+      } catch (e) {
+        Alert.alert('No se pudo abrir esa ROM', e instanceof Error ? e.message : String(e));
+        refreshRecentRoms();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadIntoEmulator, refreshRecentRoms],
+  );
+
+  const handleDeleteRecent = useCallback(
+    (rom: CachedRom) => {
+      deleteCachedRom(rom.id)
+        .then(refreshRecentRoms)
+        .catch(() => {});
+    },
+    [refreshRecentRoms],
+  );
 
   const handleSelectPatch = useCallback(
     async (hack: Hack, patch: Patch) => {
+      const targetSystem = systemForPlatformSlug(hack.game.platform.slug);
+      // Applying a patch against whatever's currently loaded only makes
+      // sense if that's the user's own ROM for the right platform --
+      // otherwise the patch (which expects a specific source ROM) either
+      // gets rejected (BPS/UPS check size/checksum) or "succeeds" against
+      // the wrong bytes and produces a ROM that loads but shows nothing.
+      if (!hasUserRom.current || system !== targetSystem) {
+        Alert.alert(
+          'Primero carga tu ROM',
+          `Este parche es para ${PLATFORM_LABEL[targetSystem]}. Carga tu propia ROM de ese sistema antes de aplicarlo.`,
+          [
+            {text: 'Cancelar', style: 'cancel'},
+            {text: 'Cargar ROM', onPress: () => handlePickRom()},
+          ],
+        );
+        return;
+      }
       prevLabelBeforeLoad.current = romLabel;
       setScreen('game');
       setBusy(true);
@@ -152,7 +278,11 @@ function App(): React.JSX.Element {
           return;
         }
         const {output, warning} = applyPatch(baseRomBytes.current, patchBytes, ext);
-        loadIntoEmulator(output, `${hack.title} v${patch.version}`, systemForPlatformSlug(hack.game.platform.slug));
+        const label = `${hack.title} v${patch.version}`;
+        const encoded = loadIntoEmulator(output, label, targetSystem);
+        saveRomToCache(encoded, `${hack.slug}-v${patch.version}.${targetSystem}`, targetSystem, label)
+          .then(refreshRecentRoms)
+          .catch(() => {});
         if (warning) Alert.alert('Aviso', warning);
       } catch (e) {
         Alert.alert('Error al aplicar el parche', e instanceof Error ? e.message : String(e));
@@ -161,7 +291,7 @@ function App(): React.JSX.Element {
         setBusy(false);
       }
     },
-    [loadIntoEmulator, romLabel],
+    [handlePickRom, loadIntoEmulator, refreshRecentRoms, romLabel, system],
   );
 
   // RIGHT/LEFT/UP/DOWN/A/B/SELECT/START are valid enum constant names on
@@ -183,6 +313,35 @@ function App(): React.JSX.Element {
     }
   };
 
+  if (screen === 'home') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <HomeScreen
+          recentRoms={recentRoms}
+          onSelectRecent={handleSelectRecent}
+          onDeleteRecent={handleDeleteRecent}
+          onPickFile={handlePickRom}
+          onPickFolder={handlePickFolder}
+          onBrowseHackRoms={() => setScreen('library')}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  if (screen === 'folder') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <FolderScreen
+          folderName={folder?.name ?? 'Carpeta'}
+          files={folderFiles}
+          loading={folderLoading}
+          onSelectFile={handleSelectFolderFile}
+          onClose={() => setScreen('home')}
+        />
+      </SafeAreaView>
+    );
+  }
+
   if (screen === 'library') {
     return <RomLibraryScreen onSelectPatch={handleSelectPatch} onClose={() => setScreen('game')} />;
   }
@@ -192,9 +351,10 @@ function App(): React.JSX.Element {
       {Platform.OS === 'android' ? (
         <>
           <View style={styles.topBar}>
-            <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
+            <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
+              <Text style={styles.homeButtonLabel}>🏠</Text>
+            </Pressable>
             <View style={styles.titleBlock}>
-              <Text style={styles.title}>multiemu</Text>
               <View style={styles.romLabelRow}>
                 {busy && <ActivityIndicator size="small" color="#7ab8ff" style={styles.romLabelSpinner} />}
                 <Text style={styles.romLabel} numberOfLines={1}>
@@ -202,7 +362,10 @@ function App(): React.JSX.Element {
                 </Text>
               </View>
             </View>
-            <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
+            <View style={styles.shoulderPair}>
+              <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
+              <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
+            </View>
           </View>
 
           {system === 'gba' ? (
@@ -225,20 +388,12 @@ function App(): React.JSX.Element {
             </Pressable>
           </View>
 
-          <View style={styles.menuRow}>
-            <Pressable
-              style={[styles.menuButton, busy && styles.menuButtonDisabled]}
-              disabled={busy}
-              onPress={handlePickRom}>
-              <Text style={styles.menuButtonLabel}>Cargar mi ROM</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.menuButton, busy && styles.menuButtonDisabled]}
-              disabled={busy}
-              onPress={() => setScreen('library')}>
-              <Text style={styles.menuButtonLabel}>Buscar HackRoms</Text>
-            </Pressable>
-          </View>
+          <Pressable
+            style={[styles.hackRomButton, busy && styles.menuButtonDisabled]}
+            disabled={busy}
+            onPress={() => setScreen('library')}>
+            <Text style={styles.menuButtonLabel}>Buscar HackRoms</Text>
+          </Pressable>
         </>
       ) : (
         <Text style={styles.note}>iOS bindings not implemented yet -- see docs/roadmap.md.</Text>
@@ -338,29 +493,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     width: '100%',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
   },
-  titleBlock: {alignItems: 'center', flexShrink: 1},
-  title: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: '700',
+  homeButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  homeButtonLabel: {fontSize: 20},
+  shoulderPair: {flexDirection: 'row', gap: 6},
+  titleBlock: {alignItems: 'center', flex: 1},
   romLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 2,
   },
   romLabelSpinner: {
     marginRight: 6,
   },
   romLabel: {
-    color: '#888',
-    fontSize: 12,
-    maxWidth: 180,
+    color: '#ccc',
+    fontSize: 13,
+    fontWeight: '600',
+    maxWidth: 220,
   },
   shoulderButton: {
-    width: 44,
+    width: 40,
     height: 32,
     borderRadius: 6,
     backgroundColor: '#3a5a7a',
@@ -371,7 +529,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2a2a2a',
     opacity: 0.55,
   },
-  shoulderLabel: {color: '#ccc', fontWeight: '700', fontSize: 14},
+  shoulderLabel: {color: '#ccc', fontWeight: '700', fontSize: 13},
   screen: {
     width: 320,
     height: 288,
@@ -437,14 +595,10 @@ const styles = StyleSheet.create({
     transform: [{rotate: '-15deg'}],
   },
   pillLabel: {color: '#ccc', fontSize: 11, fontWeight: '700'},
-  menuRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 32,
-  },
-  menuButton: {
+  hackRomButton: {
+    marginTop: 28,
     paddingVertical: 10,
-    paddingHorizontal: 18,
+    paddingHorizontal: 20,
     borderRadius: 8,
     backgroundColor: '#2f5f8f',
   },

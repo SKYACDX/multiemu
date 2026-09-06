@@ -12,8 +12,6 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReactMethod
-import java.io.ByteArrayOutputStream
-import java.util.zip.ZipInputStream
 
 private const val REQUEST_CODE_PICK_ROM = 9001
 
@@ -87,32 +85,26 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
         }
 
         val fileName = queryDisplayName(uri) ?: "rom"
-        val fileExtension = fileName.substringAfterLast('.', "").lowercase()
 
         try {
             val rawBytes = reactApplicationContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: throw IllegalStateException("No se pudo abrir el archivo")
 
-            val (bytes, name) = if (fileExtension == "zip") {
-                extractFromZip(rawBytes, allowedExtensions)
-                    ?: run {
-                        promise.reject(
-                            "NO_MATCH_IN_ZIP",
-                            "El .zip no contiene ningún archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}",
-                        )
-                        return
-                    }
-            } else {
-                if (allowedExtensions.isNotEmpty() && fileExtension !in allowedExtensions) {
-                    promise.reject(
-                        "INVALID_EXTENSION",
+            val extracted = extractFromZipIfNeeded(rawBytes, fileName, allowedExtensions)
+            if (extracted == null) {
+                val isZip = fileName.substringAfterLast('.', "").lowercase() == "zip"
+                promise.reject(
+                    if (isZip) "NO_MATCH_IN_ZIP" else "INVALID_EXTENSION",
+                    if (isZip) {
+                        "El .zip no contiene ningún archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}"
+                    } else {
                         "\"$fileName\" no es un archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}" +
-                            if (allowedExtensions.isNotEmpty()) " (también se aceptan .zip que los contengan)" else "",
-                    )
-                    return
-                }
-                rawBytes to fileName
+                            " (también se aceptan .zip que los contengan)"
+                    },
+                )
+                return
             }
+            val (bytes, name) = extracted
 
             val result = Arguments.createMap().apply {
                 putString("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
@@ -122,23 +114,6 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
             promise.resolve(result)
         } catch (e: Exception) {
             promise.reject("READ_ERROR", e.message, e)
-        }
-    }
-
-    /** Returns the bytes and filename of the first zip entry matching [allowedExtensions], or null if none does. */
-    private fun extractFromZip(zipBytes: ByteArray, allowedExtensions: List<String>): Pair<ByteArray, String>? {
-        ZipInputStream(zipBytes.inputStream()).use { zip ->
-            while (true) {
-                val entry = zip.nextEntry ?: return null
-                val entryName = entry.name.substringAfterLast('/')
-                val entryExtension = entryName.substringAfterLast('.', "").lowercase()
-                if (entry.isDirectory || (allowedExtensions.isNotEmpty() && entryExtension !in allowedExtensions)) {
-                    continue
-                }
-                val output = ByteArrayOutputStream()
-                zip.copyTo(output)
-                return output.toByteArray() to entryName
-            }
         }
     }
 

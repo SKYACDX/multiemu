@@ -5,6 +5,9 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.util.Log
 import android.view.Choreographer
 import android.view.View
@@ -14,12 +17,16 @@ private const val TAG = "GbaView"
 /**
  * GBA equivalent of gbcore's GameBoyView: owns one [GbaNative] instance,
  * drives it via [Choreographer], and paints the resulting framebuffer
- * scaled to fill the view with nearest-neighbor filtering.
+ * scaled to fill the view with nearest-neighbor filtering. Also streams
+ * mGBA's own audio synthesis to an AudioTrack -- gbcore's GameBoy has no
+ * APU yet (see docs/roadmap.md), so this is GBA-only for now.
  */
 class GbaView(context: Context) : View(context) {
 
     private var gba: GbaNative? = null
     private var bitmap: Bitmap? = null
+    private var audioTrack: AudioTrack? = null
+    private val audioBuffer = ShortArray(4096)
     private val paint = Paint().apply { isFilterBitmap = false }
     private var running = false
 
@@ -29,6 +36,11 @@ class GbaView(context: Context) : View(context) {
                 instance.runFrame()
                 bitmap?.setPixels(instance.framebuffer, 0, instance.width, 0, 0, instance.width, instance.height)
                 invalidate()
+
+                val frames = instance.readAudioSamples(audioBuffer)
+                if (frames > 0) {
+                    audioTrack?.write(audioBuffer, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING)
+                }
             }
             if (running) Choreographer.getInstance().postFrameCallback(this)
         }
@@ -37,12 +49,41 @@ class GbaView(context: Context) : View(context) {
     /** Replaces whatever ROM is currently loaded (if any) with [rom]. */
     fun loadRom(rom: ByteArray) {
         gba?.close()
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
+
         val instance = GbaNative.load(rom)
         gba = instance
         bitmap = instance?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
         if (instance == null) {
             Log.w(TAG, "loadRom: rejected (not a GBA ROM mGBA recognizes), ${rom.size} bytes")
+            return
         }
+
+        val minBufferSize = AudioTrack.getMinBufferSize(
+            instance.audioSampleRateHz,
+            AudioFormat.CHANNEL_OUT_STEREO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(instance.audioSampleRateHz)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build(),
+            )
+            .setBufferSizeInBytes(minBufferSize * 2)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        audioTrack?.play()
     }
 
     fun setButtonPressed(button: GbaButton, pressed: Boolean) {
@@ -60,6 +101,9 @@ class GbaView(context: Context) : View(context) {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         gba?.close()
         gba = null
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
         super.onDetachedFromWindow()
     }
 

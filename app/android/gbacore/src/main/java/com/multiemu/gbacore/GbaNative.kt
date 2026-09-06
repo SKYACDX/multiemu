@@ -35,7 +35,11 @@ class GbaNative private constructor(private var handle: Long, val width: Int, va
         @JvmStatic private external fun nativeGetWidth(handle: Long): Int
         @JvmStatic private external fun nativeGetHeight(handle: Long): Int
         @JvmStatic private external fun nativeSetButtonPressed(handle: Long, buttonId: Int, pressed: Boolean)
+        @JvmStatic private external fun nativeReadAudioSamples(handle: Long, outSamples: ShortArray): Int
     }
+
+    /** mGBA's GBA core always synthesizes audio at this rate (see gba_jni.cpp). */
+    val audioSampleRateHz = 96000
 
     /** width*height ARGB_8888 pixels (240*160 for GBA), reused across calls. */
     val framebuffer = IntArray(width * height)
@@ -44,6 +48,12 @@ class GbaNative private constructor(private var handle: Long, val width: Int, va
         check(handle != 0L) { "GbaNative used after close()" }
         nativeRunFrame(handle)
         nativeGetFramebuffer(handle, framebuffer)
+    }
+
+    /** Fills [outSamples] (stereo pairs) with whatever's ready; returns frames written. */
+    fun readAudioSamples(outSamples: ShortArray): Int {
+        check(handle != 0L) { "GbaNative used after close()" }
+        return nativeReadAudioSamples(handle, outSamples)
     }
 
     fun setButtonPressed(button: GbaButton, pressed: Boolean) {

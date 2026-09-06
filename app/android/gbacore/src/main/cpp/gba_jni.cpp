@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "mgba/core/blip_buf.h"
 #include "mgba/core/core.h"
 #include "mgba/internal/gba/input.h"
 #include "mgba-util/vfs.h"
@@ -124,6 +125,31 @@ JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaNative_nativeGetWidth(JNIEnv
 JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaNative_nativeGetHeight(JNIEnv*, jclass,
                                                                              jlong handle) {
     return static_cast<jint>(handleToInstance(handle)->height);
+}
+
+// Reads whatever's ready from mGBA's own audio synthesis (its GBA core
+// runs blip_set_rates(..., GBA_ARM7TDMI_FREQUENCY, 96000) internally --
+// see src/gba/audio.c -- so this is always 96000Hz stereo 16-bit PCM,
+// regardless of ROM). outSamples must be sized for stereo pairs (2
+// shorts/frame); returns the number of frames actually written, which
+// may be less than the buffer's capacity.
+JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaNative_nativeReadAudioSamples(
+    JNIEnv* env, jclass, jlong handle, jshortArray outSamples) {
+    mCore* core = handleToInstance(handle)->core;
+    blip_t* left = core->getAudioChannel(core, 0);
+    blip_t* right = core->getAudioChannel(core, 1);
+
+    int capacityFrames = env->GetArrayLength(outSamples) / 2;
+    int availableFrames = blip_samples_avail(left);
+    int frames = availableFrames < capacityFrames ? availableFrames : capacityFrames;
+    if (frames <= 0) return 0;
+
+    std::vector<int16_t> buffer(static_cast<std::size_t>(frames) * 2);
+    blip_read_samples(left, buffer.data(), frames, 1);
+    blip_read_samples(right, buffer.data() + 1, frames, 1);
+    env->SetShortArrayRegion(outSamples, 0, static_cast<jsize>(buffer.size()),
+                              reinterpret_cast<jshort*>(buffer.data()));
+    return frames;
 }
 
 // buttonId must match the ordinal of GbaButton (Kotlin side), which is
