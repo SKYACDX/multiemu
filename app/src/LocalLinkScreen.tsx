@@ -1,10 +1,11 @@
-import React, {useCallback, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {Alert, GestureResponderEvent, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import GbaLinkView, {GbaLinkViewHandle} from './GbaLinkView';
 import {IconChevronLeft, IconTriangle} from './icons';
 import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './RomFilePicker';
 import {base64ToBytes} from './base64';
 import {crc32} from './patchers/crc32';
+import {saveRomToCache} from './RomLibraryNative';
 
 type PadButton = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B';
 
@@ -42,6 +43,9 @@ export default function LocalLinkScreen({onClose}: Props) {
       const entry = {base64: picked.base64, name: picked.name, romId};
       if (slot === 'A') setRomA(entry);
       else setRomB(entry);
+      // So it shows up in Recientes / doesn't need re-picking through SAF
+      // next time, same as any other ROM loaded elsewhere in the app.
+      saveRomToCache(picked.base64, picked.name, 'gba', picked.name).catch(() => {});
     } catch (e) {
       if (e instanceof RomPickerCancelledError) {
         // Nothing to do.
@@ -64,17 +68,20 @@ export default function LocalLinkScreen({onClose}: Props) {
     linkRef.current?.setButtonPressed(player, button, pressed);
   };
 
+  // Load once when entering play mode -- onLayout fires on every layout
+  // pass (not just the first), and each call was tearing down and
+  // recreating the whole native session, which never let it get far
+  // enough to produce a single frame (hence a screen that stayed black).
+  useEffect(() => {
+    if (!playing || !romA || !romB) return;
+    linkRef.current?.loadRoms(romA.base64, romA.romId, romB.base64, romB.romId);
+  }, [playing, romA, romB]);
+
   if (playing && romA && romB) {
     return (
       <View style={styles.playContainer}>
         <StatusBar hidden />
-        <GbaLinkView
-          ref={linkRef}
-          style={styles.linkView}
-          onLayout={() => {
-            linkRef.current?.loadRoms(romA.base64, romA.romId, romB.base64, romB.romId);
-          }}
-        />
+        <GbaLinkView ref={linkRef} style={styles.linkView} />
         <View style={styles.controlsRow}>
           <MiniPad player={0} press={press} />
           <Pressable style={styles.exitButton} onPress={onClose}>

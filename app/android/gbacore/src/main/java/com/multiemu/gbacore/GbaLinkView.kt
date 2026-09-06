@@ -81,8 +81,25 @@ class GbaLinkView(context: Context) : View(context) {
         val a = bitmapA ?: return
         val b = bitmapB ?: return
         val srcRect = Rect(0, 0, a.width, a.height)
-        val half = height / 2
-        canvas.drawBitmap(a, srcRect, Rect(0, 0, width, half), paint)
-        canvas.drawBitmap(b, srcRect, Rect(0, half, width, height), paint)
+        val halfWidth = width / 2
+        canvas.drawBitmap(a, srcRect, fitRect(a.width, a.height, halfWidth, height, 0), paint)
+        canvas.drawBitmap(b, srcRect, fitRect(b.width, b.height, halfWidth, height, halfWidth), paint)
+    }
+
+    /**
+     * Centers a srcW*srcH image, aspect-preserved, inside a boxW*boxH
+     * column starting at [offsetX] -- side-by-side instead of the
+     * original top/bottom stack, which stretched each (landscape-shaped)
+     * GBA screen across the full (portrait) width and squashed it
+     * vertically. Letterboxing here instead looks like two actual GBA
+     * screens rather than two smeared strips.
+     */
+    private fun fitRect(srcW: Int, srcH: Int, boxW: Int, boxH: Int, offsetX: Int): Rect {
+        val scale = minOf(boxW.toFloat() / srcW, boxH.toFloat() / srcH)
+        val w = (srcW * scale).toInt()
+        val h = (srcH * scale).toInt()
+        val left = offsetX + (boxW - w) / 2
+        val top = (boxH - h) / 2
+        return Rect(left, top, left + w, top + h)
     }
 }
