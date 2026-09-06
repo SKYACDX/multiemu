@@ -13,6 +13,7 @@ import com.facebook.react.uimanager.ThemedReactContext
  *     (or pass null) to skip save persistence.
  *   - "setButtonPressed" [buttonName, pressed] -- buttonName must match a
  *     GbaButton enum constant name (e.g. "A", "START", "L")
+ *   - "setSpeedMultiplier" [1|2|3] -- fast-forward (mutes audio above 1x)
  */
 class GbaViewManager : SimpleViewManager<GbaView>() {
     override fun getName() = "GbaView"
@@ -32,6 +33,10 @@ class GbaViewManager : SimpleViewManager<GbaView>() {
                 val pressed = args.getBoolean(1)
                 val button = runCatching { GbaButton.valueOf(buttonName) }.getOrNull() ?: return
                 view.setButtonPressed(button, pressed)
+            }
+            "setSpeedMultiplier" -> {
+                val multiplier = args?.getDouble(0)?.toInt() ?: return
+                view.setSpeedMultiplier(multiplier)
             }
         }
     }

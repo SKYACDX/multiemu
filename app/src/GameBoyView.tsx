@@ -23,6 +23,8 @@ export interface GameBoyViewHandle {
   /** romId (e.g. the ROM's CRC32) keys its save file -- omit to skip save persistence. */
   loadRomBase64(base64: string, romId?: string): void;
   setButtonPressed(button: GameBoyButton, pressed: boolean): void;
+  /** 1/2/3x fast-forward. */
+  setSpeedMultiplier(multiplier: 1 | 2 | 3): void;
 }
 
 /**
@@ -35,7 +37,7 @@ export interface GameBoyViewHandle {
 const GameBoyView = forwardRef<GameBoyViewHandle, ViewProps>((props, ref) => {
   const nativeRef = useRef(null);
 
-  const dispatchCommand = (name: string, args: (string | boolean | null)[]) => {
+  const dispatchCommand = (name: string, args: (string | number | boolean | null)[]) => {
     const node = findNodeHandle(nativeRef.current);
     if (node == null) return;
     // Command names (not numeric IDs) work directly here since Android
@@ -51,6 +53,9 @@ const GameBoyView = forwardRef<GameBoyViewHandle, ViewProps>((props, ref) => {
     },
     setButtonPressed(button: GameBoyButton, pressed: boolean) {
       dispatchCommand('setButtonPressed', [button, pressed]);
+    },
+    setSpeedMultiplier(multiplier: 1 | 2 | 3) {
+      dispatchCommand('setSpeedMultiplier', [multiplier]);
     },
   }));
 

@@ -7,7 +7,7 @@ import com.facebook.react.uimanager.ViewManager
 
 class GbaPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
-        emptyList()
+        listOf(EmulatorControlModule(reactContext))
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =
         listOf(GbaViewManager())

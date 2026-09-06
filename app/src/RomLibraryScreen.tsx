@@ -8,7 +8,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import {Hack, Patch, listHacks} from './api/romHackHub';
+import {Game, Hack, Patch, listGames, listHacks} from './api/romHackHub';
 import {IconChevronLeft} from './icons';
 
 const PLATFORMS = [
@@ -16,6 +16,8 @@ const PLATFORMS = [
   {slug: 'gbc', label: 'Game Boy Color'},
   {slug: 'gba', label: 'Game Boy Advance'},
 ];
+
+type Mode = 'games' | 'hacks';
 
 interface Props {
   onSelectPatch: (hack: Hack, patch: Patch) => void;
@@ -28,21 +30,29 @@ interface Props {
  * patch metadata and, once picked, the patch bytes -- App.tsx is
  * responsible for supplying the user's own base ROM and running the
  * patcher.
+ *
+ * Two ways in, both ending at the same hack -> patch list: browse by
+ * game (the flow the API's own docs describe: platform -> games ->
+ * hacks) or search hacks directly by title, for when you already know
+ * the hack's name.
  */
 export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
+  const [mode, setMode] = useState<Mode>('games');
   const [platform, setPlatform] = useState('gb');
   const [query, setQuery] = useState('');
+  const [games, setGames] = useState<Game[]>([]);
+  const [selectedGame, setSelectedGame] = useState<Game | null>(null);
   const [hacks, setHacks] = useState<Hack[]>([]);
   const [selectedHack, setSelectedHack] = useState<Hack | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const search = useCallback(async () => {
+  const searchGames = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const {hacks: results} = await listHacks({platform, q: query || undefined, limit: 30});
-      setHacks(results);
+      const {games: results} = await listGames({platform, q: query || undefined, limit: 30});
+      setGames(results);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -50,10 +60,39 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
     }
   }, [platform, query]);
 
-  useEffect(() => {
-    search();
-  }, [search]);
+  const searchHacks = useCallback(
+    async (gameSlug?: string) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const {hacks: results} = await listHacks({
+          platform,
+          game: gameSlug,
+          q: gameSlug ? undefined : query || undefined,
+          limit: 30,
+        });
+        setHacks(results);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [platform, query],
+  );
 
+  useEffect(() => {
+    if (selectedHack) return;
+    if (selectedGame) {
+      searchHacks(selectedGame.slug);
+    } else if (mode === 'games') {
+      searchGames();
+    } else {
+      searchHacks();
+    }
+  }, [mode, selectedGame, selectedHack, searchGames, searchHacks]);
+
+  // Patch list for a selected hack.
   if (selectedHack) {
     return (
       <View style={styles.container}>
@@ -91,6 +130,60 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
     );
   }
 
+  // Hack list, either for a chosen game or a direct text search.
+  if (selectedGame || mode === 'hacks') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Pressable
+            style={styles.backButton}
+            onPress={() => (selectedGame ? setSelectedGame(null) : setMode('games'))}
+            hitSlop={8}>
+            <IconChevronLeft size={20} />
+            <Text style={styles.link}>Volver</Text>
+          </Pressable>
+          <Text style={styles.title} numberOfLines={1}>
+            {selectedGame ? selectedGame.title : 'Buscar por nombre'}
+          </Text>
+        </View>
+
+        {!selectedGame && (
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Buscar hacks por título..."
+            placeholderTextColor="#888"
+            value={query}
+            onChangeText={setQuery}
+            onSubmitEditing={() => searchHacks()}
+            returnKeyType="search"
+          />
+        )}
+
+        {loading ? (
+          <ActivityIndicator style={styles.spinner} color="#fff" />
+        ) : error ? (
+          <Text style={styles.errorText}>{error}</Text>
+        ) : (
+          <FlatList
+            data={hacks}
+            keyExtractor={h => h.id}
+            contentContainerStyle={styles.list}
+            renderItem={({item}) => (
+              <Pressable style={styles.hackRow} onPress={() => setSelectedHack(item)}>
+                <Text style={styles.hackTitle}>{item.title}</Text>
+                <Text style={styles.hackMeta}>
+                  {item.game.title} · {item.patches.length} parche(s) · por {item.author}
+                </Text>
+              </Pressable>
+            )}
+            ListEmptyComponent={<Text style={styles.empty}>No hay HackRoms publicados todavía aquí.</Text>}
+          />
+        )}
+      </View>
+    );
+  }
+
+  // Default: browse games for the selected platform.
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -99,6 +192,15 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
           <Text style={styles.link}>Cerrar</Text>
         </Pressable>
         <Text style={styles.title}>HackRoms</Text>
+      </View>
+
+      <View style={styles.modeRow}>
+        <Pressable style={[styles.modeTab, styles.modeTabActive]} onPress={() => {}}>
+          <Text style={styles.modeLabelActive}>Por juego</Text>
+        </Pressable>
+        <Pressable style={styles.modeTab} onPress={() => setMode('hacks')}>
+          <Text style={styles.modeLabel}>Buscar por nombre</Text>
+        </Pressable>
       </View>
 
       <View style={styles.platformRow}>
@@ -116,11 +218,11 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
 
       <TextInput
         style={styles.searchInput}
-        placeholder="Buscar por título..."
+        placeholder="Buscar juego..."
         placeholderTextColor="#888"
         value={query}
         onChangeText={setQuery}
-        onSubmitEditing={search}
+        onSubmitEditing={searchGames}
         returnKeyType="search"
       />
 
@@ -130,20 +232,18 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
         <Text style={styles.errorText}>{error}</Text>
       ) : (
         <FlatList
-          data={hacks}
-          keyExtractor={h => h.id}
+          data={games}
+          keyExtractor={g => g.id}
           contentContainerStyle={styles.list}
           renderItem={({item}) => (
-            <Pressable style={styles.hackRow} onPress={() => setSelectedHack(item)}>
+            <Pressable style={styles.hackRow} onPress={() => setSelectedGame(item)}>
               <Text style={styles.hackTitle}>{item.title}</Text>
-              <Text style={styles.hackMeta}>
-                {item.game.title} · {item.patches.length} parche(s) · por {item.author}
-              </Text>
+              <Text style={styles.hackMeta}>{item.hackCount} hack(s) publicado(s)</Text>
             </Pressable>
           )}
           ListEmptyComponent={
             <Text style={styles.empty}>
-              No hay HackRoms publicados todavía para {PLATFORMS.find(p => p.slug === platform)?.label}.
+              No hay juegos publicados todavía para {PLATFORMS.find(p => p.slug === platform)?.label}.
             </Text>
           }
         />
@@ -160,6 +260,17 @@ const styles = StyleSheet.create({
   title: {color: '#fff', fontSize: 18, fontWeight: '700', flexShrink: 1},
   subtitle: {color: '#aaa', paddingHorizontal: 16, marginBottom: 8},
   description: {color: '#ccc', paddingHorizontal: 16, marginBottom: 8},
+  modeRow: {flexDirection: 'row', paddingHorizontal: 16, gap: 8, marginBottom: 12},
+  modeTab: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#242526',
+    alignItems: 'center',
+  },
+  modeTabActive: {backgroundColor: '#2f5f8f'},
+  modeLabel: {color: '#999', fontSize: 13, fontWeight: '600'},
+  modeLabelActive: {color: '#fff', fontSize: 13, fontWeight: '700'},
   platformRow: {flexDirection: 'row', paddingHorizontal: 16, gap: 8, marginBottom: 8},
   platformTab: {paddingVertical: 6, paddingHorizontal: 14, borderRadius: 16, backgroundColor: '#333'},
   platformTabActive: {backgroundColor: '#4a90d9'},

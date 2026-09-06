@@ -58,10 +58,10 @@ class GameBoyNative private constructor(private var handle: Long) : AutoCloseabl
     /** 160*144 ARGB_8888 pixels, reused across calls -- copy it if you need to keep a frame around. */
     val framebuffer = IntArray(160 * 144)
 
-    /** Runs the emulator until a full frame is ready, then refreshes [framebuffer]. */
-    fun runFrame() {
+    /** Runs [times] emulated frames (for fast-forward), then refreshes [framebuffer] once. */
+    fun runFrame(times: Int = 1) {
         check(handle != 0L) { "GameBoyNative used after close()" }
-        nativeRunFrame(handle)
+        repeat(times) { nativeRunFrame(handle) }
         nativeGetFramebuffer(handle, framebuffer)
     }
 

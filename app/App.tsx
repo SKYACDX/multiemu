@@ -22,8 +22,11 @@ import {
   Platform,
   Pressable,
   SafeAreaView,
+  ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
@@ -45,6 +48,13 @@ import {
   readRomFromFolder,
   saveRomToCache,
 } from './src/RomLibraryNative';
+import {
+  listStateSlots,
+  loadStateSlot,
+  saveStateSlot,
+  StateSlot,
+} from './src/RomLibraryNative';
+import {loadGbaState, saveGbaState} from './src/EmulatorControlNative';
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
@@ -99,6 +109,13 @@ function App(): React.JSX.Element {
   const [folderFiles, setFolderFiles] = useState<FolderFile[]>([]);
   const [folderLoading, setFolderLoading] = useState(false);
 
+  const [speed, setSpeed] = useState<1 | 2 | 3>(1);
+  // Manual save states -- only GBA (mGBA exposes full-state save/load
+  // out of the box; gbcore doesn't implement that yet, see docs/roadmap.md).
+  const [stateSlots, setStateSlots] = useState<StateSlot[]>([]);
+  const {width, height} = useWindowDimensions();
+  const isLandscape = width > height;
+
   const refreshRecentRoms = useCallback(() => {
     listCachedRoms()
       .then(setRecentRoms)
@@ -122,15 +139,83 @@ function App(): React.JSX.Element {
       setRomLabel(label);
       setSystem(targetSystem);
       setScreen('game');
+      setSpeed(1);
       const encoded = base64 ?? bytesToBase64(bytes);
       if (targetSystem === 'gba') {
         gbaRef.current?.loadRomBase64(encoded, currentRomId.current);
+        gbaRef.current?.setSpeedMultiplier(1);
+        listStateSlots(currentRomId.current)
+          .then(setStateSlots)
+          .catch(() => setStateSlots([]));
       } else {
         gameBoyRef.current?.loadRomBase64(encoded, currentRomId.current);
+        gameBoyRef.current?.setSpeedMultiplier(1);
+        setStateSlots([]);
       }
       return encoded;
     },
     [],
+  );
+
+  const handleSetSpeed = useCallback(
+    (multiplier: 1 | 2 | 3) => {
+      setSpeed(multiplier);
+      if (system === 'gba') {
+        gbaRef.current?.setSpeedMultiplier(multiplier);
+      } else {
+        gameBoyRef.current?.setSpeedMultiplier(multiplier);
+      }
+    },
+    [system],
+  );
+
+  const handleSaveSlot = useCallback(
+    async (slot: number) => {
+      const romId = currentRomId.current;
+      if (!romId) return;
+      try {
+        const base64 = await saveGbaState();
+        await saveStateSlot(romId, slot, base64);
+        setStateSlots(await listStateSlots(romId));
+      } catch (e) {
+        Alert.alert('No se pudo guardar', e instanceof Error ? e.message : String(e));
+      }
+    },
+    [],
+  );
+
+  const handleLoadSlot = useCallback(
+    async (slot: number) => {
+      const romId = currentRomId.current;
+      if (!romId) return;
+      try {
+        const base64 = await loadStateSlot(romId, slot);
+        await loadGbaState(base64);
+      } catch (e) {
+        Alert.alert('No se pudo cargar ese guardado', e instanceof Error ? e.message : String(e));
+      }
+    },
+    [],
+  );
+
+  const handlePressSlot = useCallback(
+    (slotInfo: StateSlot) => {
+      const options: {text: string; onPress?: () => void; style?: 'cancel' | 'destructive'}[] = [
+        {text: 'Guardar aquí', onPress: () => handleSaveSlot(slotInfo.slot)},
+      ];
+      if (slotInfo.exists) {
+        options.push({text: 'Cargar', onPress: () => handleLoadSlot(slotInfo.slot)});
+      }
+      options.push({text: 'Cancelar', style: 'cancel'});
+      Alert.alert(
+        `Slot ${slotInfo.slot + 1}`,
+        slotInfo.exists
+          ? `Guardado el ${new Date(slotInfo.savedAt ?? 0).toLocaleString()}`
+          : 'Vacío',
+        options,
+      );
+    },
+    [handleLoadSlot, handleSaveSlot],
   );
 
   useEffect(() => {
@@ -142,10 +227,13 @@ function App(): React.JSX.Element {
     if (screen !== 'game') return;
     const base64 = bytesToBase64(baseRomBytes.current);
     const romId = currentRomId.current ?? undefined;
+    setSpeed(1);
     if (system === 'gba') {
       gbaRef.current?.loadRomBase64(base64, romId);
+      gbaRef.current?.setSpeedMultiplier(1);
     } else {
       gameBoyRef.current?.loadRomBase64(base64, romId);
+      gameBoyRef.current?.setSpeedMultiplier(1);
     }
   }, [screen, system]);
 
@@ -327,6 +415,7 @@ function App(): React.JSX.Element {
   if (screen === 'home') {
     return (
       <SafeAreaView style={styles.container}>
+        <StatusBar hidden />
         <HomeScreen
           recentRoms={recentRoms}
           onSelectRecent={handleSelectRecent}
@@ -342,6 +431,7 @@ function App(): React.JSX.Element {
   if (screen === 'folder') {
     return (
       <SafeAreaView style={styles.container}>
+        <StatusBar hidden />
         <FolderScreen
           folderName={folder?.name ?? 'Carpeta'}
           files={folderFiles}
@@ -354,13 +444,26 @@ function App(): React.JSX.Element {
   }
 
   if (screen === 'library') {
-    return <RomLibraryScreen onSelectPatch={handleSelectPatch} onClose={() => setScreen('game')} />;
+    return (
+      <>
+        <StatusBar hidden />
+        <RomLibraryScreen onSelectPatch={handleSelectPatch} onClose={() => setScreen('game')} />
+      </>
+    );
   }
+
+  const screenView =
+    system === 'gba' ? (
+      <GbaView ref={gbaRef} style={styles.screenGba} />
+    ) : (
+      <GameBoyView ref={gameBoyRef} style={styles.screen} />
+    );
 
   return (
     <SafeAreaView style={styles.container}>
+      <StatusBar hidden />
       {Platform.OS === 'android' ? (
-        <>
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.topBar}>
             <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
               <IconHome size={20} />
@@ -373,41 +476,75 @@ function App(): React.JSX.Element {
                 </Text>
               </View>
             </View>
-            <View style={styles.shoulderPair}>
-              <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
-              <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
-            </View>
+            <View style={styles.homeButton} />
           </View>
 
-          <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
-            <View style={styles.screenBezel}>
-              {system === 'gba' ? (
-                <GbaView ref={gbaRef} style={styles.screenGba} />
-              ) : (
-                <GameBoyView ref={gameBoyRef} style={styles.screen} />
+          <View style={[styles.gameArea, isLandscape && styles.gameAreaLandscape]}>
+            {isLandscape && <DPad press={press} />}
+
+            <View style={styles.centerColumn}>
+              <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
+                <View style={styles.screenBezel}>{screenView}</View>
+                <View style={styles.speakerGrill}>
+                  {[0, 1, 2, 3, 4].map(i => (
+                    <View key={i} style={[styles.speakerHole, {backgroundColor: SYSTEM_ACCENT[system]}]} />
+                  ))}
+                </View>
+              </View>
+
+              {/* L/R below the screen, one per side, reachable with either thumb -- the
+                  original Game Boy has no shoulder buttons, so these only do anything
+                  (and light up) once a GBA ROM is loaded. */}
+              <View style={styles.shoulderRow}>
+                <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
+                <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
+              </View>
+
+              {!isLandscape && (
+                <View style={styles.padRow}>
+                  <DPad press={press} />
+                  <ActionButtons press={press} />
+                </View>
               )}
+
+              <View style={styles.systemRow}>
+                <Pressable style={styles.pillButton} onPress={press('SELECT', true)} onPressOut={press('SELECT', false)}>
+                  <Text style={styles.pillLabel}>SELECT</Text>
+                </Pressable>
+                <Pressable style={styles.pillButton} onPress={press('START', true)} onPressOut={press('START', false)}>
+                  <Text style={styles.pillLabel}>START</Text>
+                </Pressable>
+              </View>
             </View>
-            <View style={styles.speakerGrill}>
-              {[0, 1, 2, 3, 4].map(i => (
-                <View key={i} style={[styles.speakerHole, {backgroundColor: SYSTEM_ACCENT[system]}]} />
-              ))}
-            </View>
+
+            {isLandscape && <ActionButtons press={press} />}
           </View>
 
-          <View style={styles.padRow}>
-            <DPad press={press} />
-            <ActionButtons press={press} />
+          <View style={styles.speedRow}>
+            {([1, 2, 3] as const).map(multiplier => (
+              <Pressable
+                key={multiplier}
+                style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
+                onPress={() => handleSetSpeed(multiplier)}>
+                <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
+              </Pressable>
+            ))}
           </View>
 
-          <View style={styles.systemRow}>
-            <Pressable style={styles.pillButton} onPress={press('SELECT', true)} onPressOut={press('SELECT', false)}>
-              <Text style={styles.pillLabel}>SELECT</Text>
-            </Pressable>
-            <Pressable style={styles.pillButton} onPress={press('START', true)} onPressOut={press('START', false)}>
-              <Text style={styles.pillLabel}>START</Text>
-            </Pressable>
-          </View>
-        </>
+          {system === 'gba' && (
+            <View style={styles.slotsRow}>
+              {[0, 1, 2].map(slot => {
+                const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
+                return (
+                  <Pressable key={slot} style={styles.slotButton} onPress={() => handlePressSlot(info)}>
+                    <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
+                    <View style={[styles.slotDot, info.exists && styles.slotDotFilled]} />
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </ScrollView>
       ) : (
         <Text style={styles.note}>iOS bindings not implemented yet -- see docs/roadmap.md.</Text>
       )}
@@ -499,7 +636,11 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#14151a',
+  },
+  scrollContent: {
+    flexGrow: 1,
     alignItems: 'center',
+    paddingBottom: 24,
   },
   topBar: {
     flexDirection: 'row',
@@ -514,7 +655,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  shoulderPair: {flexDirection: 'row', gap: 6},
   titleBlock: {alignItems: 'center', flex: 1},
   romLabelRow: {
     flexDirection: 'row',
@@ -589,6 +729,55 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     opacity: 0.6,
   },
+  gameArea: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  gameAreaLandscape: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+  },
+  centerColumn: {alignItems: 'center'},
+  shoulderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: 288 + 12,
+    marginTop: 12,
+  },
+  speedRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 24,
+  },
+  speedButton: {
+    width: 44,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#242526',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  speedButtonActive: {backgroundColor: '#4a90d9'},
+  speedLabel: {color: '#888', fontSize: 13, fontWeight: '700'},
+  speedLabelActive: {color: '#fff'},
+  slotsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+  },
+  slotButton: {
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#242526',
+  },
+  slotLabel: {color: '#ccc', fontSize: 12, fontWeight: '600'},
+  slotDot: {width: 6, height: 6, borderRadius: 3, backgroundColor: '#444'},
+  slotDotFilled: {backgroundColor: '#5cb85c'},
   note: {
     color: '#fff',
     marginTop: 40,

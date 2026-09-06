@@ -31,21 +31,36 @@ class GbaView(context: Context) : View(context) {
     private val paint = Paint().apply { isFilterBitmap = false }
     private var running = false
 
+    // 1/2/3x. Audio is muted (but still drained, so mGBA's internal ring
+    // buffer doesn't back up) above 1x -- playing it back would mean
+    // either pitching it up or choppily dropping samples, and every
+    // mainstream emulator just mutes during fast-forward instead.
+    private var speedMultiplier = 1
+
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             gba?.let { instance ->
-                instance.runFrame()
+                instance.runFrame(speedMultiplier)
                 bitmap?.setPixels(instance.framebuffer, 0, instance.width, 0, 0, instance.width, instance.height)
                 invalidate()
 
                 val frames = instance.readAudioSamples(audioBuffer)
-                if (frames > 0) {
+                if (frames > 0 && speedMultiplier == 1) {
                     audioTrack?.write(audioBuffer, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING)
                 }
             }
             if (running) Choreographer.getInstance().postFrameCallback(this)
         }
     }
+
+    fun setSpeedMultiplier(multiplier: Int) {
+        speedMultiplier = multiplier.coerceIn(1, 3)
+    }
+
+    /** Full emulator state (not just cartridge save RAM) -- null if nothing's loaded or the save fails. */
+    fun saveState(): ByteArray? = gba?.saveState()
+
+    fun loadState(data: ByteArray): Boolean = gba?.loadState(data) ?: false
 
     /**
      * Replaces whatever ROM is currently loaded (if any) with [rom].
@@ -70,7 +85,7 @@ class GbaView(context: Context) : View(context) {
         }
 
         val minBufferSize = AudioTrack.getMinBufferSize(
-            instance.audioSampleRateHz,
+            GbaNative.audioSampleRateHz,
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
@@ -89,7 +104,7 @@ class GbaView(context: Context) : View(context) {
             )
             .setAudioFormat(
                 AudioFormat.Builder()
-                    .setSampleRate(instance.audioSampleRateHz)
+                    .setSampleRate(GbaNative.audioSampleRateHz)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .build(),
@@ -97,6 +112,7 @@ class GbaView(context: Context) : View(context) {
             .setBufferSizeInBytes(minBufferSize * 2)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
+        audioTrack?.setVolume(1f)
         audioTrack?.play()
     }
 
@@ -108,6 +124,7 @@ class GbaView(context: Context) : View(context) {
         super.onAttachedToWindow()
         running = true
         Choreographer.getInstance().postFrameCallback(frameCallback)
+        EmulatorControlModule.activeGba = this
     }
 
     override fun onDetachedFromWindow() {
@@ -118,6 +135,7 @@ class GbaView(context: Context) : View(context) {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
+        if (EmulatorControlModule.activeGba === this) EmulatorControlModule.activeGba = null
         super.onDetachedFromWindow()
     }
 

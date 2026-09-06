@@ -15,6 +15,12 @@ export interface FolderFile {
   size: number;
 }
 
+export interface StateSlot {
+  slot: number;
+  exists: boolean;
+  savedAt?: number;
+}
+
 interface RomLibraryNativeModule {
   saveToCache(base64: string, name: string, system: string, label: string): Promise<CachedRom>;
   listCache(): Promise<CachedRom[]>;
@@ -23,6 +29,9 @@ interface RomLibraryNativeModule {
   pickFolder(): Promise<{uri: string; name: string}>;
   listFolder(folderUri: string, extensions: string[]): Promise<FolderFile[]>;
   readFileFromFolder(fileUri: string, extensions: string[]): Promise<{base64: string; name: string; size: number}>;
+  saveStateSlot(romId: string, slot: number, base64: string): Promise<void>;
+  loadStateSlot(romId: string, slot: number): Promise<{base64: string}>;
+  listStateSlots(romId: string): Promise<StateSlot[]>;
 }
 
 const {RomLibrary} = NativeModules as {RomLibrary: RomLibraryNativeModule};
@@ -66,4 +75,18 @@ export function readRomFromFolder(
   extensions: string[],
 ): Promise<{base64: string; name: string; size: number}> {
   return RomLibrary.readFileFromFolder(fileUri, extensions);
+}
+
+/** 3 manual save-state slots per ROM (romId = its CRC32), independent of where in the game you are. */
+export function saveStateSlot(romId: string, slot: number, base64: string): Promise<void> {
+  return RomLibrary.saveStateSlot(romId, slot, base64);
+}
+
+export async function loadStateSlot(romId: string, slot: number): Promise<string> {
+  const {base64} = await RomLibrary.loadStateSlot(romId, slot);
+  return base64;
+}
+
+export function listStateSlots(romId: string): Promise<StateSlot[]> {
+  return RomLibrary.listStateSlots(romId);
 }

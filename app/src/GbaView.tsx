@@ -25,6 +25,8 @@ export interface GbaViewHandle {
   /** romId (e.g. the ROM's CRC32) keys its save file -- omit to skip save persistence. */
   loadRomBase64(base64: string, romId?: string): void;
   setButtonPressed(button: GbaButton, pressed: boolean): void;
+  /** 1/2/3x fast-forward (audio mutes above 1x). */
+  setSpeedMultiplier(multiplier: 1 | 2 | 3): void;
 }
 
 /**
@@ -36,7 +38,7 @@ export interface GbaViewHandle {
 const GbaView = forwardRef<GbaViewHandle, ViewProps>((props, ref) => {
   const nativeRef = useRef(null);
 
-  const dispatchCommand = (name: string, args: (string | boolean | null)[]) => {
+  const dispatchCommand = (name: string, args: (string | number | boolean | null)[]) => {
     const node = findNodeHandle(nativeRef.current);
     if (node == null) return;
     UIManager.dispatchViewManagerCommand(node, name as unknown as number, args);
@@ -48,6 +50,9 @@ const GbaView = forwardRef<GbaViewHandle, ViewProps>((props, ref) => {
     },
     setButtonPressed(button: GbaButton, pressed: boolean) {
       dispatchCommand('setButtonPressed', [button, pressed]);
+    },
+    setSpeedMultiplier(multiplier: 1 | 2 | 3) {
+      dispatchCommand('setSpeedMultiplier', [multiplier]);
     },
   }));
 

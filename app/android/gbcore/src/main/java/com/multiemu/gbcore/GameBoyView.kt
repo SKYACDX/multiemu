@@ -40,11 +40,12 @@ class GameBoyView(context: Context) : View(context) {
     private val srcRect = Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
     private val paint = Paint().apply { isFilterBitmap = false }
     private var running = false
+    private var speedMultiplier = 1
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             gameBoy?.let {
-                it.runFrame()
+                it.runFrame(speedMultiplier)
                 bitmap.setPixels(it.framebuffer, 0, SCREEN_WIDTH, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
                 invalidate()
 
@@ -55,6 +56,10 @@ class GameBoyView(context: Context) : View(context) {
             }
             if (running) Choreographer.getInstance().postFrameCallback(this)
         }
+    }
+
+    fun setSpeedMultiplier(multiplier: Int) {
+        speedMultiplier = multiplier.coerceIn(1, 3)
     }
 
     /**

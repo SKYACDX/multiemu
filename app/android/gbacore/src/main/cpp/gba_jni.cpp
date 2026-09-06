@@ -20,6 +20,15 @@
 
 namespace {
 
+// mGBA's GBA core defaults its two audio channels to 96000Hz (see
+// blip_set_rates calls in src/gba/audio.c) -- unusually high, and not
+// every device/audio HAL is guaranteed to accept an AudioTrack requesting
+// it, which was silently producing no sound at all rather than an error.
+// Every real mGBA frontend (3DS/libretro/OpenEmu -- see their main.c/.m)
+// overrides this with blip_set_rates right after creating the core, to
+// whatever rate suits their own output; 48000 is Android's safe default.
+constexpr int kAudioSampleRateHz = 48000;
+
 struct GbaInstance {
     mCore* core = nullptr;
     std::vector<color_t> videoBuffer;
@@ -102,6 +111,10 @@ JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaNative_nativeCreate(JNIEnv*
     }
     core->reset(core);
 
+    core->setAudioBufferSize(core, 2048);
+    blip_set_rates(core->getAudioChannel(core, 0), core->frequency(core), kAudioSampleRateHz);
+    blip_set_rates(core->getAudioChannel(core, 1), core->frequency(core), kAudioSampleRateHz);
+
     return reinterpret_cast<jlong>(instance);
 }
 
@@ -141,10 +154,13 @@ JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaNative_nativeGetHeight(JNIEn
     return static_cast<jint>(handleToInstance(handle)->height);
 }
 
-// Reads whatever's ready from mGBA's own audio synthesis (its GBA core
-// runs blip_set_rates(..., GBA_ARM7TDMI_FREQUENCY, 96000) internally --
-// see src/gba/audio.c -- so this is always 96000Hz stereo 16-bit PCM,
-// regardless of ROM). outSamples must be sized for stereo pairs (2
+JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaNative_nativeGetAudioSampleRate(JNIEnv*, jclass) {
+    return kAudioSampleRateHz;
+}
+
+// Reads whatever's ready from mGBA's own audio synthesis, resampled to
+// kAudioSampleRateHz stereo 16-bit PCM (see the blip_set_rates calls in
+// nativeCreate). outSamples must be sized for stereo pairs (2
 // shorts/frame); returns the number of frames actually written, which
 // may be less than the buffer's capacity.
 JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaNative_nativeReadAudioSamples(
@@ -164,6 +180,30 @@ JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaNative_nativeReadAudioSample
     env->SetShortArrayRegion(outSamples, 0, static_cast<jsize>(buffer.size()),
                               reinterpret_cast<jshort*>(buffer.data()));
     return frames;
+}
+
+// Full emulator state (CPU/memory/PPU/APU/etc), not just cartridge save
+// RAM -- lets the user save/load at any point, not just where the game's
+// own save system allows. mGBA's mCore already implements this fully
+// (stateSize/saveState/loadState), so this is a direct passthrough.
+JNIEXPORT jbyteArray JNICALL Java_com_multiemu_gbacore_GbaNative_nativeSaveState(JNIEnv* env, jclass,
+                                                                                   jlong handle) {
+    mCore* core = handleToInstance(handle)->core;
+    std::size_t size = core->stateSize(core);
+    std::vector<uint8_t> buffer(size);
+    if (!core->saveState(core, buffer.data())) return nullptr;
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(size));
+    env->SetByteArrayRegion(result, 0, static_cast<jsize>(size), reinterpret_cast<const jbyte*>(buffer.data()));
+    return result;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_multiemu_gbacore_GbaNative_nativeLoadState(JNIEnv* env, jclass,
+                                                                                 jlong handle, jbyteArray data) {
+    mCore* core = handleToInstance(handle)->core;
+    jsize length = env->GetArrayLength(data);
+    std::vector<uint8_t> buffer(static_cast<std::size_t>(length));
+    env->GetByteArrayRegion(data, 0, length, reinterpret_cast<jbyte*>(buffer.data()));
+    return core->loadState(core, buffer.data()) ? JNI_TRUE : JNI_FALSE;
 }
 
 // buttonId must match the ordinal of GbaButton (Kotlin side), which is

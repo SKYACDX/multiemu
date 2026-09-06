@@ -41,18 +41,32 @@ class GbaNative private constructor(private var handle: Long, val width: Int, va
         @JvmStatic private external fun nativeGetHeight(handle: Long): Int
         @JvmStatic private external fun nativeSetButtonPressed(handle: Long, buttonId: Int, pressed: Boolean)
         @JvmStatic private external fun nativeReadAudioSamples(handle: Long, outSamples: ShortArray): Int
-    }
+        @JvmStatic private external fun nativeGetAudioSampleRate(): Int
+        @JvmStatic private external fun nativeSaveState(handle: Long): ByteArray?
+        @JvmStatic private external fun nativeLoadState(handle: Long, data: ByteArray): Boolean
 
-    /** mGBA's GBA core always synthesizes audio at this rate (see gba_jni.cpp). */
-    val audioSampleRateHz = 96000
+        val audioSampleRateHz: Int by lazy { nativeGetAudioSampleRate() }
+    }
 
     /** width*height ARGB_8888 pixels (240*160 for GBA), reused across calls. */
     val framebuffer = IntArray(width * height)
 
-    fun runFrame() {
+    /** Runs [times] emulated frames (for fast-forward) before refreshing [framebuffer] once. */
+    fun runFrame(times: Int = 1) {
         check(handle != 0L) { "GbaNative used after close()" }
-        nativeRunFrame(handle)
+        repeat(times) { nativeRunFrame(handle) }
         nativeGetFramebuffer(handle, framebuffer)
+    }
+
+    /** Full emulator state, not just cartridge save RAM -- lets you save/load anywhere. Null on failure. */
+    fun saveState(): ByteArray? {
+        check(handle != 0L) { "GbaNative used after close()" }
+        return nativeSaveState(handle)
+    }
+
+    fun loadState(data: ByteArray): Boolean {
+        check(handle != 0L) { "GbaNative used after close()" }
+        return nativeLoadState(handle, data)
     }
 
     /** Fills [outSamples] (stereo pairs) with whatever's ready; returns frames written. */

@@ -264,4 +264,58 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         }
         return null
     }
+
+    // ---- Manual save-state slots -------------------------------------------
+    //
+    // Separate from the automatic battery-RAM save (RomLibraryModule has
+    // nothing to do with that -- see GameBoyView/GbaView's own writeSaveFile/
+    // loadSave). These are full-emulator-state blobs (currently GBA-only,
+    // produced by EmulatorControlModule.saveGbaState) the user asked to
+    // save/load anywhere, not just where a game's own save screen allows.
+    // 3 slots per ROM, keyed by romId (its CRC32).
+
+    @ReactMethod
+    fun saveStateSlot(romId: String, slot: Int, base64: String, promise: Promise) {
+        try {
+            val bytes = Base64.decode(base64, Base64.DEFAULT)
+            stateSlotFile(romId, slot).writeBytes(bytes)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("STATE_WRITE_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun loadStateSlot(romId: String, slot: Int, promise: Promise) {
+        try {
+            val file = stateSlotFile(romId, slot)
+            if (!file.exists()) {
+                promise.reject("NOT_FOUND", "Ese slot está vacío")
+                return
+            }
+            val result = Arguments.createMap()
+            result.putString("base64", Base64.encodeToString(file.readBytes(), Base64.NO_WRAP))
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("STATE_READ_ERROR", e.message, e)
+        }
+    }
+
+    /** Returns 3 entries (index = slot), each {slot, exists, savedAt?}. */
+    @ReactMethod
+    fun listStateSlots(romId: String, promise: Promise) {
+        val result: WritableArray = Arguments.createArray()
+        for (slot in 0..2) {
+            val file = stateSlotFile(romId, slot)
+            val entry = Arguments.createMap()
+            entry.putInt("slot", slot)
+            entry.putBoolean("exists", file.exists())
+            if (file.exists()) entry.putDouble("savedAt", file.lastModified().toDouble())
+            result.pushMap(entry)
+        }
+        promise.resolve(result)
+    }
+
+    private fun stateSlotFile(romId: String, slot: Int): File =
+        File(File(reactContext.filesDir, "states").apply { mkdirs() }, "${romId}_slot$slot.state")
 }
