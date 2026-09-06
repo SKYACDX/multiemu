@@ -267,13 +267,20 @@ function App(): React.JSX.Element {
 
   const handleDownloadCloudSlot = useCallback(
     async (slot: number) => {
-      if (!authToken) return;
+      const romId = currentRomId.current;
+      if (!authToken || !romId) return;
       const remote = cloudSaves.find(s => s.slot === slot);
       if (!remote) return;
       setCloudBusySlot(slot);
       try {
         const bytes = await downloadCloudSave(authToken, remote.id);
-        await loadGbaState(bytesToBase64(bytes));
+        const base64 = bytesToBase64(bytes);
+        await loadGbaState(base64);
+        // Also persist it locally -- otherwise the slot's own "Cargar"
+        // button stays stuck on whatever (or nothing) was there before,
+        // even though the game now has this save state loaded live.
+        await saveStateSlot(romId, slot, base64);
+        setStateSlots(await listStateSlots(romId));
         closeSaveModal();
       } catch (e) {
         Alert.alert('No se pudo descargar de la nube', e instanceof Error ? e.message : String(e));
@@ -405,6 +412,19 @@ function App(): React.JSX.Element {
       sub.remove();
     };
   }, [screen, system, autoSaveState]);
+
+  // Pause (video/audio, both stop -- see GbaView.kt's `paused` flag) the
+  // instant the app leaves the foreground, so it doesn't keep making
+  // sound (or burning battery) from inside the recents list. Restores
+  // whatever pause state the save modal wants on the way back, instead
+  // of unconditionally unpausing into an open modal.
+  useEffect(() => {
+    if (screen !== 'game' || system !== 'gba') return;
+    const sub = AppState.addEventListener('change', state => {
+      gbaRef.current?.setPaused(state === 'active' ? saveModalOpen : true);
+    });
+    return () => sub.remove();
+  }, [screen, system, saveModalOpen]);
 
   // Right after loading a GBA ROM (see loadIntoEmulator below): if the
   // user is logged in and the device's save differs from the cloud's,
@@ -1076,11 +1096,6 @@ function App(): React.JSX.Element {
                   <View style={{flex: 1}}>
                     <View style={styles.slotCardTop}>
                       <Text style={styles.slotLabel}>Automático</Text>
-                      {autoInfo.exists && (
-                        <Pressable hitSlop={8} onPress={() => handleDeleteSlot(AUTOSAVE_SLOT)}>
-                          <IconTrash size={13} />
-                        </Pressable>
-                      )}
                     </View>
                     <Text style={styles.slotMeta} numberOfLines={1}>
                       {autoInfo.exists

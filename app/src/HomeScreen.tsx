@@ -1,5 +1,6 @@
 import React from 'react';
 import {ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
+import Svg, {Defs, RadialGradient, Rect, Stop} from 'react-native-svg';
 import {CachedRom} from './RomLibraryNative';
 import {IconAccount, IconCartridge, IconClose, IconFile, IconFolder, IconGlobe} from './icons';
 
@@ -20,11 +21,28 @@ interface Props {
   onOpenAccount: () => void;
 }
 
+/** Faint vignette behind everything -- reads as a device screen's glass instead of a flat app background. */
+function Vignette() {
+  return (
+    <Svg style={StyleSheet.absoluteFill} width="100%" height="100%">
+      <Defs>
+        <RadialGradient id="vignette" cx="50%" cy="0%" r="85%">
+          <Stop offset="0%" stopColor="#22262f" stopOpacity={1} />
+          <Stop offset="100%" stopColor="#0e0f13" stopOpacity={1} />
+        </RadialGradient>
+      </Defs>
+      <Rect width="100%" height="100%" fill="url(#vignette)" />
+    </Svg>
+  );
+}
+
 /**
  * Landing screen: recently-loaded ROMs (cached on-device, see
- * RomLibraryModule.kt) for a one-tap reopen, plus the three ways to get
- * a new one in. App.tsx only mounts the actual emulator screen once
- * something is loaded from here.
+ * RomLibraryModule.kt) for a one-tap reopen, plus the ways to get a new
+ * one in. App.tsx only mounts the actual emulator screen once something
+ * is loaded from here. Styled like a handheld's power-on screen (bezel
+ * plate, power LED, speaker grill) rather than a plain settings-style
+ * list, so it reads as "about to play a game" instead of a form.
  */
 export default function HomeScreen({
   recentRoms,
@@ -41,30 +59,45 @@ export default function HomeScreen({
 }: Props) {
   return (
     <View style={styles.container}>
+      <Vignette />
       <Pressable style={styles.accountButton} onPress={onOpenAccount} hitSlop={8}>
         <IconAccount size={18} color={username ? '#a0ffe8' : '#888'} />
         {username && <Text style={styles.accountLabel} numberOfLines={1}>{username}</Text>}
       </Pressable>
-      <View style={styles.titleRow}>
+
+      <View style={styles.titlePlate}>
+        <View style={styles.titlePlateHighlight} />
+        <View style={styles.powerRow}>
+          <View style={styles.powerLed} />
+          <Text style={styles.powerLabel}>ON</Text>
+        </View>
         <Text style={styles.title}>multiemu</Text>
         <View style={styles.titleAccent} />
+        <Text style={styles.subtitle}>Game Boy · Game Boy Color · Game Boy Advance</Text>
+        <View style={styles.grill}>
+          {[0, 1, 2, 3, 4, 5, 6].map(i => (
+            <View key={i} style={styles.grillHole} />
+          ))}
+        </View>
       </View>
-      <Text style={styles.subtitle}>Game Boy · Game Boy Color · Game Boy Advance</Text>
 
       <View style={styles.actions}>
-        <Pressable style={styles.actionButton} onPress={onPickFile}>
+        <Pressable style={[styles.actionButton, {borderColor: '#254a70'}]} onPress={onPickFile}>
+          <View style={styles.actionButtonHighlight} />
           <View style={[styles.actionIconCircle, {backgroundColor: '#254a70'}]}>
             <IconFile size={20} color="#cfe3fa" />
           </View>
           <Text style={styles.actionLabel}>Cargar un archivo</Text>
         </Pressable>
-        <Pressable style={styles.actionButton} onPress={onPickFolder}>
+        <Pressable style={[styles.actionButton, {borderColor: '#6a4a1e'}]} onPress={onPickFolder}>
+          <View style={styles.actionButtonHighlight} />
           <View style={[styles.actionIconCircle, {backgroundColor: '#6a4a1e'}]}>
             <IconFolder size={20} color="#ffd9a0" />
           </View>
           <Text style={styles.actionLabel}>{lastFolder ? 'Cambiar carpeta' : 'Elegir carpeta'}</Text>
         </Pressable>
-        <Pressable style={styles.actionButton} onPress={onBrowseHub}>
+        <Pressable style={[styles.actionButton, {borderColor: '#3f2a5c'}]} onPress={onBrowseHub}>
+          <View style={styles.actionButtonHighlight} />
           <View style={[styles.actionIconCircle, {backgroundColor: '#3f2a5c'}]}>
             <IconGlobe size={20} color="#d9c6ff" />
           </View>
@@ -95,6 +128,7 @@ export default function HomeScreen({
         contentContainerStyle={styles.list}
         renderItem={({item}) => (
           <Pressable style={styles.slotCard} onPress={() => onSelectRecent(item)}>
+            <View style={[styles.slotCardAccent, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]} />
             <View style={styles.slotCardTop}>
               <View style={[styles.systemBadge, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]}>
                 <Text style={styles.systemBadgeLabel}>{SYSTEM_LABEL[item.system] ?? item.system.toUpperCase()}</Text>
@@ -153,9 +187,45 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 10,
     maxWidth: 140,
+    zIndex: 1,
   },
   accountLabel: {color: '#a0ffe8', fontSize: 11, fontWeight: '700'},
-  titleRow: {alignItems: 'center'},
+  // A console-shell "plate" around the logo/subtitle, styled like the
+  // in-game consoleShell (App.tsx) so the very first thing you see
+  // already reads as hardware, not a settings screen.
+  titlePlate: {
+    alignItems: 'center',
+    backgroundColor: '#1a1c22',
+    borderRadius: 22,
+    borderWidth: 2,
+    borderColor: '#2c2f38',
+    paddingTop: 18,
+    paddingBottom: 14,
+    marginBottom: 18,
+    overflow: 'hidden',
+    ...CARD_SHADOW,
+  },
+  titlePlateHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: '38%',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  powerRow: {flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10},
+  powerLed: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#5cff9d',
+    shadowColor: '#5cff9d',
+    shadowOffset: {width: 0, height: 0},
+    shadowOpacity: 0.9,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  powerLabel: {color: '#5cff9d', fontSize: 10, fontWeight: '800', letterSpacing: 1},
   title: {color: '#fff', fontSize: 30, fontWeight: '800', textAlign: 'center', letterSpacing: 0.5},
   titleAccent: {
     width: 48,
@@ -164,17 +234,29 @@ const styles = StyleSheet.create({
     backgroundColor: '#4a90d9',
     marginTop: 6,
   },
-  subtitle: {color: '#888', fontSize: 12, textAlign: 'center', marginTop: 10, marginBottom: 26},
+  subtitle: {color: '#888', fontSize: 12, textAlign: 'center', marginTop: 10},
+  grill: {flexDirection: 'row', gap: 7, marginTop: 14},
+  grillHole: {width: 5, height: 5, borderRadius: 2.5, backgroundColor: '#33353c'},
   actions: {flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 14},
   actionButton: {
     flexBasis: '47%',
     flexGrow: 1,
     backgroundColor: '#1e2027',
     borderRadius: 14,
+    borderWidth: 1,
     paddingVertical: 16,
     alignItems: 'center',
     gap: 8,
+    overflow: 'hidden',
     ...CARD_SHADOW,
+  },
+  actionButtonHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: '45%',
+    backgroundColor: 'rgba(255,255,255,0.05)',
   },
   actionIconCircle: {
     width: 40,
@@ -207,8 +289,10 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 10,
     minHeight: 92,
+    overflow: 'hidden',
     ...CARD_SHADOW,
   },
+  slotCardAccent: {position: 'absolute', top: 0, left: 0, bottom: 0, width: 4},
   slotCardTop: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8},
   systemBadge: {borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3},
   systemBadgeLabel: {color: '#fff', fontSize: 10, fontWeight: '800'},
