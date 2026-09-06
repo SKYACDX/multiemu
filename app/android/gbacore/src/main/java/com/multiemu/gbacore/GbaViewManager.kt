@@ -8,7 +8,9 @@ import com.facebook.react.uimanager.ThemedReactContext
 /**
  * Exposes [GbaView] to React Native as `<GbaView />`. Same command
  * protocol as gbcore's GameBoyView:
- *   - "loadRomBase64" [base64String]
+ *   - "loadRomBase64" [base64String, romId?] -- romId is a stable
+ *     per-ROM key (e.g. its CRC32) used to key its save file; omit it
+ *     (or pass null) to skip save persistence.
  *   - "setButtonPressed" [buttonName, pressed] -- buttonName must match a
  *     GbaButton enum constant name (e.g. "A", "START", "L")
  */
@@ -22,7 +24,8 @@ class GbaViewManager : SimpleViewManager<GbaView>() {
         when (commandId) {
             "loadRomBase64" -> {
                 val base64 = args?.getString(0) ?: return
-                view.loadRom(Base64.decode(base64, Base64.DEFAULT))
+                val romId = if (args.size() > 1 && !args.isNull(1)) args.getString(1) else null
+                view.loadRom(Base64.decode(base64, Base64.DEFAULT), romId)
             }
             "setButtonPressed" -> {
                 val buttonName = args?.getString(0) ?: return

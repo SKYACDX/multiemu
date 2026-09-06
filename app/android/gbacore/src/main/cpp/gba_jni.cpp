@@ -7,6 +7,8 @@
 // practical path to GBA support.
 #include <jni.h>
 
+#include <fcntl.h>
+
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -48,7 +50,8 @@ extern "C" {
 // gbcore is the intended home for those, so it's rejected here rather
 // than silently run through mGBA's own GB support).
 JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaNative_nativeCreate(JNIEnv* env, jclass,
-                                                                           jbyteArray romBytes) {
+                                                                           jbyteArray romBytes,
+                                                                           jstring savePath) {
     jsize length = env->GetArrayLength(romBytes);
     std::vector<jbyte> rom(static_cast<std::size_t>(length));
     env->GetByteArrayRegion(romBytes, 0, length, rom.data());
@@ -85,6 +88,17 @@ JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaNative_nativeCreate(JNIEnv*
         vf->close(vf);
         delete instance;
         return 0;
+    }
+    // Unlike the ROM VFile, the save VFile stays open and writable for the
+    // instance's whole lifetime: mGBA's cartridge RAM/flash emulation
+    // writes straight through to it as the game saves, the same way a
+    // real GBA's save chip is memory-mapped -- there's no "export the
+    // save data" step to do ourselves, just give it a real file up front.
+    if (savePath) {
+        const char* path = env->GetStringUTFChars(savePath, nullptr);
+        VFile* saveVf = VFileOpen(path, O_CREAT | O_RDWR);
+        env->ReleaseStringUTFChars(savePath, path);
+        if (saveVf) core->loadSave(core, saveVf);
     }
     core->reset(core);
 

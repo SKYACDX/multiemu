@@ -21,14 +21,19 @@ class GbaNative private constructor(private var handle: Long, val width: Int, va
             System.loadLibrary("gbajni")
         }
 
-        /** Returns null if [rom] isn't a GBA ROM mGBA recognizes. */
-        fun load(rom: ByteArray): GbaNative? {
-            val handle = nativeCreate(rom)
+        /**
+         * Returns null if [rom] isn't a GBA ROM mGBA recognizes. [savePath],
+         * if given, is where mGBA reads/writes this game's save data --
+         * see gba_jni.cpp's nativeCreate for why that's a real file handed
+         * to the core up front rather than something read back out later.
+         */
+        fun load(rom: ByteArray, savePath: String?): GbaNative? {
+            val handle = nativeCreate(rom, savePath)
             if (handle == 0L) return null
             return GbaNative(handle, nativeGetWidth(handle), nativeGetHeight(handle))
         }
 
-        @JvmStatic private external fun nativeCreate(rom: ByteArray): Long
+        @JvmStatic private external fun nativeCreate(rom: ByteArray, savePath: String?): Long
         @JvmStatic private external fun nativeDestroy(handle: Long)
         @JvmStatic private external fun nativeRunFrame(handle: Long)
         @JvmStatic private external fun nativeGetFramebuffer(handle: Long, outPixels: IntArray)

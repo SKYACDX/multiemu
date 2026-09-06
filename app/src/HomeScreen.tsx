@@ -1,6 +1,7 @@
 import React from 'react';
 import {FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 import {CachedRom} from './RomLibraryNative';
+import {IconCartridge, IconClose, IconFile, IconFolder, IconGlobe} from './icons';
 
 const SYSTEM_LABEL: Record<string, string> = {gb: 'GB', gbc: 'GBC', gba: 'GBA'};
 const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba: '#a8465a'};
@@ -35,15 +36,15 @@ export default function HomeScreen({
 
       <View style={styles.actions}>
         <Pressable style={styles.actionButton} onPress={onPickFile}>
-          <Text style={styles.actionIcon}>📄</Text>
+          <IconFile size={22} color="#cfe3fa" />
           <Text style={styles.actionLabel}>Cargar un archivo</Text>
         </Pressable>
         <Pressable style={styles.actionButton} onPress={onPickFolder}>
-          <Text style={styles.actionIcon}>📁</Text>
+          <IconFolder size={22} color="#cfe3fa" />
           <Text style={styles.actionLabel}>Elegir carpeta</Text>
         </Pressable>
         <Pressable style={styles.actionButton} onPress={onBrowseHackRoms}>
-          <Text style={styles.actionIcon}>🌐</Text>
+          <IconGlobe size={22} color="#cfe3fa" />
           <Text style={styles.actionLabel}>Buscar HackRoms</Text>
         </Pressable>
       </View>
@@ -67,12 +68,15 @@ export default function HomeScreen({
               </Text>
             </View>
             <Pressable hitSlop={12} onPress={() => onDeleteRecent(item)}>
-              <Text style={styles.deleteIcon}>✕</Text>
+              <IconClose size={16} color="#777" />
             </Pressable>
           </Pressable>
         )}
         ListEmptyComponent={
-          <Text style={styles.empty}>Todavía no has cargado ninguna ROM -- usa una de las opciones de arriba.</Text>
+          <View style={styles.empty}>
+            <IconCartridge size={40} color="#444" />
+            <Text style={styles.emptyText}>Todavía no has cargado ninguna ROM.{'\n'}Usa una de las opciones de arriba.</Text>
+          </View>
         }
       />
     </View>
@@ -90,8 +94,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',
+    gap: 6,
   },
-  actionIcon: {fontSize: 22, marginBottom: 6},
   actionLabel: {color: '#fff', fontSize: 12, fontWeight: '600', textAlign: 'center'},
   sectionTitle: {color: '#aaa', fontSize: 13, fontWeight: '700', marginBottom: 8, textTransform: 'uppercase'},
   list: {paddingBottom: 24},
@@ -109,6 +113,6 @@ const styles = StyleSheet.create({
   romInfo: {flex: 1},
   romLabel: {color: '#fff', fontSize: 14, fontWeight: '600'},
   romMeta: {color: '#888', fontSize: 11, marginTop: 2},
-  deleteIcon: {color: '#777', fontSize: 16, paddingHorizontal: 4},
-  empty: {color: '#666', textAlign: 'center', marginTop: 24, paddingHorizontal: 12, fontSize: 13},
+  empty: {alignItems: 'center', marginTop: 32, gap: 12},
+  emptyText: {color: '#666', textAlign: 'center', paddingHorizontal: 12, fontSize: 13, lineHeight: 19},
 });

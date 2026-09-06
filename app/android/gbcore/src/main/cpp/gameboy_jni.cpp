@@ -75,4 +75,30 @@ JNIEXPORT void JNICALL Java_com_multiemu_gbcore_GameBoyNative_nativeSetButtonPre
     handleToGameBoy(handle)->setButtonPressed(static_cast<gb::Button>(buttonId), pressed == JNI_TRUE);
 }
 
+JNIEXPORT jboolean JNICALL Java_com_multiemu_gbcore_GameBoyNative_nativeHasBattery(JNIEnv*, jclass,
+                                                                                     jlong handle) {
+    return handleToGameBoy(handle)->bus().cartridge().hasBattery() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Returns the cartridge's current external RAM -- empty if it has none.
+// Callers should only bother persisting this when nativeHasBattery() is
+// true (a cartridge with no battery loses its RAM on power-off anyway,
+// same as real hardware).
+JNIEXPORT jbyteArray JNICALL Java_com_multiemu_gbcore_GameBoyNative_nativeGetSaveData(JNIEnv* env, jclass,
+                                                                                        jlong handle) {
+    const auto& ram = handleToGameBoy(handle)->bus().cartridge().ram();
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(ram.size()));
+    env->SetByteArrayRegion(result, 0, static_cast<jsize>(ram.size()),
+                             reinterpret_cast<const jbyte*>(ram.data()));
+    return result;
+}
+
+JNIEXPORT void JNICALL Java_com_multiemu_gbcore_GameBoyNative_nativeLoadSaveData(JNIEnv* env, jclass,
+                                                                                   jlong handle, jbyteArray data) {
+    jsize length = env->GetArrayLength(data);
+    std::vector<gb::u8> ram(static_cast<std::size_t>(length));
+    env->GetByteArrayRegion(data, 0, length, reinterpret_cast<jbyte*>(ram.data()));
+    handleToGameBoy(handle)->bus().cartridge().loadRam(ram);
+}
+
 }  // extern "C"

@@ -20,7 +20,8 @@ export type GameBoyButton =
   | 'START';
 
 export interface GameBoyViewHandle {
-  loadRomBase64(base64: string): void;
+  /** romId (e.g. the ROM's CRC32) keys its save file -- omit to skip save persistence. */
+  loadRomBase64(base64: string, romId?: string): void;
   setButtonPressed(button: GameBoyButton, pressed: boolean): void;
 }
 
@@ -34,7 +35,7 @@ export interface GameBoyViewHandle {
 const GameBoyView = forwardRef<GameBoyViewHandle, ViewProps>((props, ref) => {
   const nativeRef = useRef(null);
 
-  const dispatchCommand = (name: string, args: (string | boolean)[]) => {
+  const dispatchCommand = (name: string, args: (string | boolean | null)[]) => {
     const node = findNodeHandle(nativeRef.current);
     if (node == null) return;
     // Command names (not numeric IDs) work directly here since Android
@@ -45,8 +46,8 @@ const GameBoyView = forwardRef<GameBoyViewHandle, ViewProps>((props, ref) => {
   };
 
   useImperativeHandle(ref, () => ({
-    loadRomBase64(base64: string) {
-      dispatchCommand('loadRomBase64', [base64]);
+    loadRomBase64(base64: string, romId?: string) {
+      dispatchCommand('loadRomBase64', [base64, romId ?? null]);
     },
     setButtonPressed(button: GameBoyButton, pressed: boolean) {
       dispatchCommand('setButtonPressed', [button, pressed]);

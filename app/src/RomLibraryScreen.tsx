@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import {Hack, Patch, listHacks} from './api/romHackHub';
+import {IconChevronLeft} from './icons';
 
 const PLATFORMS = [
   {slug: 'gb', label: 'Game Boy'},
@@ -57,8 +58,9 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <Pressable onPress={() => setSelectedHack(null)}>
-            <Text style={styles.link}>{'‹ Volver'}</Text>
+          <Pressable style={styles.backButton} onPress={() => setSelectedHack(null)} hitSlop={8}>
+            <IconChevronLeft size={20} />
+            <Text style={styles.link}>Volver</Text>
           </Pressable>
           <Text style={styles.title} numberOfLines={1}>
             {selectedHack.title}
@@ -92,8 +94,9 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Pressable onPress={onClose}>
-          <Text style={styles.link}>{'‹ Cerrar'}</Text>
+        <Pressable style={styles.backButton} onPress={onClose} hitSlop={8}>
+          <IconChevronLeft size={20} />
+          <Text style={styles.link}>Cerrar</Text>
         </Pressable>
         <Text style={styles.title}>HackRoms</Text>
       </View>
@@ -152,6 +155,7 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#1a1a1a', paddingTop: 16},
   header: {flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 8, gap: 12},
+  backButton: {flexDirection: 'row', alignItems: 'center'},
   link: {color: '#7ab8ff', fontSize: 16},
   title: {color: '#fff', fontSize: 18, fontWeight: '700', flexShrink: 1},
   subtitle: {color: '#aaa', paddingHorizontal: 16, marginBottom: 8},

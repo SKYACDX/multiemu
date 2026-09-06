@@ -11,6 +11,7 @@ import android.media.AudioTrack
 import android.util.Log
 import android.view.Choreographer
 import android.view.View
+import java.io.File
 
 private const val TAG = "GbaView"
 
@@ -46,14 +47,21 @@ class GbaView(context: Context) : View(context) {
         }
     }
 
-    /** Replaces whatever ROM is currently loaded (if any) with [rom]. */
-    fun loadRom(rom: ByteArray) {
+    /**
+     * Replaces whatever ROM is currently loaded (if any) with [rom].
+     * [romId] (a stable per-ROM key, e.g. its CRC32) is where mGBA reads
+     * and writes this game's save data -- pass null to skip persistence.
+     */
+    fun loadRom(rom: ByteArray, romId: String?) {
         gba?.close()
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
 
-        val instance = GbaNative.load(rom)
+        val savePath = romId?.let {
+            File(File(context.filesDir, "saves").apply { mkdirs() }, "$it.sav").absolutePath
+        }
+        val instance = GbaNative.load(rom, savePath)
         gba = instance
         bitmap = instance?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
         if (instance == null) {
@@ -68,9 +76,15 @@ class GbaView(context: Context) : View(context) {
         )
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(
+                // CONTENT_TYPE_SONIFICATION is for short UI feedback
+                // sounds and can get treated very differently by the
+                // audio HAL (ducked, routed to a notification-adjacent
+                // stream, or effectively muted on some OEM skins) --
+                // CONTENT_TYPE_MUSIC is what continuous game audio
+                // actually needs to play reliably.
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build(),
             )
             .setAudioFormat(

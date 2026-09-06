@@ -9,7 +9,9 @@ import com.facebook.react.uimanager.ThemedReactContext
  * Exposes [GameBoyView] to React Native as `<GameBoyView />`. No props --
  * everything happens through two commands, dispatched from JS via
  * `UIManager.dispatchViewManagerCommand`:
- *   - "loadRomBase64" [base64String]
+ *   - "loadRomBase64" [base64String, romId?] -- romId is a stable
+ *     per-ROM key (e.g. its CRC32) used to key its save file; omit it
+ *     (or pass null) to skip save persistence.
  *   - "setButtonPressed" [buttonName, pressed] -- buttonName must match a
  *     GameBoyButton enum constant name (e.g. "A", "START", "RIGHT")
  */
@@ -23,7 +25,8 @@ class GameBoyViewManager : SimpleViewManager<GameBoyView>() {
         when (commandId) {
             "loadRomBase64" -> {
                 val base64 = args?.getString(0) ?: return
-                view.loadRom(Base64.decode(base64, Base64.DEFAULT))
+                val romId = if (args.size() > 1 && !args.isNull(1)) args.getString(1) else null
+                view.loadRom(Base64.decode(base64, Base64.DEFAULT), romId)
             }
             "setButtonPressed" -> {
                 val buttonName = args?.getString(0) ?: return

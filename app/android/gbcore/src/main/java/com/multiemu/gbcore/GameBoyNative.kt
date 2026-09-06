@@ -37,6 +37,22 @@ class GameBoyNative private constructor(private var handle: Long) : AutoCloseabl
         @JvmStatic private external fun nativeRunFrame(handle: Long)
         @JvmStatic private external fun nativeGetFramebuffer(handle: Long, outPixels: IntArray)
         @JvmStatic private external fun nativeSetButtonPressed(handle: Long, buttonId: Int, pressed: Boolean)
+        @JvmStatic private external fun nativeHasBattery(handle: Long): Boolean
+        @JvmStatic private external fun nativeGetSaveData(handle: Long): ByteArray
+        @JvmStatic private external fun nativeLoadSaveData(handle: Long, data: ByteArray)
+    }
+
+    /** Whether this cartridge has battery-backed RAM worth persisting (see cartridge.h). */
+    val hasBattery: Boolean by lazy { nativeHasBattery(handle) }
+
+    fun getSaveData(): ByteArray {
+        check(handle != 0L) { "GameBoyNative used after close()" }
+        return nativeGetSaveData(handle)
+    }
+
+    fun loadSaveData(data: ByteArray) {
+        check(handle != 0L) { "GameBoyNative used after close()" }
+        nativeLoadSaveData(handle, data)
     }
 
     /** 160*144 ARGB_8888 pixels, reused across calls -- copy it if you need to keep a frame around. */

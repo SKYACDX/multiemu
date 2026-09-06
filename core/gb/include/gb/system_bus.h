@@ -38,6 +38,7 @@ class SystemBus : public Bus {
     const Ppu& ppu() const { return ppu_; }
     u8 interruptEnable() const { return ie_; }
     u8 interruptFlag() const { return if_; }
+    Cartridge& cartridge() { return *cartridge_; }
 
    private:
     void dmaTransfer(u8 value);

@@ -28,6 +28,7 @@ import {
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
+import {IconHome} from './src/icons';
 import RomLibraryScreen from './src/RomLibraryScreen';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
@@ -45,6 +46,7 @@ import {
   saveRomToCache,
 } from './src/RomLibraryNative';
 import {base64ToBytes, bytesToBase64} from './src/base64';
+import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
 import {downloadPatchBytes, Hack, Patch} from './src/api/romHackHub';
 import {extractFromZip} from './src/zip';
@@ -70,6 +72,7 @@ function systemForPlatformSlug(slug: string): EmulatedSystem {
 }
 
 const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance'};
+const SYSTEM_ACCENT: Record<EmulatedSystem, string> = {gb: '#4a90d9', gba: '#c2536a'};
 
 function App(): React.JSX.Element {
   const gameBoyRef = useRef<GameBoyViewHandle>(null);
@@ -81,6 +84,10 @@ function App(): React.JSX.Element {
   // loaded (often nothing of the right platform) silently produces a
   // corrupt ROM that "loads" but shows a black screen.
   const hasUserRom = useRef(false);
+  // CRC32 of the currently-loaded ROM, hex-encoded -- keys its save file
+  // (see GameBoyView.kt/GbaView.kt). null for the built-in test ROM,
+  // which has no battery RAM to persist anyway.
+  const currentRomId = useRef<string | null>(null);
   const [system, setSystem] = useState<EmulatedSystem>('gb');
   const [screen, setScreen] = useState<Screen>('home');
   const [romLabel, setRomLabel] = useState('ROM de prueba (franjas)');
@@ -111,14 +118,15 @@ function App(): React.JSX.Element {
   const loadIntoEmulator = useCallback(
     (bytes: Uint8Array, label: string, targetSystem: EmulatedSystem, base64?: string) => {
       baseRomBytes.current = bytes;
+      currentRomId.current = crc32(bytes).toString(16);
       setRomLabel(label);
       setSystem(targetSystem);
       setScreen('game');
       const encoded = base64 ?? bytesToBase64(bytes);
       if (targetSystem === 'gba') {
-        gbaRef.current?.loadRomBase64(encoded);
+        gbaRef.current?.loadRomBase64(encoded, currentRomId.current);
       } else {
-        gameBoyRef.current?.loadRomBase64(encoded);
+        gameBoyRef.current?.loadRomBase64(encoded, currentRomId.current);
       }
       return encoded;
     },
@@ -128,13 +136,16 @@ function App(): React.JSX.Element {
   useEffect(() => {
     // Both native views unmount (destroying their emulator instance)
     // whenever we navigate away from the game screen -- so every time
-    // the active one remounts, re-push whatever ROM is current.
+    // the active one remounts, re-push whatever ROM is current (and its
+    // romId, so save persistence keeps working after a trip through
+    // Home/Folder/Library and back).
     if (screen !== 'game') return;
     const base64 = bytesToBase64(baseRomBytes.current);
+    const romId = currentRomId.current ?? undefined;
     if (system === 'gba') {
-      gbaRef.current?.loadRomBase64(base64);
+      gbaRef.current?.loadRomBase64(base64, romId);
     } else {
-      gameBoyRef.current?.loadRomBase64(base64);
+      gameBoyRef.current?.loadRomBase64(base64, romId);
     }
   }, [screen, system]);
 
@@ -352,7 +363,7 @@ function App(): React.JSX.Element {
         <>
           <View style={styles.topBar}>
             <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
-              <Text style={styles.homeButtonLabel}>🏠</Text>
+              <IconHome size={20} />
             </Pressable>
             <View style={styles.titleBlock}>
               <View style={styles.romLabelRow}>
@@ -368,11 +379,20 @@ function App(): React.JSX.Element {
             </View>
           </View>
 
-          {system === 'gba' ? (
-            <GbaView ref={gbaRef} style={styles.screenGba} />
-          ) : (
-            <GameBoyView ref={gameBoyRef} style={styles.screen} />
-          )}
+          <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
+            <View style={styles.screenBezel}>
+              {system === 'gba' ? (
+                <GbaView ref={gbaRef} style={styles.screenGba} />
+              ) : (
+                <GameBoyView ref={gameBoyRef} style={styles.screen} />
+              )}
+            </View>
+            <View style={styles.speakerGrill}>
+              {[0, 1, 2, 3, 4].map(i => (
+                <View key={i} style={[styles.speakerHole, {backgroundColor: SYSTEM_ACCENT[system]}]} />
+              ))}
+            </View>
+          </View>
 
           <View style={styles.padRow}>
             <DPad press={press} />
@@ -387,13 +407,6 @@ function App(): React.JSX.Element {
               <Text style={styles.pillLabel}>START</Text>
             </Pressable>
           </View>
-
-          <Pressable
-            style={[styles.hackRomButton, busy && styles.menuButtonDisabled]}
-            disabled={busy}
-            onPress={() => setScreen('library')}>
-            <Text style={styles.menuButtonLabel}>Buscar HackRoms</Text>
-          </Pressable>
         </>
       ) : (
         <Text style={styles.note}>iOS bindings not implemented yet -- see docs/roadmap.md.</Text>
@@ -485,7 +498,7 @@ function ActionButtons({press}: {press: (b: GameBoyButton & GbaButton, pressed: 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#14151a',
     alignItems: 'center',
   },
   topBar: {
@@ -501,7 +514,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  homeButtonLabel: {fontSize: 20},
   shoulderPair: {flexDirection: 'row', gap: 6},
   titleBlock: {alignItems: 'center', flex: 1},
   romLabelRow: {
@@ -530,17 +542,52 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   shoulderLabel: {color: '#ccc', fontWeight: '700', fontSize: 13},
-  screen: {
-    width: 320,
-    height: 288,
+  // A stylized "device shell" around the screen -- a rounded, elevated
+  // panel with a border tinted to the active system (blue for GB/GBC,
+  // maroon for GBA, matching HomeScreen's badge colors) instead of the
+  // emulator view floating bare on the background.
+  consoleShell: {
+    marginTop: 20,
+    borderWidth: 2,
+    borderRadius: 28,
+    backgroundColor: '#1e2027',
+    paddingTop: 18,
+    paddingBottom: 10,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 6},
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    elevation: 10,
+  },
+  screenBezel: {
     backgroundColor: '#000',
-    marginTop: 12,
+    borderRadius: 10,
+    padding: 6,
+  },
+  screen: {
+    width: 288,
+    height: 259,
+    backgroundColor: '#000',
+    borderRadius: 4,
   },
   screenGba: {
-    width: 320,
-    height: 213,
+    width: 288,
+    height: 192,
     backgroundColor: '#000',
-    marginTop: 12,
+    borderRadius: 4,
+  },
+  speakerGrill: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 14,
+  },
+  speakerHole: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    opacity: 0.6,
   },
   note: {
     color: '#fff',
@@ -563,9 +610,14 @@ const styles = StyleSheet.create({
   dpadButton: {
     width: 52,
     height: 52,
-    backgroundColor: '#333',
+    backgroundColor: '#33353c',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 2},
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 4,
   },
   dpadLabel: {color: '#eee', fontSize: 18},
   actionCluster: {width: 140, height: 110, marginRight: 8},
@@ -577,8 +629,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#8b3a4a',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 3},
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 6,
   },
-  buttonA: {top: 0, right: 0, backgroundColor: '#a8465a'},
+  buttonA: {top: 0, right: 0, backgroundColor: '#c2536a'},
   buttonB: {bottom: 0, left: 0},
   actionLabel: {color: '#fff', fontSize: 20, fontWeight: '700'},
   systemRow: {
@@ -591,22 +648,15 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 20,
     borderRadius: 14,
-    backgroundColor: '#333',
+    backgroundColor: '#33353c',
     transform: [{rotate: '-15deg'}],
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 2},
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 3,
   },
   pillLabel: {color: '#ccc', fontSize: 11, fontWeight: '700'},
-  hackRomButton: {
-    marginTop: 28,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    backgroundColor: '#2f5f8f',
-  },
-  menuButtonDisabled: {
-    backgroundColor: '#2a3f52',
-    opacity: 0.6,
-  },
-  menuButtonLabel: {color: '#fff', fontWeight: '600'},
 });
 
 export default App;
