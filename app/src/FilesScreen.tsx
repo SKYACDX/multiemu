@@ -32,10 +32,12 @@ interface Props {
   onSelectFile: (file: RomHackHubFile) => void;
   onClose: () => void;
   downloading: boolean;
+  /** True when shown as a tab inside HubScreen, which already renders its own header/close button. */
+  embedded?: boolean;
 }
 
 /** Browses RomHack Hub's public "files" catalog (see api/romHackHub.ts's listFiles), filtered by platform. */
-export default function FilesScreen({onSelectFile, onClose, downloading}: Props) {
+export default function FilesScreen({onSelectFile, onClose, downloading, embedded}: Props) {
   const [platform, setPlatform] = useState('gb');
   const [query, setQuery] = useState('');
   const [files, setFiles] = useState<RomHackHubFile[]>([]);
@@ -61,13 +63,15 @@ export default function FilesScreen({onSelectFile, onClose, downloading}: Props)
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Pressable style={styles.backButton} onPress={onClose} hitSlop={8}>
-          <IconChevronLeft size={20} />
-          <Text style={styles.link}>Cerrar</Text>
-        </Pressable>
-        <Text style={styles.title}>Archivos</Text>
-      </View>
+      {!embedded && (
+        <View style={styles.header}>
+          <Pressable style={styles.backButton} onPress={onClose} hitSlop={8}>
+            <IconChevronLeft size={20} />
+            <Text style={styles.link}>Cerrar</Text>
+          </Pressable>
+          <Text style={styles.title}>Archivos</Text>
+        </View>
+      )}
 
       <View style={styles.platformRow}>
         {PLATFORMS.map(p => (

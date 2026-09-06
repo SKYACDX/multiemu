@@ -29,7 +29,6 @@ import {
   Platform,
   Pressable,
   SafeAreaView,
-  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -38,10 +37,9 @@ import {
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import {IconCloud, IconHome, IconSave} from './src/icons';
-import RomLibraryScreen from './src/RomLibraryScreen';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
-import FilesScreen from './src/FilesScreen';
+import HubScreen from './src/HubScreen';
 import AccountScreen from './src/AccountScreen';
 import {readRomTitle} from './src/romTitle';
 import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './src/RomFilePicker';
@@ -90,7 +88,7 @@ import {TEST_ROM_BASE64} from './src/testRom';
 
 const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
-type Screen = 'home' | 'game' | 'library' | 'folder' | 'files' | 'account';
+type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account';
 type EmulatedSystem = 'gb' | 'gba';
 
 // NDS/3DS aren't emulated yet (see docs/roadmap.md) -- only accept what
@@ -110,7 +108,8 @@ function systemForPlatformSlug(slug: string): EmulatedSystem {
 // Cloud saves share one list per gameKey; this slot number is reserved
 // for the cartridge's own in-game save (as opposed to slots 0-2, which
 // are manual full-state saves) so both kinds can live side by side.
-const GAME_SAVE_CLOUD_SLOT = -1;
+// Must be >=0 -- RomHack Hub's API rejects negative slot numbers.
+const GAME_SAVE_CLOUD_SLOT = 99;
 
 const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance'};
 const SYSTEM_ACCENT: Record<EmulatedSystem, string> = {gb: '#4a90d9', gba: '#c2536a'};
@@ -131,6 +130,7 @@ function App(): React.JSX.Element {
   const currentRomId = useRef<string | null>(null);
   const [system, setSystem] = useState<EmulatedSystem>('gb');
   const [screen, setScreen] = useState<Screen>('home');
+  const [hubInitialTab, setHubInitialTab] = useState<'hacks' | 'files'>('hacks');
   const [romLabel, setRomLabel] = useState('ROM de prueba (franjas)');
   const [busy, setBusy] = useState(false);
   const prevLabelBeforeLoad = useRef('ROM de prueba (franjas)');
@@ -664,8 +664,14 @@ function App(): React.JSX.Element {
           onDeleteRecent={handleDeleteRecent}
           onPickFile={handlePickRom}
           onPickFolder={handlePickFolder}
-          onBrowseHackRoms={() => setScreen('library')}
-          onBrowseFiles={() => setScreen('files')}
+          onBrowseHackRoms={() => {
+            setHubInitialTab('hacks');
+            setScreen('hub');
+          }}
+          onBrowseFiles={() => {
+            setHubInitialTab('files');
+            setScreen('hub');
+          }}
           lastFolder={lastFolder}
           onOpenLastFolder={handleOpenLastFolder}
           busy={busy}
@@ -707,20 +713,17 @@ function App(): React.JSX.Element {
     );
   }
 
-  if (screen === 'library') {
+  if (screen === 'hub') {
     return (
       <>
         <StatusBar hidden />
-        <RomLibraryScreen onSelectPatch={handleSelectPatch} onClose={() => setScreen('home')} />
-      </>
-    );
-  }
-
-  if (screen === 'files') {
-    return (
-      <>
-        <StatusBar hidden />
-        <FilesScreen onSelectFile={handleSelectHubFile} onClose={() => setScreen('home')} downloading={busy} />
+        <HubScreen
+          initialTab={hubInitialTab}
+          onSelectPatch={handleSelectPatch}
+          onSelectFile={handleSelectHubFile}
+          downloadingFile={busy}
+          onClose={() => setScreen('home')}
+        />
       </>
     );
   }
@@ -745,79 +748,87 @@ function App(): React.JSX.Element {
       )}
       <StatusBar hidden />
       {Platform.OS === 'android' ? (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          <View style={styles.topBar}>
-            <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
-              <IconHome size={20} />
-            </Pressable>
-            <View style={styles.titleBlock}>
-              <View style={styles.romLabelRow}>
-                {busy && <ActivityIndicator size="small" color="#7ab8ff" style={styles.romLabelSpinner} />}
-                <Text style={styles.romLabel} numberOfLines={1}>
-                  {romLabel}
-                </Text>
+        <View style={styles.scrollContent}>
+          <View style={styles.topGroup}>
+            <View style={styles.topBar}>
+              <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
+                <IconHome size={20} />
+              </Pressable>
+              <View style={styles.titleBlock}>
+                <View style={styles.romLabelRow}>
+                  {busy && <ActivityIndicator size="small" color="#7ab8ff" style={styles.romLabelSpinner} />}
+                  <Text style={styles.romLabel} numberOfLines={1}>
+                    {romLabel}
+                  </Text>
+                </View>
+              </View>
+              {system === 'gba' ? (
+                <Pressable style={styles.homeButton} onPress={handleShowAudioDebug} hitSlop={8}>
+                  <Text style={styles.debugLabel}>i</Text>
+                </Pressable>
+              ) : (
+                <View style={styles.homeButton} />
+              )}
+            </View>
+
+            <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
+              <View style={styles.screenBezel}>{screenView}</View>
+              <View style={styles.speakerGrill}>
+                {[0, 1, 2, 3, 4].map(i => (
+                  <View key={i} style={[styles.speakerHole, {backgroundColor: SYSTEM_ACCENT[system]}]} />
+                ))}
               </View>
             </View>
-            {system === 'gba' ? (
-              <Pressable style={styles.homeButton} onPress={handleShowAudioDebug} hitSlop={8}>
-                <Text style={styles.debugLabel}>i</Text>
-              </Pressable>
-            ) : (
-              <View style={styles.homeButton} />
-            )}
           </View>
 
-          <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
-            <View style={styles.screenBezel}>{screenView}</View>
-            <View style={styles.speakerGrill}>
-              {[0, 1, 2, 3, 4].map(i => (
-                <View key={i} style={[styles.speakerHole, {backgroundColor: SYSTEM_ACCENT[system]}]} />
+          {/* Everything below sits in its own bottom-anchored group (see
+              scrollContent's justifyContent:'space-between') so controls
+              stay in comfortable thumb reach instead of bunching up right
+              under the screen. */}
+          <View style={styles.bottomGroup}>
+            {/* L/R below the screen, one per side, reachable with either thumb -- the
+                original Game Boy has no shoulder buttons, so these only do anything
+                (and light up) once a GBA ROM is loaded. */}
+            <View style={styles.shoulderRow}>
+              <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
+              <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
+            </View>
+
+            <View style={styles.padRow}>
+              <DPad press={press} />
+              <ActionButtons press={press} />
+            </View>
+
+            <View style={styles.systemRow}>
+              <Pressable style={[styles.pillButton, styles.pillButtonSelect]} onPress={press('SELECT', true)} onPressOut={press('SELECT', false)}>
+                <View style={styles.pillHighlight} />
+                <Text style={styles.pillLabel}>SELECT</Text>
+              </Pressable>
+              <Pressable style={[styles.pillButton, styles.pillButtonStart]} onPress={press('START', true)} onPressOut={press('START', false)}>
+                <View style={styles.pillHighlight} />
+                <Text style={styles.pillLabel}>START</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.speedRow}>
+              {([1, 2, 3] as const).map(multiplier => (
+                <Pressable
+                  key={multiplier}
+                  style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
+                  onPress={() => handleSetSpeed(multiplier)}>
+                  <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
+                </Pressable>
               ))}
+
+              {system === 'gba' && (
+                <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
+                  <IconSave size={16} color="#cfe3fa" />
+                  <Text style={styles.saveOpenLabel}>Guardado</Text>
+                </Pressable>
+              )}
             </View>
           </View>
-
-          {/* L/R below the screen, one per side, reachable with either thumb -- the
-              original Game Boy has no shoulder buttons, so these only do anything
-              (and light up) once a GBA ROM is loaded. */}
-          <View style={styles.shoulderRow}>
-            <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
-            <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
-          </View>
-
-          <View style={styles.padRow}>
-            <DPad press={press} />
-            <ActionButtons press={press} />
-          </View>
-
-          <View style={styles.systemRow}>
-            <Pressable style={[styles.pillButton, styles.pillButtonSelect]} onPress={press('SELECT', true)} onPressOut={press('SELECT', false)}>
-              <View style={styles.pillHighlight} />
-              <Text style={styles.pillLabel}>SELECT</Text>
-            </Pressable>
-            <Pressable style={[styles.pillButton, styles.pillButtonStart]} onPress={press('START', true)} onPressOut={press('START', false)}>
-              <View style={styles.pillHighlight} />
-              <Text style={styles.pillLabel}>START</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.speedRow}>
-            {([1, 2, 3] as const).map(multiplier => (
-              <Pressable
-                key={multiplier}
-                style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
-                onPress={() => handleSetSpeed(multiplier)}>
-                <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
-              </Pressable>
-            ))}
-
-            {system === 'gba' && (
-              <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
-                <IconSave size={16} color="#cfe3fa" />
-                <Text style={styles.saveOpenLabel}>Guardado</Text>
-              </Pressable>
-            )}
-          </View>
-        </ScrollView>
+        </View>
       ) : (
         <Text style={styles.note}>iOS bindings not implemented yet -- see docs/roadmap.md.</Text>
       )}
@@ -1038,8 +1049,11 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingBottom: 24,
   },
+  topGroup: {alignItems: 'center', width: '100%'},
+  bottomGroup: {alignItems: 'center', width: '100%'},
   coverOverlay: {
     position: 'absolute',
     top: 0,
@@ -1135,14 +1149,14 @@ const styles = StyleSheet.create({
     padding: 6,
   },
   screen: {
-    width: 288,
-    height: 259,
+    width: 331,
+    height: 298,
     backgroundColor: '#000',
     borderRadius: 4,
   },
   screenGba: {
-    width: 288,
-    height: 192,
+    width: 331,
+    height: 221,
     backgroundColor: '#000',
     borderRadius: 4,
   },
@@ -1160,7 +1174,7 @@ const styles = StyleSheet.create({
   shoulderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    width: 288 + 12,
+    width: 331 + 12,
     marginTop: 6,
   },
   speedRow: {

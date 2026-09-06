@@ -22,6 +22,8 @@ type Mode = 'games' | 'hacks';
 interface Props {
   onSelectPatch: (hack: Hack, patch: Patch) => void;
   onClose: () => void;
+  /** True when shown as a tab inside HubScreen, which already renders its own header/close button. */
+  embedded?: boolean;
 }
 
 /**
@@ -36,7 +38,7 @@ interface Props {
  * hacks) or search hacks directly by title, for when you already know
  * the hack's name.
  */
-export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
+export default function RomLibraryScreen({onSelectPatch, onClose, embedded}: Props) {
   const [mode, setMode] = useState<Mode>('games');
   const [platform, setPlatform] = useState('gb');
   const [query, setQuery] = useState('');
@@ -186,13 +188,15 @@ export default function RomLibraryScreen({onSelectPatch, onClose}: Props) {
   // Default: browse games for the selected platform.
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Pressable style={styles.backButton} onPress={onClose} hitSlop={8}>
-          <IconChevronLeft size={20} />
-          <Text style={styles.link}>Cerrar</Text>
-        </Pressable>
-        <Text style={styles.title}>HackRoms</Text>
-      </View>
+      {!embedded && (
+        <View style={styles.header}>
+          <Pressable style={styles.backButton} onPress={onClose} hitSlop={8}>
+            <IconChevronLeft size={20} />
+            <Text style={styles.link}>Cerrar</Text>
+          </Pressable>
+          <Text style={styles.title}>HackRoms</Text>
+        </View>
+      )}
 
       <View style={styles.modeRow}>
         <Pressable style={[styles.modeTab, styles.modeTabActive]} onPress={() => {}}>
