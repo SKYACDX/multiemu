@@ -42,6 +42,7 @@ import {IconCloud, IconHome, IconSave, IconTrash, IconTriangle} from './src/icon
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
 import HubScreen from './src/HubScreen';
+import LocalLinkScreen from './src/LocalLinkScreen';
 import AccountScreen from './src/AccountScreen';
 import {readRomTitle} from './src/romTitle';
 import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './src/RomFilePicker';
@@ -91,7 +92,7 @@ import {TEST_ROM_BASE64} from './src/testRom';
 
 const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
-type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account';
+type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account' | 'localLink';
 type EmulatedSystem = 'gb' | 'gba';
 type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'SELECT' | 'START';
 
@@ -865,6 +866,7 @@ function App(): React.JSX.Element {
           busy={busy}
           username={authUsername}
           onOpenAccount={() => setScreen('account')}
+          onOpenLocalLink={() => setScreen('localLink')}
         />
       </SafeAreaView>
     );
@@ -912,6 +914,15 @@ function App(): React.JSX.Element {
           downloadingFile={busy}
           onClose={() => setScreen('home')}
         />
+      </>
+    );
+  }
+
+  if (screen === 'localLink') {
+    return (
+      <>
+        <StatusBar hidden />
+        <LocalLinkScreen onClose={() => setScreen('home')} />
       </>
     );
   }

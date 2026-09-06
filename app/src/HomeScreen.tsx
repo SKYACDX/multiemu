@@ -1,7 +1,7 @@
 import React from 'react';
 import {ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 import {CachedRom} from './RomLibraryNative';
-import {IconAccount, IconCartridge, IconClose, IconFile, IconFolder, IconGlobe} from './icons';
+import {IconAccount, IconCartridge, IconClose, IconFile, IconFolder, IconGlobe, IconLink} from './icons';
 
 const SYSTEM_LABEL: Record<string, string> = {gb: 'GB', gbc: 'GBC', gba: 'GBA'};
 const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba: '#c2536a'};
@@ -13,6 +13,7 @@ interface Props {
   onPickFile: () => void;
   onPickFolder: () => void;
   onBrowseHub: () => void;
+  onOpenLocalLink: () => void;
   lastFolder: {uri: string; name: string} | null;
   onOpenLastFolder: () => void;
   busy: boolean;
@@ -35,6 +36,7 @@ export default function HomeScreen({
   onPickFile,
   onPickFolder,
   onBrowseHub,
+  onOpenLocalLink,
   lastFolder,
   onOpenLastFolder,
   busy,
@@ -85,6 +87,13 @@ export default function HomeScreen({
             <IconGlobe size={20} color="#d9c6ff" />
           </View>
           <Text style={styles.actionLabel}>HackRoms y Archivos</Text>
+        </Pressable>
+        <Pressable style={[styles.actionButton, {borderColor: '#1e5c4f'}]} onPress={onOpenLocalLink}>
+          <View style={styles.actionButtonHighlight} />
+          <View style={[styles.actionIconCircle, {backgroundColor: '#1e5c4f'}]}>
+            <IconLink size={20} color="#a0ffe8" />
+          </View>
+          <Text style={styles.actionLabel}>Link local (beta)</Text>
         </Pressable>
       </View>
 

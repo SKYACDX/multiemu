@@ -146,6 +146,16 @@ export function IconTrash({size = 14, color = '#c77'}: IconProps) {
   );
 }
 
+export function IconLink({size = 20, color = '#fff'}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx={7} cy={12} r={4} stroke={color} strokeWidth={2} />
+      <Circle cx={17} cy={12} r={4} stroke={color} strokeWidth={2} />
+      <Line x1={11} y1={12} x2={13} y2={12} stroke={color} strokeWidth={2} strokeLinecap="round" />
+    </Svg>
+  );
+}
+
 /** Decorative cartridge glyph -- used on the Home screen's empty state and header. */
 export function IconCartridge({size = 40, color = '#555'}: IconProps) {
   return (

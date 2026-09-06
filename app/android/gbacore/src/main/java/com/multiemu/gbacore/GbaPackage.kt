@@ -10,5 +10,5 @@ class GbaPackage : ReactPackage {
         listOf(EmulatorControlModule(reactContext))
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =
-        listOf(GbaViewManager())
+        listOf(GbaViewManager(), GbaLinkViewManager())
 }
