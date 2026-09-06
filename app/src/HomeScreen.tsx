@@ -1,5 +1,5 @@
 import React from 'react';
-import {FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 import {CachedRom} from './RomLibraryNative';
 import {IconCartridge, IconClose, IconFile, IconFolder, IconGlobe} from './icons';
 
@@ -13,6 +13,9 @@ interface Props {
   onPickFile: () => void;
   onPickFolder: () => void;
   onBrowseHackRoms: () => void;
+  lastFolder: {uri: string; name: string} | null;
+  onOpenLastFolder: () => void;
+  busy: boolean;
 }
 
 /**
@@ -28,6 +31,9 @@ export default function HomeScreen({
   onPickFile,
   onPickFolder,
   onBrowseHackRoms,
+  lastFolder,
+  onOpenLastFolder,
+  busy,
 }: Props) {
   return (
     <View style={styles.container}>
@@ -45,41 +51,56 @@ export default function HomeScreen({
           <Text style={styles.actionLabel}>Cargar un archivo</Text>
         </Pressable>
         <Pressable style={styles.actionButton} onPress={onPickFolder}>
-          <View style={[styles.actionIconCircle, {backgroundColor: '#254a70'}]}>
-            <IconFolder size={20} color="#cfe3fa" />
+          <View style={[styles.actionIconCircle, {backgroundColor: '#6a4a1e'}]}>
+            <IconFolder size={20} color="#ffd9a0" />
           </View>
-          <Text style={styles.actionLabel}>Elegir carpeta</Text>
+          <Text style={styles.actionLabel}>{lastFolder ? 'Cambiar carpeta' : 'Elegir carpeta'}</Text>
         </Pressable>
         <Pressable style={styles.actionButton} onPress={onBrowseHackRoms}>
-          <View style={[styles.actionIconCircle, {backgroundColor: '#254a70'}]}>
-            <IconGlobe size={20} color="#cfe3fa" />
+          <View style={[styles.actionIconCircle, {backgroundColor: '#3f2a5c'}]}>
+            <IconGlobe size={20} color="#d9c6ff" />
           </View>
           <Text style={styles.actionLabel}>Buscar HackRoms</Text>
         </Pressable>
       </View>
 
+      {lastFolder && (
+        <Pressable style={styles.folderShortcut} onPress={onOpenLastFolder}>
+          <View style={[styles.actionIconCircle, {backgroundColor: '#6a4a1e'}]}>
+            <IconFolder size={18} color="#ffd9a0" />
+          </View>
+          <View style={styles.folderShortcutInfo}>
+            <Text style={styles.folderShortcutTitle} numberOfLines={1}>
+              {lastFolder.name}
+            </Text>
+            <Text style={styles.folderShortcutMeta}>Tu carpeta de ROMs · toca para ver</Text>
+          </View>
+        </Pressable>
+      )}
+
       <Text style={styles.sectionTitle}>Recientes</Text>
       <FlatList
         data={recentRoms}
         keyExtractor={r => r.id}
+        numColumns={2}
+        columnWrapperStyle={styles.slotColumnWrapper}
         contentContainerStyle={styles.list}
         renderItem={({item}) => (
-          <Pressable style={styles.romRow} onPress={() => onSelectRecent(item)}>
-            <View style={[styles.romAccent, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]} />
-            <View style={[styles.systemBadge, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]}>
-              <Text style={styles.systemBadgeLabel}>{SYSTEM_LABEL[item.system] ?? item.system.toUpperCase()}</Text>
+          <Pressable style={styles.slotCard} onPress={() => onSelectRecent(item)}>
+            <View style={styles.slotCardTop}>
+              <View style={[styles.systemBadge, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]}>
+                <Text style={styles.systemBadgeLabel}>{SYSTEM_LABEL[item.system] ?? item.system.toUpperCase()}</Text>
+              </View>
+              <Pressable hitSlop={10} onPress={() => onDeleteRecent(item)}>
+                <IconClose size={14} color="#777" />
+              </Pressable>
             </View>
-            <View style={styles.romInfo}>
-              <Text style={styles.romLabel} numberOfLines={1}>
-                {item.label}
-              </Text>
-              <Text style={styles.romMeta} numberOfLines={1}>
-                {item.name} · {(item.size / 1024 / 1024).toFixed(1)} MB
-              </Text>
-            </View>
-            <Pressable hitSlop={12} onPress={() => onDeleteRecent(item)}>
-              <IconClose size={16} color="#777" />
-            </Pressable>
+            <Text style={styles.romLabel} numberOfLines={2}>
+              {item.label}
+            </Text>
+            <Text style={styles.romMeta} numberOfLines={1}>
+              {(item.size / 1024 / 1024).toFixed(1)} MB
+            </Text>
           </Pressable>
         )}
         ListEmptyComponent={
@@ -89,6 +110,15 @@ export default function HomeScreen({
           </View>
         }
       />
+
+      {busy && (
+        <View style={styles.busyOverlay}>
+          <View style={styles.busyCard}>
+            <ActivityIndicator size="large" color="#7ab8ff" />
+            <Text style={styles.busyText}>Cargando ROM…</Text>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -113,7 +143,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   subtitle: {color: '#888', fontSize: 12, textAlign: 'center', marginTop: 10, marginBottom: 26},
-  actions: {flexDirection: 'row', gap: 10, marginBottom: 28},
+  actions: {flexDirection: 'row', gap: 10, marginBottom: 14},
   actionButton: {
     flex: 1,
     backgroundColor: '#1e2027',
@@ -131,31 +161,55 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   actionLabel: {color: '#ddd', fontSize: 11, fontWeight: '600', textAlign: 'center'},
-  sectionTitle: {color: '#888', fontSize: 12, fontWeight: '700', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5},
-  list: {paddingBottom: 24},
-  romRow: {
+  folderShortcut: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#1e2027',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 22,
+    ...CARD_SHADOW,
+  },
+  folderShortcutInfo: {flex: 1},
+  folderShortcutTitle: {color: '#fff', fontSize: 14, fontWeight: '700'},
+  folderShortcutMeta: {color: '#888', fontSize: 11, marginTop: 2},
+  sectionTitle: {color: '#888', fontSize: 12, fontWeight: '700', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5},
+  list: {paddingBottom: 24},
+  slotColumnWrapper: {gap: 10},
+  slotCard: {
+    flex: 1,
     backgroundColor: '#1e2027',
     borderRadius: 12,
     padding: 12,
     marginBottom: 10,
-    gap: 12,
-    overflow: 'hidden',
+    minHeight: 92,
     ...CARD_SHADOW,
   },
-  romAccent: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-  },
-  systemBadge: {borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, marginLeft: 4},
-  systemBadgeLabel: {color: '#fff', fontSize: 11, fontWeight: '800'},
-  romInfo: {flex: 1},
-  romLabel: {color: '#fff', fontSize: 14, fontWeight: '600'},
-  romMeta: {color: '#888', fontSize: 11, marginTop: 2},
+  slotCardTop: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8},
+  systemBadge: {borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3},
+  systemBadgeLabel: {color: '#fff', fontSize: 10, fontWeight: '800'},
+  romLabel: {color: '#fff', fontSize: 13, fontWeight: '600', flex: 1},
+  romMeta: {color: '#888', fontSize: 10, marginTop: 4},
   empty: {alignItems: 'center', marginTop: 32, gap: 12},
   emptyText: {color: '#666', textAlign: 'center', paddingHorizontal: 12, fontSize: 13, lineHeight: 19},
+  busyOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(10,10,14,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  busyCard: {
+    backgroundColor: '#1e2027',
+    borderRadius: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    gap: 12,
+  },
+  busyText: {color: '#ddd', fontSize: 13, fontWeight: '600'},
 });

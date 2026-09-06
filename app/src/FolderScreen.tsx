@@ -7,12 +7,14 @@ interface Props {
   folderName: string;
   files: FolderFile[];
   loading: boolean;
+  /** A file from this list is being read/loaded into the emulator -- distinct from [loading] (listing the folder). */
+  opening: boolean;
   onSelectFile: (file: FolderFile) => void;
   onClose: () => void;
 }
 
 /** Lists ROM files inside a folder the user picked (see HomeScreen's "Elegir carpeta"). */
-export default function FolderScreen({folderName, files, loading, onSelectFile, onClose}: Props) {
+export default function FolderScreen({folderName, files, loading, opening, onSelectFile, onClose}: Props) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -47,6 +49,15 @@ export default function FolderScreen({folderName, files, loading, onSelectFile, 
             <Text style={styles.empty}>No se encontraron ROMs (.gb/.gbc/.gba/.zip) en esta carpeta.</Text>
           }
         />
+      )}
+
+      {opening && (
+        <View style={styles.busyOverlay}>
+          <View style={styles.busyCard}>
+            <ActivityIndicator size="large" color="#7ab8ff" />
+            <Text style={styles.busyText}>Cargando ROM…</Text>
+          </View>
+        </View>
       )}
     </View>
   );
@@ -86,4 +97,23 @@ const styles = StyleSheet.create({
   fileName: {color: '#fff', fontSize: 15, flexShrink: 1, flexGrow: 1},
   fileSize: {color: '#888', fontSize: 12},
   empty: {color: '#888', textAlign: 'center', marginTop: 32, paddingHorizontal: 24},
+  busyOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(10,10,14,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  busyCard: {
+    backgroundColor: '#1e2027',
+    borderRadius: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    gap: 12,
+  },
+  busyText: {color: '#ddd', fontSize: 13, fontWeight: '600'},
 });

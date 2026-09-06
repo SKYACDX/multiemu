@@ -14,6 +14,8 @@ import com.facebook.react.uimanager.ThemedReactContext
  *   - "setButtonPressed" [buttonName, pressed] -- buttonName must match a
  *     GbaButton enum constant name (e.g. "A", "START", "L")
  *   - "setSpeedMultiplier" [1|2|3] -- fast-forward (mutes audio above 1x)
+ *   - "setPaused" [true|false] -- freezes emulation (used while the
+ *     manual-save modal is open)
  */
 class GbaViewManager : SimpleViewManager<GbaView>() {
     override fun getName() = "GbaView"
@@ -37,6 +39,10 @@ class GbaViewManager : SimpleViewManager<GbaView>() {
             "setSpeedMultiplier" -> {
                 val multiplier = args?.getDouble(0)?.toInt() ?: return
                 view.setSpeedMultiplier(multiplier)
+            }
+            "setPaused" -> {
+                val paused = args?.getBoolean(0) ?: return
+                view.setPaused(paused)
             }
         }
     }

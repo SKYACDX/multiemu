@@ -39,16 +39,34 @@ class GbaView(context: Context) : View(context) {
     // mainstream emulator just mutes during fast-forward instead.
     private var speedMultiplier = 1
 
+    // Set while the manual-save modal is open (see EmulatorControlModule /
+    // App.tsx) so the game visibly freezes instead of continuing to run
+    // (and generate audio/save-RAM writes) behind the picker.
+    private var paused = false
+
+    // TEMPORARY audio diagnostics, exposed via EmulatorControlModule so
+    // App.tsx can show real numbers instead of guessing blind -- delete
+    // once audio is confirmed working.
+    var totalAudioFramesRead: Long = 0
+        private set
+    var lastAudioWriteResult: Int = Int.MIN_VALUE
+        private set
+
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            gba?.let { instance ->
-                instance.runFrame(speedMultiplier)
-                bitmap?.setPixels(instance.framebuffer, 0, instance.width, 0, 0, instance.width, instance.height)
-                invalidate()
+            if (!paused) {
+                gba?.let { instance ->
+                    instance.runFrame(speedMultiplier)
+                    bitmap?.setPixels(instance.framebuffer, 0, instance.width, 0, 0, instance.width, instance.height)
+                    invalidate()
 
-                val frames = instance.readAudioSamples(audioBuffer)
-                if (frames > 0 && speedMultiplier == 1) {
-                    audioTrack?.write(audioBuffer, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING)
+                    val frames = instance.readAudioSamples(audioBuffer)
+                    if (frames > 0) {
+                        totalAudioFramesRead += frames
+                        if (speedMultiplier == 1) {
+                            lastAudioWriteResult = audioTrack?.write(audioBuffer, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING) ?: Int.MIN_VALUE
+                        }
+                    }
                 }
             }
             if (running) Choreographer.getInstance().postFrameCallback(this)
@@ -58,6 +76,14 @@ class GbaView(context: Context) : View(context) {
     fun setSpeedMultiplier(multiplier: Int) {
         speedMultiplier = multiplier.coerceIn(1, 3)
     }
+
+    fun setPaused(value: Boolean) {
+        paused = value
+    }
+
+    /** e.g. "frames=48213 lastWrite=1024 trackState=3" -- see the fields above. */
+    fun getAudioDebugInfo(): String =
+        "frames=$totalAudioFramesRead lastWrite=$lastAudioWriteResult trackState=${audioTrack?.state} playState=${audioTrack?.playState}"
 
     /** Full emulator state (not just cartridge save RAM) -- null if nothing's loaded or the save fails. */
     fun saveState(): ByteArray? = gba?.saveState()
@@ -74,6 +100,9 @@ class GbaView(context: Context) : View(context) {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
+        paused = false
+        totalAudioFramesRead = 0
+        lastAudioWriteResult = Int.MIN_VALUE
 
         val savePath = romId?.let {
             File(File(context.filesDir, "saves").apply { mkdirs() }, "$it.sav").absolutePath

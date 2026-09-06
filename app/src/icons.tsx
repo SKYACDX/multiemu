@@ -86,6 +86,21 @@ export function IconChevronLeft({size = 22, color = '#7ab8ff'}: IconProps) {
   );
 }
 
+export function IconSave({size = 20, color = '#fff'}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M5 4h11l3 3v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinejoin="round"
+      />
+      <Rect x={8} y={4} width={7} height={5} stroke={color} strokeWidth={2} />
+      <Rect x={7} y={14} width={10} height={6} stroke={color} strokeWidth={2} />
+    </Svg>
+  );
+}
+
 /** Decorative cartridge glyph -- used on the Home screen's empty state and header. */
 export function IconCartridge({size = 40, color = '#555'}: IconProps) {
   return (

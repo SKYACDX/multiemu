@@ -12,6 +12,11 @@
  * copyrighted ROMs -- RomHack Hub only ever serves patches, applied
  * client-side onto a ROM the user already has.
  *
+ * Locked to portrait (see AndroidManifest.xml) -- an earlier landscape
+ * reflow caused real layout bugs on rotation (controls vanishing, the
+ * native view only rendering half-width) that weren't practical to
+ * chase blind without a device to test rotation on directly.
+ *
  * @format
  */
 
@@ -19,6 +24,7 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -26,12 +32,11 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
-import {IconHome} from './src/icons';
+import {IconHome, IconSave} from './src/icons';
 import RomLibraryScreen from './src/RomLibraryScreen';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
@@ -41,20 +46,19 @@ import {
   deleteCachedRom,
   FolderFile,
   FolderPickerCancelledError,
+  getLastFolder,
   listCachedRoms,
   listRomFolder,
+  listStateSlots,
   loadCachedRom,
+  loadStateSlot,
   pickRomFolder,
   readRomFromFolder,
   saveRomToCache,
-} from './src/RomLibraryNative';
-import {
-  listStateSlots,
-  loadStateSlot,
   saveStateSlot,
   StateSlot,
 } from './src/RomLibraryNative';
-import {loadGbaState, saveGbaState} from './src/EmulatorControlNative';
+import {getAudioDebugInfo, loadGbaState, saveGbaState} from './src/EmulatorControlNative';
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
@@ -105,6 +109,7 @@ function App(): React.JSX.Element {
   const prevLabelBeforeLoad = useRef('ROM de prueba (franjas)');
 
   const [recentRoms, setRecentRoms] = useState<CachedRom[]>([]);
+  const [lastFolder, setLastFolder] = useState<{uri: string; name: string} | null>(null);
   const [folder, setFolder] = useState<{uri: string; name: string} | null>(null);
   const [folderFiles, setFolderFiles] = useState<FolderFile[]>([]);
   const [folderLoading, setFolderLoading] = useState(false);
@@ -113,8 +118,7 @@ function App(): React.JSX.Element {
   // Manual save states -- only GBA (mGBA exposes full-state save/load
   // out of the box; gbcore doesn't implement that yet, see docs/roadmap.md).
   const [stateSlots, setStateSlots] = useState<StateSlot[]>([]);
-  const {width, height} = useWindowDimensions();
-  const isLandscape = width > height;
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
 
   const refreshRecentRoms = useCallback(() => {
     listCachedRoms()
@@ -124,6 +128,9 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     refreshRecentRoms();
+    getLastFolder()
+      .then(setLastFolder)
+      .catch(() => {});
   }, [refreshRecentRoms]);
 
   // base64: pass it through when the caller already has one (e.g. fresh
@@ -169,6 +176,21 @@ function App(): React.JSX.Element {
     [system],
   );
 
+  const openSaveModal = useCallback(() => {
+    setSaveModalOpen(true);
+    gbaRef.current?.setPaused(true);
+    if (currentRomId.current) {
+      listStateSlots(currentRomId.current)
+        .then(setStateSlots)
+        .catch(() => {});
+    }
+  }, []);
+
+  const closeSaveModal = useCallback(() => {
+    setSaveModalOpen(false);
+    gbaRef.current?.setPaused(false);
+  }, []);
+
   const handleSaveSlot = useCallback(
     async (slot: number) => {
       const romId = currentRomId.current;
@@ -191,13 +213,19 @@ function App(): React.JSX.Element {
       try {
         const base64 = await loadStateSlot(romId, slot);
         await loadGbaState(base64);
+        closeSaveModal();
       } catch (e) {
         Alert.alert('No se pudo cargar ese guardado', e instanceof Error ? e.message : String(e));
       }
     },
-    [],
+    [closeSaveModal],
   );
 
+  const handleShowAudioDebug = useCallback(() => {
+    getAudioDebugInfo()
+      .then(info => Alert.alert('Diagnóstico de audio', info))
+      .catch(e => Alert.alert('Diagnóstico de audio', String(e)));
+  }, []);
 
   useEffect(() => {
     // Both native views unmount (destroying their emulator instance)
@@ -245,22 +273,36 @@ function App(): React.JSX.Element {
     }
   }, [loadIntoEmulator, refreshRecentRoms, romLabel]);
 
-  const handlePickFolder = useCallback(async () => {
+  const openFolder = useCallback(async (picked: {uri: string; name: string}) => {
+    setFolder(picked);
+    setScreen('folder');
+    setFolderLoading(true);
     try {
-      const picked = await pickRomFolder();
-      setFolder(picked);
-      setScreen('folder');
-      setFolderLoading(true);
       const files = await listRomFolder(picked.uri, SUPPORTED_ROM_EXTENSIONS);
       setFolderFiles(files);
     } catch (e) {
-      if (!(e instanceof FolderPickerCancelledError)) {
-        Alert.alert('No se pudo abrir la carpeta', e instanceof Error ? e.message : String(e));
-      }
+      Alert.alert('No se pudo abrir la carpeta', e instanceof Error ? e.message : String(e));
+      setScreen('home');
     } finally {
       setFolderLoading(false);
     }
   }, []);
+
+  const handlePickFolder = useCallback(async () => {
+    try {
+      const picked = await pickRomFolder();
+      setLastFolder(picked);
+      await openFolder(picked);
+    } catch (e) {
+      if (!(e instanceof FolderPickerCancelledError)) {
+        Alert.alert('No se pudo abrir la carpeta', e instanceof Error ? e.message : String(e));
+      }
+    }
+  }, [openFolder]);
+
+  const handleOpenLastFolder = useCallback(() => {
+    if (lastFolder) openFolder(lastFolder);
+  }, [lastFolder, openFolder]);
 
   const handleSelectFolderFile = useCallback(
     async (file: FolderFile) => {
@@ -277,7 +319,6 @@ function App(): React.JSX.Element {
           .catch(() => {});
       } catch (e) {
         Alert.alert('No se pudo cargar la ROM', e instanceof Error ? e.message : String(e));
-        setScreen('home');
       } finally {
         setBusy(false);
       }
@@ -404,6 +445,9 @@ function App(): React.JSX.Element {
           onPickFile={handlePickRom}
           onPickFolder={handlePickFolder}
           onBrowseHackRoms={() => setScreen('library')}
+          lastFolder={lastFolder}
+          onOpenLastFolder={handleOpenLastFolder}
+          busy={busy}
         />
       </SafeAreaView>
     );
@@ -417,6 +461,7 @@ function App(): React.JSX.Element {
           folderName={folder?.name ?? 'Carpeta'}
           files={folderFiles}
           loading={folderLoading}
+          opening={busy}
           onSelectFile={handleSelectFolderFile}
           onClose={() => setScreen('home')}
         />
@@ -428,7 +473,7 @@ function App(): React.JSX.Element {
     return (
       <>
         <StatusBar hidden />
-        <RomLibraryScreen onSelectPatch={handleSelectPatch} onClose={() => setScreen('game')} />
+        <RomLibraryScreen onSelectPatch={handleSelectPatch} onClose={() => setScreen('home')} />
       </>
     );
   }
@@ -457,48 +502,46 @@ function App(): React.JSX.Element {
                 </Text>
               </View>
             </View>
-            <View style={styles.homeButton} />
+            {system === 'gba' ? (
+              <Pressable style={styles.homeButton} onPress={handleShowAudioDebug} hitSlop={8}>
+                <Text style={styles.debugLabel}>i</Text>
+              </Pressable>
+            ) : (
+              <View style={styles.homeButton} />
+            )}
           </View>
 
-          <View style={[styles.gameArea, isLandscape && styles.gameAreaLandscape]}>
-            {isLandscape && <DPad press={press} />}
-
-            <View style={styles.centerColumn}>
-              <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
-                <View style={styles.screenBezel}>{screenView}</View>
-                <View style={styles.speakerGrill}>
-                  {[0, 1, 2, 3, 4].map(i => (
-                    <View key={i} style={[styles.speakerHole, {backgroundColor: SYSTEM_ACCENT[system]}]} />
-                  ))}
-                </View>
-              </View>
-
-              {/* L/R below the screen, one per side, reachable with either thumb -- the
-                  original Game Boy has no shoulder buttons, so these only do anything
-                  (and light up) once a GBA ROM is loaded. */}
-              <View style={styles.shoulderRow}>
-                <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
-                <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
-              </View>
-
-              {!isLandscape && (
-                <View style={styles.padRow}>
-                  <DPad press={press} />
-                  <ActionButtons press={press} />
-                </View>
-              )}
-
-              <View style={styles.systemRow}>
-                <Pressable style={styles.pillButton} onPress={press('SELECT', true)} onPressOut={press('SELECT', false)}>
-                  <Text style={styles.pillLabel}>SELECT</Text>
-                </Pressable>
-                <Pressable style={styles.pillButton} onPress={press('START', true)} onPressOut={press('START', false)}>
-                  <Text style={styles.pillLabel}>START</Text>
-                </Pressable>
-              </View>
+          <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
+            <View style={styles.screenBezel}>{screenView}</View>
+            <View style={styles.speakerGrill}>
+              {[0, 1, 2, 3, 4].map(i => (
+                <View key={i} style={[styles.speakerHole, {backgroundColor: SYSTEM_ACCENT[system]}]} />
+              ))}
             </View>
+          </View>
 
-            {isLandscape && <ActionButtons press={press} />}
+          {/* L/R below the screen, one per side, reachable with either thumb -- the
+              original Game Boy has no shoulder buttons, so these only do anything
+              (and light up) once a GBA ROM is loaded. */}
+          <View style={styles.shoulderRow}>
+            <ShoulderButton label="L" active={system === 'gba'} onPress={shoulderPress('L', true)} onRelease={shoulderPress('L', false)} />
+            <ShoulderButton label="R" active={system === 'gba'} onPress={shoulderPress('R', true)} onRelease={shoulderPress('R', false)} />
+          </View>
+
+          <View style={styles.padRow}>
+            <DPad press={press} />
+            <ActionButtons press={press} />
+          </View>
+
+          <View style={styles.systemRow}>
+            <Pressable style={[styles.pillButton, styles.pillButtonSelect]} onPress={press('SELECT', true)} onPressOut={press('SELECT', false)}>
+              <View style={styles.pillHighlight} />
+              <Text style={styles.pillLabel}>SELECT</Text>
+            </Pressable>
+            <Pressable style={[styles.pillButton, styles.pillButtonStart]} onPress={press('START', true)} onPressOut={press('START', false)}>
+              <View style={styles.pillHighlight} />
+              <Text style={styles.pillLabel}>START</Text>
+            </Pressable>
           </View>
 
           <View style={styles.speedRow}>
@@ -510,50 +553,64 @@ function App(): React.JSX.Element {
                 <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
               </Pressable>
             ))}
-          </View>
 
-          {system === 'gba' && (
-            <View style={styles.slotsSection}>
-              <Text style={styles.slotsSectionTitle}>Guardado manual</Text>
-              <View style={styles.slotsRow}>
-                {[0, 1, 2].map(slot => {
-                  const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
-                  return (
-                    <View key={slot} style={styles.slotCard}>
-                      <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
-                      <Text style={styles.slotMeta} numberOfLines={1}>
-                        {info.exists
-                          ? new Date(info.savedAt ?? 0).toLocaleString(undefined, {
-                              day: '2-digit',
-                              month: '2-digit',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })
-                          : 'Vacío'}
-                      </Text>
-                      <View style={styles.slotActions}>
-                        <Pressable style={styles.slotActionButton} onPress={() => handleSaveSlot(slot)}>
-                          <Text style={styles.slotActionLabel}>Guardar</Text>
-                        </Pressable>
-                        <Pressable
-                          style={[styles.slotActionButton, !info.exists && styles.slotActionButtonDisabled]}
-                          disabled={!info.exists}
-                          onPress={() => handleLoadSlot(slot)}>
-                          <Text style={[styles.slotActionLabel, !info.exists && styles.slotActionLabelDisabled]}>
-                            Cargar
-                          </Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-          )}
+            {system === 'gba' && (
+              <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
+                <IconSave size={16} color="#cfe3fa" />
+                <Text style={styles.saveOpenLabel}>Guardado</Text>
+              </Pressable>
+            )}
+          </View>
         </ScrollView>
       ) : (
         <Text style={styles.note}>iOS bindings not implemented yet -- see docs/roadmap.md.</Text>
       )}
+
+      {/* Floating, pauses the game while open -- see openSaveModal/closeSaveModal. */}
+      <Modal visible={saveModalOpen} transparent animationType="fade" onRequestClose={closeSaveModal}>
+        <Pressable style={styles.modalBackdrop} onPress={closeSaveModal}>
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Text style={styles.modalTitle}>Guardado manual</Text>
+            <Text style={styles.modalSubtitle}>El juego está en pausa mientras eliges un espacio.</Text>
+            <View style={styles.slotsRow}>
+              {[0, 1, 2].map(slot => {
+                const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
+                return (
+                  <View key={slot} style={styles.slotCard}>
+                    <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
+                    <Text style={styles.slotMeta} numberOfLines={1}>
+                      {info.exists
+                        ? new Date(info.savedAt ?? 0).toLocaleString(undefined, {
+                            day: '2-digit',
+                            month: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : 'Vacío'}
+                    </Text>
+                    <View style={styles.slotActions}>
+                      <Pressable style={styles.slotActionButton} onPress={() => handleSaveSlot(slot)}>
+                        <Text style={styles.slotActionLabel}>Guardar</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[styles.slotActionButton, !info.exists && styles.slotActionButtonDisabled]}
+                        disabled={!info.exists}
+                        onPress={() => handleLoadSlot(slot)}>
+                        <Text style={[styles.slotActionLabel, !info.exists && styles.slotActionLabelDisabled]}>
+                          Cargar
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+            <Pressable style={styles.modalCloseButton} onPress={closeSaveModal}>
+              <Text style={styles.modalCloseLabel}>Cerrar y continuar</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -574,6 +631,7 @@ function ShoulderButton({
       style={[styles.shoulderButton, !active && styles.shoulderButtonInactive]}
       onPressIn={onPress}
       onPressOut={onRelease}>
+      <View style={styles.shoulderHighlight} />
       <Text style={styles.shoulderLabel}>{label}</Text>
     </Pressable>
   );
@@ -613,6 +671,7 @@ function DPadButton({
 }) {
   return (
     <Pressable style={styles.dpadButton} onPressIn={press(button, true)} onPressOut={press(button, false)}>
+      <View style={styles.dpadHighlight} />
       <Text style={styles.dpadLabel}>{label}</Text>
     </Pressable>
   );
@@ -626,12 +685,14 @@ function ActionButtons({press}: {press: (b: GameBoyButton & GbaButton, pressed: 
         style={[styles.actionButton, styles.buttonB]}
         onPressIn={press('B', true)}
         onPressOut={press('B', false)}>
+        <View style={styles.actionHighlight} />
         <Text style={styles.actionLabel}>B</Text>
       </Pressable>
       <Pressable
         style={[styles.actionButton, styles.buttonA]}
         onPressIn={press('A', true)}
         onPressOut={press('A', false)}>
+        <View style={styles.actionHighlight} />
         <Text style={styles.actionLabel}>A</Text>
       </Pressable>
     </View>
@@ -661,6 +722,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  debugLabel: {
+    color: '#555',
+    fontSize: 13,
+    fontWeight: '800',
+    fontStyle: 'italic',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#555',
+    textAlign: 'center',
+    lineHeight: 17,
+  },
   titleBlock: {alignItems: 'center', flex: 1},
   romLabelRow: {
     flexDirection: 'row',
@@ -676,18 +750,27 @@ const styles = StyleSheet.create({
     maxWidth: 220,
   },
   shoulderButton: {
-    width: 40,
-    height: 32,
-    borderRadius: 6,
+    width: 44,
+    height: 34,
+    borderRadius: 8,
     backgroundColor: '#3a5a7a',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
   shoulderButtonInactive: {
     backgroundColor: '#2a2a2a',
     opacity: 0.55,
   },
-  shoulderLabel: {color: '#ccc', fontWeight: '700', fontSize: 13},
+  shoulderHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: '45%',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  shoulderLabel: {color: '#eee', fontWeight: '700', fontSize: 13},
   // A stylized "device shell" around the screen -- a rounded, elevated
   // panel with a border tinted to the active system (blue for GB/GBC,
   // maroon for GBA, matching HomeScreen's badge colors) instead of the
@@ -735,17 +818,6 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     opacity: 0.6,
   },
-  gameArea: {
-    width: '100%',
-    alignItems: 'center',
-  },
-  gameAreaLandscape: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-  },
-  centerColumn: {alignItems: 'center'},
   shoulderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -754,6 +826,7 @@ const styles = StyleSheet.create({
   },
   speedRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
     marginTop: 12,
   },
@@ -768,14 +841,42 @@ const styles = StyleSheet.create({
   speedButtonActive: {backgroundColor: '#4a90d9'},
   speedLabel: {color: '#888', fontSize: 12, fontWeight: '700'},
   speedLabelActive: {color: '#fff'},
-  slotsSection: {marginTop: 14, alignItems: 'center'},
-  slotsSectionTitle: {
-    color: '#888',
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    marginBottom: 8,
+  saveOpenButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#254a70',
+    marginLeft: 4,
   },
+  saveOpenLabel: {color: '#cfe3fa', fontSize: 12, fontWeight: '700'},
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: '#1e2027',
+    borderRadius: 18,
+    padding: 20,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 340,
+  },
+  modalTitle: {color: '#fff', fontSize: 17, fontWeight: '800'},
+  modalSubtitle: {color: '#888', fontSize: 12, textAlign: 'center', marginTop: 6, marginBottom: 16},
+  modalCloseButton: {
+    marginTop: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 24,
+    borderRadius: 10,
+    backgroundColor: '#2f5f8f',
+  },
+  modalCloseLabel: {color: '#fff', fontWeight: '700', fontSize: 13},
   slotsRow: {
     flexDirection: 'row',
     gap: 8,
@@ -825,11 +926,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#33353c',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 2},
     shadowOpacity: 0.3,
     shadowRadius: 3,
     elevation: 4,
+  },
+  dpadHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: '40%',
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   dpadLabel: {color: '#eee', fontSize: 18},
   actionCluster: {width: 140, height: 110, marginRight: 8},
@@ -841,11 +951,21 @@ const styles = StyleSheet.create({
     backgroundColor: '#8b3a4a',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 3},
     shadowOpacity: 0.35,
     shadowRadius: 4,
     elevation: 6,
+  },
+  actionHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 6,
+    right: 6,
+    height: '42%',
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)',
   },
   buttonA: {top: 0, right: 0, backgroundColor: '#c2536a'},
   buttonB: {bottom: 0, left: 0},
@@ -860,15 +980,25 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 20,
     borderRadius: 14,
-    backgroundColor: '#33353c',
     transform: [{rotate: '-15deg'}],
+    overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 2},
     shadowOpacity: 0.3,
     shadowRadius: 3,
     elevation: 3,
   },
-  pillLabel: {color: '#ccc', fontSize: 11, fontWeight: '700'},
+  pillButtonSelect: {backgroundColor: '#3a3d47'},
+  pillButtonStart: {backgroundColor: '#454040'},
+  pillHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: '45%',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  pillLabel: {color: '#ddd', fontSize: 11, fontWeight: '700'},
 });
 
 export default App;

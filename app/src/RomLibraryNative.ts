@@ -27,6 +27,7 @@ interface RomLibraryNativeModule {
   loadFromCache(id: string): Promise<{base64: string}>;
   deleteFromCache(id: string): Promise<void>;
   pickFolder(): Promise<{uri: string; name: string}>;
+  getLastFolder(): Promise<{uri: string; name: string} | null>;
   listFolder(folderUri: string, extensions: string[]): Promise<FolderFile[]>;
   readFileFromFolder(fileUri: string, extensions: string[]): Promise<{base64: string; name: string; size: number}>;
   saveStateSlot(romId: string, slot: number, base64: string): Promise<void>;
@@ -64,6 +65,11 @@ export async function pickRomFolder(): Promise<{uri: string; name: string}> {
     if (code === 'CANCELLED') throw new FolderPickerCancelledError();
     throw e;
   }
+}
+
+/** The folder from the last pickRomFolder() call, or null if none yet (or its permission was revoked). */
+export function getLastFolder(): Promise<{uri: string; name: string} | null> {
+  return RomLibrary.getLastFolder();
 }
 
 export function listRomFolder(folderUri: string, extensions: string[]): Promise<FolderFile[]> {

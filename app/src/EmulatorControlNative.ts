@@ -3,6 +3,7 @@ import {NativeModules} from 'react-native';
 interface EmulatorControlNativeModule {
   saveGbaState(): Promise<string>;
   loadGbaState(base64: string): Promise<void>;
+  getAudioDebugInfo(): Promise<string>;
 }
 
 const {EmulatorControl} = NativeModules as {EmulatorControl: EmulatorControlNativeModule};
@@ -18,4 +19,9 @@ export function saveGbaState(): Promise<string> {
 
 export function loadGbaState(base64: string): Promise<void> {
   return EmulatorControl.loadGbaState(base64);
+}
+
+/** TEMPORARY diagnostic -- see GbaView.kt's totalAudioFramesRead/lastAudioWriteResult. */
+export function getAudioDebugInfo(): Promise<string> {
+  return EmulatorControl.getAudioDebugInfo();
 }

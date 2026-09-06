@@ -193,10 +193,17 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
             )
             val folder = DocumentFile.fromTreeUri(reactContext, treeUri)
                 ?: throw IllegalStateException("No se pudo abrir la carpeta")
+            val name = folder.name ?: "Carpeta"
+
+            // Persisted (SAF's takePersistableUriPermission above means this
+            // URI stays valid across app restarts) so Home can offer this
+            // folder directly next time instead of the user re-running the
+            // system picker just to get back to the same place.
+            prefs().edit().putString("last_folder_uri", treeUri.toString()).putString("last_folder_name", name).apply()
 
             val result = Arguments.createMap()
             result.putString("uri", treeUri.toString())
-            result.putString("name", folder.name ?: "Carpeta")
+            result.putString("name", name)
             promise.resolve(result)
         } catch (e: Exception) {
             promise.reject("FOLDER_ERROR", e.message, e)
@@ -204,6 +211,28 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     }
 
     override fun onNewIntent(intent: Intent) {}
+
+    private fun prefs() = reactContext.getSharedPreferences("multiemu_prefs", 0)
+
+    /** The last folder picked via pickFolder(), or null if none yet (or its permission was revoked). */
+    @ReactMethod
+    fun getLastFolder(promise: Promise) {
+        val uri = prefs().getString("last_folder_uri", null)
+        val name = prefs().getString("last_folder_name", null)
+        if (uri == null || name == null) {
+            promise.resolve(null)
+            return
+        }
+        val stillGranted = reactContext.contentResolver.persistedUriPermissions.any { it.uri.toString() == uri }
+        if (!stillGranted) {
+            promise.resolve(null)
+            return
+        }
+        val result = Arguments.createMap()
+        result.putString("uri", uri)
+        result.putString("name", name)
+        promise.resolve(result)
+    }
 
     /** Lists files directly inside [folderUri] whose extension is in [extensions] (.zip always included). */
     @ReactMethod

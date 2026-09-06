@@ -46,4 +46,10 @@ class EmulatorControlModule(reactContext: ReactApplicationContext) : ReactContex
         val ok = view.loadState(Base64.decode(base64, Base64.DEFAULT))
         if (ok) promise.resolve(null) else promise.reject("LOAD_STATE_FAILED", "El save state no es compatible con esta ROM")
     }
+
+    /** TEMPORARY: see GbaView's totalAudioFramesRead/lastAudioWriteResult. Delete once audio is confirmed working. */
+    @ReactMethod
+    fun getAudioDebugInfo(promise: Promise) {
+        promise.resolve(activeGba?.getAudioDebugInfo() ?: "no active GbaView")
+    }
 }

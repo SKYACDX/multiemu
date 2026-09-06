@@ -27,6 +27,8 @@ export interface GbaViewHandle {
   setButtonPressed(button: GbaButton, pressed: boolean): void;
   /** 1/2/3x fast-forward (audio mutes above 1x). */
   setSpeedMultiplier(multiplier: 1 | 2 | 3): void;
+  /** Freezes emulation (used while the manual-save modal is open). */
+  setPaused(paused: boolean): void;
 }
 
 /**
@@ -53,6 +55,9 @@ const GbaView = forwardRef<GbaViewHandle, ViewProps>((props, ref) => {
     },
     setSpeedMultiplier(multiplier: 1 | 2 | 3) {
       dispatchCommand('setSpeedMultiplier', [multiplier]);
+    },
+    setPaused(paused: boolean) {
+      dispatchCommand('setPaused', [paused]);
     },
   }));
 
