@@ -1,10 +1,15 @@
 #include "gba_link.h"
 
 #include <algorithm>
+#include <android/log.h>
 #include <chrono>
 #include <sstream>
 
 #include "mgba/internal/gba/gba.h"
+
+// TEMPORARY diagnostic logging while chasing a live lockstep deadlock --
+// delete once local link is confirmed working. `adb logcat -s gba_link`.
+#define LLOG(...) __android_log_print(ANDROID_LOG_DEBUG, "gba_link", __VA_ARGS__)
 
 namespace {
 
@@ -200,6 +205,7 @@ bool LinkedGbaSession::signalCb(mLockstep* ls, unsigned mask) {
         player.awake = 1;
         woke = true;
     }
+    LLOG("signal(mask=%u) waitMaskAfter=%d awake=%d woke=%d", mask, player.waitMask, player.awake, woke);
     return woke;
 }
 
@@ -208,11 +214,22 @@ bool LinkedGbaSession::waitCb(mLockstep* ls, unsigned mask) {
     Player& player = self->players_[0];
     bool slept = false;
     player.waitMask |= static_cast<int>(mask);
+    LLOG("wait(mask=%u) waitMaskAfter=%d awakeBefore=%d", mask, player.waitMask, player.awake);
     if (player.awake > 0) {
-        self->blockPlayer(player);
+        // Set BEFORE blocking, not after -- blockPlayer releases
+        // bigLock_ while it sleeps (see its own comment), so another
+        // thread's signalCb can run concurrently and will check this
+        // exact flag to decide whether to wake us. Setting it only
+        // after blockPlayer returns leaves a window where we're
+        // genuinely asleep but still look "awake" to that check, so the
+        // signal that was supposed to wake us gets silently dropped --
+        // a classic lost-wakeup, and the actual deadlock this session
+        // kept reproducing.
         player.awake = 0;
+        self->blockPlayer(player);
         slept = true;
     }
+    LLOG("wait(mask=%u) RETURNED slept=%d", mask, slept);
     return slept;
 }
 
@@ -223,6 +240,7 @@ void LinkedGbaSession::addCyclesCb(mLockstep* ls, int id, int32_t cycles) {
         if (other.node.mode > SIO_MULTI) {
             // Not currently in a connected link mode on that side -- has
             // nothing to do with this transfer.
+            LLOG("addCycles(0, %d) SKIPPED other.mode=%d", cycles, other.node.mode);
             return;
         }
         other.cyclesPosted += cycles;
@@ -236,8 +254,10 @@ void LinkedGbaSession::addCyclesCb(mLockstep* ls, int id, int32_t cycles) {
         }
         self->wakePlayer(other);
         other.awake = 1;
+        LLOG("addCycles(0, %d) other.cyc=%d other.awake=%d", cycles, other.cyclesPosted, other.awake);
     } else {
         self->players_[id].cyclesPosted += cycles;
+        LLOG("addCycles(%d, %d) cyc=%d", id, cycles, self->players_[id].cyclesPosted);
     }
 }
 
@@ -245,15 +265,23 @@ int32_t LinkedGbaSession::useCyclesCb(mLockstep* ls, int id, int32_t cycles) {
     auto* self = static_cast<LinkedGbaSession*>(ls->context);
     Player& p = self->players_[id];
     p.cyclesPosted -= cycles;
+    LLOG("useCycles(%d, %d) cycAfter=%d", id, cycles, p.cyclesPosted);
     if (p.cyclesPosted <= 0) {
-        self->blockPlayer(p);
+        // Set BEFORE blocking -- see waitCb's comment, same lost-wakeup
+        // hazard applies here (addCyclesCb's id==0 branch checks this
+        // exact flag to decide whether to post/wake).
         p.awake = 0;
+        LLOG("useCycles(%d) BLOCKING", id);
+        self->blockPlayer(p);
+        LLOG("useCycles(%d) WOKE cyc=%d", id, p.cyclesPosted);
     }
     return p.cyclesPosted;
 }
 
 int32_t LinkedGbaSession::unusedCyclesCb(mLockstep* ls, int id) {
-    return static_cast<LinkedGbaSession*>(ls->context)->players_[id].cyclesPosted;
+    int32_t v = static_cast<LinkedGbaSession*>(ls->context)->players_[id].cyclesPosted;
+    LLOG("unusedCycles(%d) = %d", id, v);
+    return v;
 }
 
 void LinkedGbaSession::unloadCb(mLockstep* ls, int id) {
