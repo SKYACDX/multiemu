@@ -30,8 +30,10 @@ class GbaLinkNative private constructor(private var handle: Long, val width: Int
         @JvmStatic private external fun nativeGetHeight(handle: Long): Int
         @JvmStatic private external fun nativeGetFramebuffer(handle: Long, player: Int, outPixels: IntArray)
         @JvmStatic private external fun nativeSetButtonPressed(handle: Long, player: Int, buttonId: Int, pressed: Boolean)
-        @JvmStatic private external fun nativeGetFramesRun(handle: Long, player: Int): Long
-        @JvmStatic private external fun nativeGetDebugState(handle: Long): String
+        @JvmStatic private external fun nativeGetAudioSampleRate(): Int
+        @JvmStatic private external fun nativeReadAudioSamples(handle: Long, player: Int, outSamples: ShortArray): Int
+
+        val audioSampleRateHz: Int by lazy { nativeGetAudioSampleRate() }
     }
 
     /** width*height ARGB_8888 pixels each, reused across calls. */
@@ -49,16 +51,10 @@ class GbaLinkNative private constructor(private var handle: Long, val width: Int
         nativeSetButtonPressed(handle, player, button.ordinal, pressed)
     }
 
-    /** TEMPORARY diagnostic -- see LinkedGbaSession::framesRun. Delete once local link is confirmed working. */
-    fun framesRun(player: Int): Long {
+    /** Drains [player]'s pending audio into outSamples (stereo 16-bit PCM); returns frames written. */
+    fun readAudioSamples(player: Int, outSamples: ShortArray): Int {
         check(handle != 0L) { "GbaLinkNative used after close()" }
-        return nativeGetFramesRun(handle, player)
-    }
-
-    /** TEMPORARY diagnostic -- see LinkedGbaSession::debugState. */
-    fun debugState(): String {
-        check(handle != 0L) { "GbaLinkNative used after close()" }
-        return nativeGetDebugState(handle)
+        return nativeReadAudioSamples(handle, player, outSamples)
     }
 
     override fun close() {

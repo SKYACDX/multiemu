@@ -6,9 +6,8 @@ import {InvalidRomExtensionError, pickRomFile, RomPickerCancelledError} from './
 import {base64ToBytes} from './base64';
 import {crc32} from './patchers/crc32';
 import {CachedRom, loadCachedRom, listCachedRoms, saveRomToCache} from './RomLibraryNative';
-import {getLinkDebugInfo} from './EmulatorControlNative';
 
-type PadButton = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B';
+type PadButton = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'START' | 'SELECT';
 
 interface PickedGba {
   base64: string;
@@ -21,12 +20,9 @@ interface Props {
 }
 
 /**
- * Local (same-device) 2-player GBA link cable -- EXPERIMENTAL: first
- * real test of the native lockstep engine (see gba_link.h/.cpp), no
- * audio yet. Deliberately minimal controls (D-pad + A/B only, no L/R/
- * SELECT/START) to fit two full control sets on one phone screen; the
- * full button set can follow once the link protocol itself is
- * confirmed working end-to-end.
+ * Local (same-device) 2-player GBA link cable -- EXPERIMENTAL. Each
+ * player's full control set (D-pad, A/B, L/R, SELECT/START) overlays
+ * directly on their own half of the screen (see MiniPad).
  */
 export default function LocalLinkScreen({onClose}: Props) {
   const [romA, setRomA] = useState<PickedGba | null>(null);
@@ -121,28 +117,11 @@ export default function LocalLinkScreen({onClose}: Props) {
     return () => clearTimeout(timer);
   }, [playing, romA, romB]);
 
-  // TEMPORARY diagnostic -- selectable/copyable text instead of a
-  // screenshot, so it can be pasted directly. Delete once local link is
-  // confirmed working end-to-end.
-  const [debugInfo, setDebugInfo] = useState('');
-  useEffect(() => {
-    if (!playing) return;
-    const interval = setInterval(() => {
-      getLinkDebugInfo()
-        .then(setDebugInfo)
-        .catch(() => {});
-    }, 500);
-    return () => clearInterval(interval);
-  }, [playing]);
-
   if (playing && romA && romB) {
     return (
       <View style={styles.playContainer}>
         <StatusBar hidden />
         <GbaLinkView ref={linkRef} style={styles.linkView} />
-        <Text style={styles.debugText} selectable>
-          {debugInfo}
-        </Text>
         {connecting && (
           <View style={styles.connectingOverlay} pointerEvents="none">
             <Text style={styles.connectingLabel}>Conectando ambas ROMs, espera un momento…</Text>
@@ -175,8 +154,8 @@ export default function LocalLinkScreen({onClose}: Props) {
       </View>
 
       <Text style={styles.hint}>
-        Experimental -- solo GBA, sin audio todavía. Elige dos ROMs (pueden ser dos copias del mismo juego) para
-        conectarlas por cable de enlace en este mismo dispositivo.
+        Experimental -- solo GBA. Elige dos ROMs (pueden ser dos copias del mismo juego) para conectarlas por cable de
+        enlace en este mismo dispositivo.
       </Text>
 
       <RomSlot label="Jugador 1" rom={romA} loading={picking === 'A'} onPick={() => setPickerSlot('A')} />
@@ -303,26 +282,47 @@ function MiniPad({player, press}: {player: 0 | 1; press: (player: 0 | 1, button:
       onResponderMove={updateFromTouches}
       onResponderRelease={releaseAll}
       onResponderTerminate={releaseAll}>
-      <View style={styles.miniDpad}>
-        <View style={[styles.miniDpadHit, styles.miniDpadUp, isPressed('UP') && styles.miniHitPressed]} ref={setRef('UP')}>
-          <IconTriangle size={12} rotation={0} />
+      {/* Move + L on the left. */}
+      <View style={styles.miniLeftGroup}>
+        <View style={[styles.miniShoulderButton, isPressed('L') && styles.miniHitPressed]} ref={setRef('L')}>
+          <Text style={styles.miniShoulderLabel}>L</Text>
         </View>
-        <View style={[styles.miniDpadHit, styles.miniDpadDown, isPressed('DOWN') && styles.miniHitPressed]} ref={setRef('DOWN')}>
-          <IconTriangle size={12} rotation={180} />
-        </View>
-        <View style={[styles.miniDpadHit, styles.miniDpadLeft, isPressed('LEFT') && styles.miniHitPressed]} ref={setRef('LEFT')}>
-          <IconTriangle size={12} rotation={-90} />
-        </View>
-        <View style={[styles.miniDpadHit, styles.miniDpadRight, isPressed('RIGHT') && styles.miniHitPressed]} ref={setRef('RIGHT')}>
-          <IconTriangle size={12} rotation={90} />
+        <View style={styles.miniDpad}>
+          <View style={[styles.miniDpadHit, styles.miniDpadUp, isPressed('UP') && styles.miniHitPressed]} ref={setRef('UP')}>
+            <IconTriangle size={12} rotation={0} />
+          </View>
+          <View style={[styles.miniDpadHit, styles.miniDpadDown, isPressed('DOWN') && styles.miniHitPressed]} ref={setRef('DOWN')}>
+            <IconTriangle size={12} rotation={180} />
+          </View>
+          <View style={[styles.miniDpadHit, styles.miniDpadLeft, isPressed('LEFT') && styles.miniHitPressed]} ref={setRef('LEFT')}>
+            <IconTriangle size={12} rotation={-90} />
+          </View>
+          <View style={[styles.miniDpadHit, styles.miniDpadRight, isPressed('RIGHT') && styles.miniHitPressed]} ref={setRef('RIGHT')}>
+            <IconTriangle size={12} rotation={90} />
+          </View>
         </View>
       </View>
-      <View style={styles.miniActionCluster}>
-        <View style={[styles.miniActionButton, styles.miniButtonB, isPressed('B') && styles.miniHitPressed]} ref={setRef('B')}>
-          <Text style={styles.miniActionLabel}>B</Text>
+      {/* Select/Start in the middle. */}
+      <View style={styles.miniCenterGroup}>
+        <View style={[styles.miniCenterButton, isPressed('SELECT') && styles.miniHitPressed]} ref={setRef('SELECT')}>
+          <Text style={styles.miniCenterLabel}>SELECT</Text>
         </View>
-        <View style={[styles.miniActionButton, styles.miniButtonA, isPressed('A') && styles.miniHitPressed]} ref={setRef('A')}>
-          <Text style={styles.miniActionLabel}>A</Text>
+        <View style={[styles.miniCenterButton, isPressed('START') && styles.miniHitPressed]} ref={setRef('START')}>
+          <Text style={styles.miniCenterLabel}>START</Text>
+        </View>
+      </View>
+      {/* A/B + R on the right. */}
+      <View style={styles.miniRightGroup}>
+        <View style={[styles.miniShoulderButton, isPressed('R') && styles.miniHitPressed]} ref={setRef('R')}>
+          <Text style={styles.miniShoulderLabel}>R</Text>
+        </View>
+        <View style={styles.miniActionCluster}>
+          <View style={[styles.miniActionButton, styles.miniButtonB, isPressed('B') && styles.miniHitPressed]} ref={setRef('B')}>
+            <Text style={styles.miniActionLabel}>B</Text>
+          </View>
+          <View style={[styles.miniActionButton, styles.miniButtonA, isPressed('A') && styles.miniHitPressed]} ref={setRef('A')}>
+            <Text style={styles.miniActionLabel}>A</Text>
+          </View>
         </View>
       </View>
     </View>
@@ -350,16 +350,6 @@ const styles = StyleSheet.create({
   startLabel: {color: '#fff', fontWeight: '700', fontSize: 15},
   playContainer: {flex: 1, backgroundColor: '#000'},
   linkView: {flex: 1},
-  debugText: {
-    position: 'absolute',
-    top: 8,
-    left: 8,
-    right: 8,
-    color: '#ff0',
-    fontSize: 11,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    padding: 4,
-  },
   connectingOverlay: {
     position: 'absolute',
     top: 0,
@@ -386,9 +376,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: '50%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
     paddingHorizontal: 14,
     paddingBottom: 10,
   },
@@ -404,31 +392,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   exitLabel: {color: '#ffb3b3', fontSize: 11, fontWeight: '700'},
-  miniPadArea: {flexDirection: 'row', alignItems: 'flex-end', gap: 10},
-  miniDpad: {width: 84, height: 84},
+  // Row spans the full half-width: move+L on the left, select/start in
+  // the middle, A/B+R on the right (see LocalLinkScreen's halfOverlay).
+  miniPadArea: {flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', width: '100%'},
+  miniLeftGroup: {flexDirection: 'row', alignItems: 'flex-end', gap: 8},
+  miniRightGroup: {flexDirection: 'row', alignItems: 'flex-end', gap: 8},
+  miniCenterGroup: {flexDirection: 'row', alignItems: 'flex-end', gap: 8},
+  miniDpad: {width: 92, height: 92},
   // Semi-transparent (overlaid directly on the game view underneath,
   // see LocalLinkScreen's halfOverlay) -- opaque enough to read the
   // arrow/letter, see-through enough not to hide the game under them.
   miniDpadHit: {
     position: 'absolute',
-    width: 28,
-    height: 28,
+    width: 30,
+    height: 30,
     backgroundColor: 'rgba(40,42,50,0.4)',
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 6,
   },
-  miniDpadUp: {top: 0, left: 28},
-  miniDpadDown: {top: 56, left: 28},
-  miniDpadLeft: {top: 28, left: 0},
-  miniDpadRight: {top: 28, left: 56},
+  miniDpadUp: {top: 0, left: 31},
+  miniDpadDown: {top: 62, left: 31},
+  miniDpadLeft: {top: 31, left: 0},
+  miniDpadRight: {top: 31, left: 62},
   miniHitPressed: {backgroundColor: 'rgba(122,184,255,0.55)'},
-  miniActionCluster: {width: 70, height: 70},
+  miniActionCluster: {width: 76, height: 76},
   miniActionButton: {
     position: 'absolute',
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(140,58,74,0.4)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -436,6 +429,24 @@ const styles = StyleSheet.create({
   miniButtonA: {top: 0, right: 0},
   miniButtonB: {bottom: 0, left: 0},
   miniActionLabel: {color: '#fff', fontWeight: '700', fontSize: 13},
+  miniShoulderButton: {
+    width: 34,
+    height: 26,
+    borderRadius: 6,
+    backgroundColor: 'rgba(60,64,76,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  miniShoulderLabel: {color: '#fff', fontWeight: '700', fontSize: 11},
+  miniCenterButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(60,64,76,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  miniCenterLabel: {color: '#fff', fontWeight: '700', fontSize: 9},
   pickerBackdrop: {flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', padding: 24},
   pickerCard: {backgroundColor: '#1e2027', borderRadius: 16, padding: 16, width: '100%', maxWidth: 360, maxHeight: '70%'},
   pickerTitle: {color: '#fff', fontSize: 15, fontWeight: '700', marginBottom: 10},

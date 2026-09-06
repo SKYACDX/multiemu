@@ -5,6 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
+import android.os.Build
 import android.view.Choreographer
 import android.view.View
 import java.io.File
@@ -18,21 +24,20 @@ import java.io.File
  * own background thread, since the link protocol can block a side for a
  * real, unpredictable duration mid-frame (see gba_link.h). This view's
  * frame callback just re-reads whatever frame is currently ready and
- * repaints, same cadence as the single-player view.
- *
- * No audio yet -- two simultaneous AudioTracks/mixing is a separate
- * problem, deferred until the link protocol itself is confirmed working.
+ * repaints, same cadence as the single-player view. Audio works the same
+ * way: each side's own AudioTrack is drained from this same callback,
+ * same pattern as GbaView, just doubled.
  */
 class GbaLinkView(context: Context) : View(context) {
-
-    companion object {
-        /** Set on attach/cleared on detach -- lets EmulatorControlModule reach whichever GbaLinkView is on screen. */
-        var activeGbaLink: GbaLinkView? = null
-    }
 
     private var session: GbaLinkNative? = null
     private var bitmapA: Bitmap? = null
     private var bitmapB: Bitmap? = null
+    private var audioTrackA: AudioTrack? = null
+    private var audioTrackB: AudioTrack? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private val audioBufferA = ShortArray(4096)
+    private val audioBufferB = ShortArray(4096)
     private val paint = Paint().apply { isFilterBitmap = false }
     private var running = false
 
@@ -40,13 +45,6 @@ class GbaLinkView(context: Context) : View(context) {
     private val leftTintPaint = Paint().apply { color = android.graphics.Color.rgb(10, 12, 22) }
     private val rightTintPaint = Paint().apply { color = android.graphics.Color.rgb(22, 12, 12) }
     private val dividerPaint = Paint().apply { color = android.graphics.Color.rgb(90, 90, 100) }
-
-    // TEMPORARY diagnostics -- local link is a brand-new, unverified
-    // feature. See debugText() below, read from JS as selectable/
-    // copyable text instead of a screenshot. Delete once confirmed working.
-    private var loadFailed = false
-
-    private var frameLogCounter = 0
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -57,28 +55,78 @@ class GbaLinkView(context: Context) : View(context) {
                 bitmapB?.setPixels(s.framebufferB, 0, s.width, 0, 0, s.width, s.height)
                 invalidate()
 
-                // TEMPORARY -- confirm whether the raw pixel data is ever
-                // non-black, to tell "game stuck on a black screen" apart
-                // from "the render pipeline itself never gets real data".
-                if (frameLogCounter++ % 90 == 0) {
-                    var nonZeroA = 0
-                    var nonZeroB = 0
-                    for (px in s.framebufferA) if (px != 0 && px != -0x1000000) nonZeroA++
-                    for (px in s.framebufferB) if (px != 0 && px != -0x1000000) nonZeroB++
-                    android.util.Log.d(
-                        "gba_link",
-                        "pixelCheck nonZeroA=$nonZeroA/${s.framebufferA.size} nonZeroB=$nonZeroB/${s.framebufferB.size} " +
-                            "sampleA=${s.framebufferA.take(5)} sampleB=${s.framebufferB.take(5)}",
-                    )
-                }
+                val framesA = s.readAudioSamples(0, audioBufferA)
+                if (framesA > 0) audioTrackA?.write(audioBufferA, 0, framesA * 2, AudioTrack.WRITE_NON_BLOCKING)
+                val framesB = s.readAudioSamples(1, audioBufferB)
+                if (framesB > 0) audioTrackB?.write(audioBufferB, 0, framesB * 2, AudioTrack.WRITE_NON_BLOCKING)
             }
             if (running) Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    private val audioAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_GAME)
+        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+        .build()
+
+    private fun buildAudioTrack(): AudioTrack {
+        val minBufferSize = AudioTrack.getMinBufferSize(
+            GbaLinkNative.audioSampleRateHz,
+            AudioFormat.CHANNEL_OUT_STEREO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        return AudioTrack.Builder()
+            .setAudioAttributes(audioAttributes)
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(GbaLinkNative.audioSampleRateHz)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build(),
+            )
+            .setBufferSizeInBytes(minBufferSize * 2)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+    }
+
+    private fun requestAudioFocus() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(audioAttributes)
+                .setWillPauseWhenDucked(false)
+                .build()
+            audioFocusRequest = request
+            audioManager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+        }
+    }
+
+    private fun stopAudio() {
+        audioTrackA?.stop()
+        audioTrackA?.release()
+        audioTrackA = null
+        audioTrackB?.stop()
+        audioTrackB?.release()
+        audioTrackB = null
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (audioManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                audioFocusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(null)
+            }
         }
     }
 
     /** romIdA/romIdB (e.g. each ROM's CRC32) key their save files -- pass null to skip persistence. */
     fun loadRoms(romA: ByteArray, romIdA: String?, romB: ByteArray, romIdB: String?) {
         session?.close()
+        stopAudio()
 
         val savesDir = File(context.filesDir, "saves").apply { mkdirs() }
         val savePathA = romIdA?.let { File(savesDir, "$it.sav").absolutePath }
@@ -86,9 +134,15 @@ class GbaLinkView(context: Context) : View(context) {
 
         val instance = GbaLinkNative.create(romA, savePathA, romB, savePathB)
         session = instance
-        bitmapA = instance?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
-        bitmapB = instance?.let { Bitmap.createBitmap(it.width, it.height, Bitmap.Config.ARGB_8888) }
-        loadFailed = instance == null
+        if (instance == null) return
+        bitmapA = Bitmap.createBitmap(instance.width, instance.height, Bitmap.Config.ARGB_8888)
+        bitmapB = Bitmap.createBitmap(instance.width, instance.height, Bitmap.Config.ARGB_8888)
+
+        audioTrackA = buildAudioTrack()
+        audioTrackB = buildAudioTrack()
+        requestAudioFocus()
+        audioTrackA?.play()
+        audioTrackB?.play()
     }
 
     fun setButtonPressed(player: Int, button: GbaButton, pressed: Boolean) {
@@ -98,7 +152,6 @@ class GbaLinkView(context: Context) : View(context) {
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         running = true
-        activeGbaLink = this
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
@@ -107,14 +160,8 @@ class GbaLinkView(context: Context) : View(context) {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         session?.close()
         session = null
-        if (activeGbaLink === this) activeGbaLink = null
+        stopAudio()
         super.onDetachedFromWindow()
-    }
-
-    /** TEMPORARY diagnostic, read from JS as selectable/copyable text instead of a screenshot -- see EmulatorControlModule.getLinkDebugInfo. */
-    fun debugText(): String {
-        val s = session ?: return if (loadFailed) "Sesión de link: no se pudo crear (¿ROMs de GBA válidas?)" else "Cargando…"
-        return "A:${s.framesRun(0)} B:${s.framesRun(1)} ${s.debugState()}"
     }
 
     override fun onDraw(canvas: Canvas) {

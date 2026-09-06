@@ -22,7 +22,6 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -49,18 +48,18 @@ public:
     unsigned width() const { return kWidth; }
     unsigned height() const { return kHeight; }
 
-    // TEMPORARY diagnostic -- see App.tsx's debug overlay for this
-    // feature. If this stays at 0 forever, runFrame() never returned
-    // even once (most likely a lockstep deadlock); if it climbs
-    // normally, the engine itself is fine and the bug is in the
-    // rendering path instead. Delete once local link is confirmed
-    // working end-to-end.
-    uint64_t framesRun(int player) const { return players_[player].framesRun.load(std::memory_order_relaxed); }
-
-    // TEMPORARY diagnostic -- SIO mode/cycle-bank state for both players,
-    // read without bigLock_ (approximate/racy on purpose: this is a
-    // throwaway debug overlay, not something correctness depends on).
-    std::string debugState() const;
+    // Drains whatever [player]'s core has synthesized since the last
+    // call, resampled to kAudioSampleRateHz stereo 16-bit PCM -- direct
+    // passthrough to mGBA's own blip_buf ring buffer, same as
+    // GbaNative::readAudioSamples. outCapacityFrames is outSamples's
+    // size in stereo frames (2 shorts each); returns frames actually
+    // written. Not synchronized with that player's run thread (which
+    // keeps filling the same blip buffer via runFrame): blip_buf has no
+    // documented thread-safety guarantee for concurrent read/write, but
+    // this mirrors the same producer/consumer split the framebuffer
+    // double-buffer already accepts, and a torn read here means a
+    // dropped audio sample at worst, not a crash.
+    int readAudioSamples(int player, int16_t* outSamples, int outCapacityFrames) const;
 
 private:
     struct Player {
@@ -84,7 +83,6 @@ private:
 
         std::thread runThread;
         std::atomic<bool> running{false};
-        std::atomic<uint64_t> framesRun{0};  // TEMPORARY diagnostic, see framesRun() above.
 
         // What the core itself renders into each runFrame() (mGBA's own
         // color_t, not yet converted to Android's ARGB_8888).

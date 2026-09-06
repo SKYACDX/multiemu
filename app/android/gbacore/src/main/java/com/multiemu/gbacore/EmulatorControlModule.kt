@@ -77,12 +77,6 @@ class EmulatorControlModule(reactContext: ReactApplicationContext) :
         promise.resolve(activeGba?.getAudioDebugInfo() ?: "no active GbaView")
     }
 
-    /** TEMPORARY: see GbaLinkView.debugText(). Delete once local link is confirmed working. */
-    @ReactMethod
-    fun getLinkDebugInfo(promise: Promise) {
-        promise.resolve(GbaLinkView.activeGbaLink?.debugText() ?: "no active GbaLinkView")
-    }
-
     // ---- Cartridge save RAM (the game's own in-game saves, not a manual
     // save state) -- lives at the same path GbaView.loadRom() points
     // mGBA's persistent VFile at, so this is plain file I/O rather than

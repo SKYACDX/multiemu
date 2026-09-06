@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <android/log.h>
 #include <chrono>
-#include <sstream>
 
+#include "mgba/core/blip_buf.h"
 #include "mgba/internal/gba/gba.h"
 
 // TEMPORARY diagnostic logging while chasing a live lockstep deadlock --
@@ -45,6 +45,12 @@ constexpr int32_t kWaitTopUpCycles = 8192;
 // navigation takes, avoids that.
 constexpr int kWarmupFrames = 240;
 
+// Matches gba_jni.cpp's kAudioSampleRateHz -- kept as its own constant
+// (rather than shared) since the two JNI files otherwise have no reason
+// to depend on each other; GbaLinkNative.audioSampleRateHz must return
+// this same value.
+constexpr int kAudioSampleRateHz = 48000;
+
 }  // namespace
 
 LinkedGbaSession::LinkedGbaSession(mCore* coreA, mCore* coreB) {
@@ -73,6 +79,13 @@ LinkedGbaSession::LinkedGbaSession(mCore* coreA, mCore* coreB) {
         // the video renderer with the core if outputBuffer is already set
         // at that moment, or every frame renders into nothing.
         p.core->reset(p.core);
+
+        // Same audio setup as gba_jni.cpp's nativeCreate, done per core --
+        // each side's own blip_buf ring buffer is read out independently
+        // by readAudioSamples() below.
+        p.core->setAudioBufferSize(p.core, 2048);
+        blip_set_rates(p.core->getAudioChannel(p.core, 0), p.core->frequency(p.core), kAudioSampleRateHz);
+        blip_set_rates(p.core->getAudioChannel(p.core, 1), p.core->frequency(p.core), kAudioSampleRateHz);
 
         GBASIOLockstepNodeCreate(&p.node);
         GBASIOLockstepAttachNode(&lockstep_, &p.node);
@@ -129,7 +142,6 @@ void LinkedGbaSession::runLoop(int id) {
         // the driver below is actually attached; every call before that
         // is a plain, unlinked runFrame() like single-player GbaView's.
         p.core->runFrame(p.core);
-        p.framesRun.fetch_add(1, std::memory_order_relaxed);
 
         if (framesUntilAttach > 0 && --framesUntilAttach == 0) {
             // The slave's attach (below, via GBASIOLockstepNodeLoad) reads
@@ -196,21 +208,24 @@ void LinkedGbaSession::wakePlayer(Player& p) {
     p.wakeCv.notify_one();
 }
 
-std::string LinkedGbaSession::debugState() const {
-    std::ostringstream oss;
-    for (int i = 0; i < 2; i++) {
-        const Player& p = players_[i];
-        oss << "P" << i << "[mode=" << p.node.mode << " cyc=" << p.cyclesPosted << " awake=" << p.awake
-            << " wait=" << p.waitMask << " next=" << p.node.nextEvent << "] ";
-    }
-    oss << "attached=" << lockstep_.d.attached << " transfer=" << lockstep_.d.transferActive;
-    return oss.str();
-}
-
 void LinkedGbaSession::getFramebuffer(int player, uint32_t* outArgb) const {
     const Player& p = players_[player];
     std::lock_guard<std::mutex> lock(p.frameMutex);
     std::copy(p.frontBuffer.begin(), p.frontBuffer.end(), outArgb);
+}
+
+int LinkedGbaSession::readAudioSamples(int player, int16_t* outSamples, int outCapacityFrames) const {
+    mCore* core = players_[player].core;
+    blip_t* left = core->getAudioChannel(core, 0);
+    blip_t* right = core->getAudioChannel(core, 1);
+
+    int availableFrames = blip_samples_avail(left);
+    int frames = availableFrames < outCapacityFrames ? availableFrames : outCapacityFrames;
+    if (frames <= 0) return 0;
+
+    blip_read_samples(left, outSamples, frames, 1);
+    blip_read_samples(right, outSamples + 1, frames, 1);
+    return frames;
 }
 
 void LinkedGbaSession::setButtonPressed(int player, int buttonBit, bool pressed) {

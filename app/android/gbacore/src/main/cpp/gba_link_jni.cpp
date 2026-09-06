@@ -1,9 +1,8 @@
 // JNI bridge for local (same-device) 2-player GBA link cable -- see
 // gba_link.h/.cpp for the actual lockstep engine. Kept in its own file
 // (rather than gba_jni.cpp) since this is a distinct, still-experimental
-// feature: no audio yet (two simultaneous AudioTracks/mixing is a
-// separate problem), and it owns its cores' whole lifecycle rather than
-// exposing the single-instance GbaNative shape.
+// feature that owns its cores' whole lifecycle rather than exposing the
+// single-instance GbaNative shape.
 #include <jni.h>
 
 #include <fcntl.h>
@@ -113,16 +112,23 @@ JNIEXPORT void JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeSetButtonPr
     handleToSession(handle)->setButtonPressed(player, buttonId, pressed == JNI_TRUE);
 }
 
-// TEMPORARY diagnostic -- see LinkedGbaSession::framesRun.
-JNIEXPORT jlong JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeGetFramesRun(
-    JNIEnv*, jclass, jlong handle, jint player) {
-    return static_cast<jlong>(handleToSession(handle)->framesRun(player));
+// Must match LinkedGbaSession's kAudioSampleRateHz (gba_link.cpp).
+JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeGetAudioSampleRate(JNIEnv*, jclass) {
+    return 48000;
 }
 
-// TEMPORARY diagnostic -- see LinkedGbaSession::debugState.
-JNIEXPORT jstring JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeGetDebugState(
-    JNIEnv* env, jclass, jlong handle) {
-    return env->NewStringUTF(handleToSession(handle)->debugState().c_str());
+// player is 0 or 1. outSamples must be sized for stereo pairs (2
+// shorts/frame); returns the number of frames actually written, which
+// may be less than the buffer's capacity -- see LinkedGbaSession::readAudioSamples.
+JNIEXPORT jint JNICALL Java_com_multiemu_gbacore_GbaLinkNative_nativeReadAudioSamples(
+    JNIEnv* env, jclass, jlong handle, jint player, jshortArray outSamples) {
+    int capacityFrames = env->GetArrayLength(outSamples) / 2;
+    std::vector<int16_t> buffer(static_cast<std::size_t>(capacityFrames) * 2);
+    int frames = handleToSession(handle)->readAudioSamples(player, buffer.data(), capacityFrames);
+    if (frames > 0) {
+        env->SetShortArrayRegion(outSamples, 0, static_cast<jsize>(frames) * 2, reinterpret_cast<jshort*>(buffer.data()));
+    }
+    return frames;
 }
 
 }  // extern "C"
