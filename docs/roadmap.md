@@ -93,7 +93,7 @@ Esto deja mGBA como el único core "no escrito para este proyecto" en el
 repo — es una integración, no una reescritura, que es exactamente el
 patrón que el punto siguiente (NDS/3DS) debería seguir.
 
-## NDS — en progreso vía melonDS
+## NDS — jugable de punta a punta vía melonDS
 
 Con GB (core propio) y GBA (mGBA) ya jugables de punta a punta, arrancó
 la integración de NDS siguiendo el mismo patrón: vendorizar
@@ -120,11 +120,39 @@ Estado actual:
   (`build.gradle`, `CMakeLists.txt` que importa los `libcore.a`/
   `libteakra.a` prebuilt por ABI), ya integrado en `settings.gradle` y
   como dependencia de `:app`.
-- **Pendiente, en este orden**: (1) estrategia de BIOS/firmware — usar
-  el "FreeBIOS" que trae melonDS en vez de pedirle al usuario dumps
-  reales de Nintendo; (2) `ds_jni.cpp` real (`nativeCreate`/`loadROM`/
-  `runFrame`/framebuffers de ambas pantallas/botones); (3) vista Kotlin
-  de doble pantalla + mapeo de la pantalla táctil; (4) integrar en
-  `App.tsx` por extensión `.nds`. JIT y el renderer 3D por OpenGL están
-  desactivados por ahora (solo intérprete + renderer por software) —
-  revisar una vez que una ROM arranque y sea jugable de forma estable.
+- **BIOS/firmware**: sin archivos reales de Nintendo. `NDSArgs` ya
+  defaultea a "FreeBIOS" (reimplementación open-source del ARM9/ARM7) +
+  firmware generado, así que cada arranque es un direct-boot al
+  cartucho (FreeBIOS no puede bootear el menú de firmware) en vez de
+  pedirle al usuario un dump. El descifrado del área segura del cartucho
+  tampoco depende de BIOS/firmware — la keycode sale del propio gamecode
+  embebido en la ROM.
+- **`ds_jni.cpp`**: `nativeCreate`/`nativeCreateFromPath`/`nativeRunFrame`/
+  framebuffers de ambas pantallas/botones/pantalla táctil/audio, todo
+  implementado según el mismo boot sequence que usa el frontend Qt de
+  melonDS (`ParseROM` → `SetNDSCart` → `Reset` → `NeedsDirectBoot`/
+  `SetupDirectBoot` → `Start`).
+- **`DsView`/`DsViewManager`/`DsPackage`** (Kotlin): ambas pantallas
+  apiladas arriba/abajo (mismo split que `GbaLinkView`), audio vía
+  `AudioTrack`, entrada táctil manejada directamente por la vista (sin
+  vuelta a JS) mapeando el rect ya calculado para dibujar la pantalla
+  inferior. Integrado en `App.tsx` como tercer `EmulatedSystem` (`'nds'`),
+  con botones X/Y (exclusivos de DS) y L/R activos también para NDS.
+- **Picker de archivos**: cargar un ROM de NDS (128-512MB) por el flujo
+  existente de base64 + puente de JS tronaba con `OutOfMemoryError` —
+  confirmado con una ROM real de 134MB (Pokémon SoulSilver, provista por
+  el usuario). `RomFilePickerModule` ganó `pickRomPath` (copia el
+  archivo a un cache local, sin inflar a base64 ni cruzar el puente como
+  string gigante) y `ds_jni.cpp` ganó `nativeCreateFromPath` (lee el
+  archivo directo en el lado nativo, sin pasar por un `byte[]` de Java).
+- **Verificado de punta a punta** con esa misma ROM real, en la propia
+  UI de la app (no solo un harness de prueba aislado): arranca hasta la
+  cinemática de intro/título con video y audio correctos, controles
+  respondiendo, sin crashes en cargas repetidas.
+- JIT y el renderer 3D por OpenGL siguen desactivados (solo intérprete +
+  renderer por software) — revisar más adelante si hace falta más
+  rendimiento; no bloquea que el juego arranque y sea jugable.
+- **Pendiente**: guardado en la nube, cover art, y slots de save-state
+  para NDS (todo eso hoy asume que los bytes de la ROM viven en memoria
+  de JS, justo lo que este picker evita a propósito); soporte de DSi
+  (requiere BIOS/NAND reales, fuera de alcance por ahora).
