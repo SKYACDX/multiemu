@@ -123,4 +123,12 @@ private:
     // way a plain std::mutex would.
     std::recursive_mutex bigLock_;
     Player players_[2];
+
+    // Set once player 0 (the master) has attached its own SIO driver --
+    // see runLoop. The slave's attach reaches into the master's node (to
+    // clear its slave bit) as part of GBASIOLockstepNodeLoad, so it must
+    // never run before the master has set its own node.d.p; the two
+    // sides' independent per-thread warmup counters give no such
+    // ordering guarantee on their own.
+    std::atomic<bool> masterAttached_{false};
 };

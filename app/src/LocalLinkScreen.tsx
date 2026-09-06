@@ -148,13 +148,18 @@ export default function LocalLinkScreen({onClose}: Props) {
             <Text style={styles.connectingLabel}>Conectando ambas ROMs, espera un momento…</Text>
           </View>
         )}
-        <View style={styles.controlsRow}>
+        {/* Each player's pad overlaid directly on their own half of the
+            screen (semi-transparent, see MiniPad's styles) instead of a
+            separate control strip -- keeps the game visible underneath. */}
+        <View style={[styles.halfOverlay, styles.topHalfOverlay]} pointerEvents="box-none">
           <MiniPad player={0} press={press} />
-          <Pressable style={styles.exitButton} onPress={onClose}>
-            <Text style={styles.exitLabel}>Salir</Text>
-          </Pressable>
+        </View>
+        <View style={[styles.halfOverlay, styles.bottomHalfOverlay]} pointerEvents="box-none">
           <MiniPad player={1} press={press} />
         </View>
+        <Pressable style={styles.exitButton} onPress={onClose}>
+          <Text style={styles.exitLabel}>Salir</Text>
+        </Pressable>
       </View>
     );
   }
@@ -373,26 +378,42 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     textAlign: 'center',
   },
-  controlsRow: {
+  // Each half covers exactly the top/bottom split GbaLinkView itself
+  // draws (see its onDraw) -- box-none so taps outside the pad itself
+  // (e.g. on the game view) don't get eaten by this wrapper.
+  halfOverlay: {
     position: 'absolute',
-    bottom: 0,
     left: 0,
     right: 0,
+    height: '50%',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    alignItems: 'flex-end',
+    paddingHorizontal: 14,
+    paddingBottom: 10,
   },
-  exitButton: {backgroundColor: 'rgba(30,32,39,0.85)', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 14},
-  exitLabel: {color: '#ffb3b3', fontSize: 12, fontWeight: '700'},
-  miniPadArea: {flexDirection: 'row', alignItems: 'center', gap: 10},
+  topHalfOverlay: {top: 0},
+  bottomHalfOverlay: {top: '50%'},
+  exitButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(30,32,39,0.55)',
+    borderRadius: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  exitLabel: {color: '#ffb3b3', fontSize: 11, fontWeight: '700'},
+  miniPadArea: {flexDirection: 'row', alignItems: 'flex-end', gap: 10},
   miniDpad: {width: 84, height: 84},
+  // Semi-transparent (overlaid directly on the game view underneath,
+  // see LocalLinkScreen's halfOverlay) -- opaque enough to read the
+  // arrow/letter, see-through enough not to hide the game under them.
   miniDpadHit: {
     position: 'absolute',
     width: 28,
     height: 28,
-    backgroundColor: 'rgba(40,42,50,0.85)',
+    backgroundColor: 'rgba(40,42,50,0.4)',
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 6,
@@ -401,14 +422,14 @@ const styles = StyleSheet.create({
   miniDpadDown: {top: 56, left: 28},
   miniDpadLeft: {top: 28, left: 0},
   miniDpadRight: {top: 28, left: 56},
-  miniHitPressed: {backgroundColor: 'rgba(122,184,255,0.5)'},
+  miniHitPressed: {backgroundColor: 'rgba(122,184,255,0.55)'},
   miniActionCluster: {width: 70, height: 70},
   miniActionButton: {
     position: 'absolute',
     width: 34,
     height: 34,
     borderRadius: 17,
-    backgroundColor: 'rgba(140,58,74,0.85)',
+    backgroundColor: 'rgba(140,58,74,0.4)',
     alignItems: 'center',
     justifyContent: 'center',
   },

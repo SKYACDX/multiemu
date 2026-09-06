@@ -32,6 +32,19 @@ constexpr double kGbaFps = 59.7275005696;
 // topped-up side gets a chance to run.
 constexpr int32_t kWaitTopUpCycles = 8192;
 
+// Real hardware/the reference Qt frontend only ever attaches the link
+// driver on demand, mid-game, after the user has already picked
+// multiplayer from a running game's own menu -- never before the ROM
+// has even booted. Attaching at core-creation time instead (this
+// session's first attempt) put the SIO port in "something's attached"
+// state from instruction one, and produced a screen that stayed 100%
+// black forever even though both cores kept running -- consistent with
+// the game's own boot-time hardware check getting confused by an
+// unexpected already-attached peripheral. Running each side unlinked
+// for a couple hundred frames first, matching how long real boot+menu
+// navigation takes, avoids that.
+constexpr int kWarmupFrames = 240;
+
 }  // namespace
 
 LinkedGbaSession::LinkedGbaSession(mCore* coreA, mCore* coreB) {
@@ -55,19 +68,21 @@ LinkedGbaSession::LinkedGbaSession(mCore* coreA, mCore* coreB) {
         p.backBuffer.assign(static_cast<size_t>(kWidth) * kHeight, 0);
         p.rawBuffer.assign(static_cast<size_t>(kWidth) * kHeight, 0);
         p.core->setVideoBuffer(p.core, p.rawBuffer.data(), kWidth);
+        // reset() (not called by loadGbaCore -- see gba_link_jni.cpp) must
+        // run AFTER setVideoBuffer: mGBA's _GBACoreReset only associates
+        // the video renderer with the core if outputBuffer is already set
+        // at that moment, or every frame renders into nothing.
+        p.core->reset(p.core);
 
         GBASIOLockstepNodeCreate(&p.node);
         GBASIOLockstepAttachNode(&lockstep_, &p.node);
         p.id = p.node.id;
 
-        // Attach to both modes real GBA link games actually use (hardware
-        // "Multi Play" and the plain Normal/UART-style mode some games,
-        // e.g. Pokémon's trading protocol, drive by hand) -- matches
-        // MultiplayerController::attachGame exactly, so whichever one a
-        // given game picks, it's already wired.
-        auto* gba = static_cast<GBA*>(p.core->board);
-        GBASIOSetDriver(&gba->sio, &p.node.d, SIO_MULTI);
-        GBASIOSetDriver(&gba->sio, &p.node.d, SIO_NORMAL_32);
+        // GBASIOSetDriver (the call that makes this core's own SIO port
+        // actually look "attached" to the running game) is deliberately
+        // NOT made here -- see kWarmupFrames. Each runLoop attaches its
+        // own core's driver itself, from its own thread, once it's done
+        // warming up -- see runLoop.
     }
 
     for (int i = 0; i < 2; i++) {
@@ -105,12 +120,38 @@ void LinkedGbaSession::runLoop(int id) {
     const std::chrono::duration<double> frameDuration(1.0 / kGbaFps);
     auto next = clock::now();
 
+    int framesUntilAttach = kWarmupFrames;
+
     while (p.running.load(std::memory_order_relaxed)) {
         // May block for a real, unpredictable duration inside here --
         // see the header comment -- whenever the lockstep protocol needs
-        // this side to wait on the other one.
+        // this side to wait on the other one. Only possible at all once
+        // the driver below is actually attached; every call before that
+        // is a plain, unlinked runFrame() like single-player GbaView's.
         p.core->runFrame(p.core);
         p.framesRun.fetch_add(1, std::memory_order_relaxed);
+
+        if (framesUntilAttach > 0 && --framesUntilAttach == 0) {
+            // The slave's attach (below, via GBASIOLockstepNodeLoad) reads
+            // the master's node.d.p to clear its slave bit -- it must not
+            // run until the master has attached and set that pointer.
+            // Each side warms up on its own thread with no shared timer,
+            // so without this wait the slave can easily win the race and
+            // dereference the master's still-null node.d.p.
+            if (id != 0) {
+                while (!masterAttached_.load(std::memory_order_acquire) &&
+                       p.running.load(std::memory_order_relaxed)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            auto* gba = static_cast<GBA*>(p.core->board);
+            GBASIOSetDriver(&gba->sio, &p.node.d, SIO_MULTI);
+            GBASIOSetDriver(&gba->sio, &p.node.d, SIO_NORMAL_32);
+            if (id == 0) {
+                masterAttached_.store(true, std::memory_order_release);
+            }
+            LLOG("player %d: link driver attached after warmup", id);
+        }
 
         {
             std::lock_guard<std::mutex> lock(p.frameMutex);

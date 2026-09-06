@@ -55,7 +55,14 @@ mCore* loadGbaCore(JNIEnv* env, jbyteArray romBytes, jstring savePath) {
         env->ReleaseStringUTFChars(savePath, path);
         if (saveVf) core->loadSave(core, saveVf);
     }
-    core->reset(core);
+    // No core->reset() here -- the caller must call setVideoBuffer() first,
+    // then reset(). mGBA's _GBACoreReset only wires the renderer up
+    // (GBAVideoAssociateRenderer) if outputBuffer is already set at the
+    // moment it runs; resetting before the buffer exists leaves the
+    // renderer never associated, so every frame renders into nothing and
+    // the screen stays permanently black even though the core runs fine.
+    // gba_jni.cpp's single-player path sidesteps this by calling
+    // setVideoBuffer before loadROM/reset already.
     return core;
 }
 
