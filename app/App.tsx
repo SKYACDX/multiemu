@@ -46,6 +46,10 @@ import FolderScreen from './src/FolderScreen';
 import HubScreen from './src/HubScreen';
 import LocalLinkScreen from './src/LocalLinkScreen';
 import AccountScreen from './src/AccountScreen';
+import ThemeEditorScreen from './src/ThemeEditorScreen';
+import ThemesExploreScreen from './src/ThemesExploreScreen';
+import {createTheme, incrementThemeDownload, updateTheme} from './src/api/themes';
+import {defaultTheme, resolveControlStyle, Theme} from './src/theme';
 import {readRomTitle} from './src/romTitle';
 import {
   downloadRomToPath,
@@ -105,7 +109,7 @@ import {TEST_ROM_BASE64} from './src/testRom';
 
 const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
-type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account' | 'localLink';
+type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account' | 'localLink' | 'themeEditor' | 'themesExplore';
 type EmulatedSystem = 'gb' | 'gba' | 'nds';
 type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'X' | 'Y' | 'SELECT' | 'START';
 
@@ -152,7 +156,6 @@ const AUTOSAVE_SLOT = 3;
 const AUTOSAVE_INTERVAL_MS = 45_000;
 
 const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance', nds: 'Nintendo DS'};
-const SYSTEM_ACCENT: Record<EmulatedSystem, string> = {gb: '#4a90d9', gba: '#c2536a', nds: '#7a5cc2'};
 
 function App(): React.JSX.Element {
   const gameBoyRef = useRef<GameBoyViewHandle>(null);
@@ -172,6 +175,8 @@ function App(): React.JSX.Element {
   // RomLibraryModule's getPreference/setPreference).
   const [editingControls, setEditingControls] = useState(false);
   const [controlLayout, setControlLayout] = useState<ControlLayout>(DEFAULT_CONTROL_LAYOUT);
+  const [theme, setTheme] = useState<Theme>(() => defaultTheme('gb'));
+  const [themeBusy, setThemeBusy] = useState(false);
   const baseRomBytes = useRef<Uint8Array>(base64ToBytes(TEST_ROM_BASE64));
   // False until the user has actually loaded their own ROM (as opposed
   // to the built-in test pattern) -- gates applying a HackRom patch, see
@@ -1072,6 +1077,75 @@ function App(): React.JSX.Element {
     persistControlLayout(DEFAULT_CONTROL_LAYOUT);
   }, [persistControlLayout]);
 
+  // Same per-system loading pattern as controlLayout above -- each
+  // system keeps its own theme since their button sets differ (NDS has
+  // X/Y, GB has no L/R).
+  useEffect(() => {
+    let cancelled = false;
+    getPreference(`theme_${system}`)
+      .then(json => {
+        if (cancelled) return;
+        if (json) {
+          try {
+            setTheme(JSON.parse(json));
+            return;
+          } catch {
+            // Fall through to the default below.
+          }
+        }
+        setTheme(defaultTheme(system));
+      })
+      .catch(() => setTheme(defaultTheme(system)));
+    return () => {
+      cancelled = true;
+    };
+  }, [system]);
+
+  const persistTheme = useCallback(
+    (next: Theme) => {
+      setTheme(next);
+      setPreference(`theme_${system}`, JSON.stringify(next)).catch(() => {});
+    },
+    [system],
+  );
+
+  const handleSaveTheme = useCallback(
+    (next: Theme) => {
+      persistTheme(next);
+      setScreen('game');
+    },
+    [persistTheme],
+  );
+
+  const handlePublishTheme = useCallback(
+    async (next: Theme) => {
+      if (!authToken) return;
+      setThemeBusy(true);
+      try {
+        const published = next.id
+          ? await updateTheme(authToken, next.id, next)
+          : await createTheme(authToken, {...next, public: true});
+        persistTheme(published);
+        Alert.alert('Tema publicado', 'Ya está disponible para que otros lo descarguen.');
+        setScreen('game');
+      } catch (e) {
+        Alert.alert('No se pudo publicar el tema', e instanceof Error ? e.message : String(e));
+      } finally {
+        setThemeBusy(false);
+      }
+    },
+    [authToken, persistTheme],
+  );
+
+  const handleApplyExploredTheme = useCallback(
+    (applied: Theme) => {
+      persistTheme(applied);
+      if (applied.id) incrementThemeDownload(applied.id);
+      setScreen('game');
+    },
+    [persistTheme],
+  );
+
   if (screen === 'home') {
     return (
       <SafeAreaView style={styles.container}>
@@ -1152,11 +1226,37 @@ function App(): React.JSX.Element {
     );
   }
 
+  if (screen === 'themeEditor') {
+    return (
+      <>
+        <StatusBar hidden />
+        <ThemeEditorScreen
+          theme={theme}
+          authToken={authToken}
+          busy={themeBusy}
+          onClose={() => setScreen('game')}
+          onSave={handleSaveTheme}
+          onPublish={handlePublishTheme}
+        />
+      </>
+    );
+  }
+
+  if (screen === 'themesExplore') {
+    return (
+      <>
+        <StatusBar hidden />
+        <ThemesExploreScreen system={system} onApply={handleApplyExploredTheme} onClose={() => setScreen('game')} />
+      </>
+    );
+  }
+
   const scaledScreenStyle = (base: {width: number; height: number; backgroundColor: string; borderRadius: number}) => ({
     ...base,
     width: base.width * controlLayout.screenScale,
     height: base.height * controlLayout.screenScale,
   });
+  const controlStyle = resolveControlStyle(theme);
   const screenView =
     system === 'gba' ? (
       <GbaView ref={gbaRef} style={scaledScreenStyle(styles.screenGba)} />
@@ -1217,14 +1317,23 @@ function App(): React.JSX.Element {
                     <Text style={styles.editResetLabel}>Restablecer</Text>
                   </Pressable>
                 </View>
+                <View style={styles.editToolbarRow}>
+                  <Text style={styles.editToolbarLabel}>Tema</Text>
+                  <Pressable style={styles.editThemeButton} onPress={() => setScreen('themeEditor')}>
+                    <Text style={styles.editThemeLabel}>Editar</Text>
+                  </Pressable>
+                  <Pressable style={styles.editThemeButton} onPress={() => setScreen('themesExplore')}>
+                    <Text style={styles.editThemeLabel}>Explorar</Text>
+                  </Pressable>
+                </View>
               </View>
             )}
 
-            <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
-              <View style={styles.screenBezel}>{screenView}</View>
+            <View style={[styles.consoleShell, {borderColor: controlStyle.shellBorder, backgroundColor: controlStyle.shellBackground}]}>
+              <View style={[styles.screenBezel, {backgroundColor: controlStyle.screenBezel}]}>{screenView}</View>
               <View style={styles.speakerGrill}>
                 {[0, 1, 2, 3, 4].map(i => (
-                  <View key={i} style={[styles.speakerHole, {backgroundColor: SYSTEM_ACCENT[system]}]} />
+                  <View key={i} style={[styles.speakerHole, {backgroundColor: controlStyle.shellBorder}]} />
                 ))}
               </View>
             </View>
@@ -1244,6 +1353,7 @@ function App(): React.JSX.Element {
               editing={editingControls}
               offsets={controlLayout.offsets}
               onDrag={handleDragCluster}
+              theme={theme}
             />
 
             <View style={styles.speedRow}>
@@ -1452,13 +1562,16 @@ function GameControls({
   editing,
   offsets,
   onDrag,
+  theme,
 }: {
   system: EmulatedSystem;
   dispatch: (button: PadButtonId, pressed: boolean) => void;
   editing: boolean;
   offsets: Partial<Record<ClusterId, ClusterOffset>>;
   onDrag: (id: ClusterId, dx: number, dy: number) => void;
+  theme: Theme;
 }) {
+  const cs = resolveControlStyle(theme);
   type ViewRef = React.ElementRef<typeof View>;
   const refs = useRef<Partial<Record<PadButtonId, ViewRef | null>>>({});
   const rects = useRef<Partial<Record<PadButtonId, {x: number; y: number; w: number; h: number}>>>({});
@@ -1527,13 +1640,23 @@ function GameControls({
         <View style={styles.shoulderRow}>
           <View
             ref={setRef('L')}
-            style={[styles.shoulderButton, system === 'gb' && styles.shoulderButtonInactive, isPressed('L') && styles.shoulderButtonPressed]}>
+            style={[
+              styles.shoulderButton,
+              {backgroundColor: cs.shoulderColor, borderRadius: cs.shoulderRadius},
+              system === 'gb' && styles.shoulderButtonInactive,
+              isPressed('L') && styles.shoulderButtonPressed,
+            ]}>
             <View style={styles.shoulderHighlight} />
             <Text style={styles.shoulderLabel}>L</Text>
           </View>
           <View
             ref={setRef('R')}
-            style={[styles.shoulderButton, system === 'gb' && styles.shoulderButtonInactive, isPressed('R') && styles.shoulderButtonPressed]}>
+            style={[
+              styles.shoulderButton,
+              {backgroundColor: cs.shoulderColor, borderRadius: cs.shoulderRadius},
+              system === 'gb' && styles.shoulderButtonInactive,
+              isPressed('R') && styles.shoulderButtonPressed,
+            ]}>
             <View style={styles.shoulderHighlight} />
             <Text style={styles.shoulderLabel}>R</Text>
           </View>
@@ -1560,19 +1683,27 @@ function GameControls({
       <View style={styles.padRow}>
         <DraggableCluster id="dpad" editing={editing} offset={offsets.dpad} onDrag={onDrag}>
           <View style={styles.dpad}>
-            <View style={styles.dpadBarHorizontal} />
-            <View style={styles.dpadBarVertical} />
+            <View style={[styles.dpadBarHorizontal, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
+            <View style={[styles.dpadBarVertical, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
             <View style={styles.dpadRivet} />
-            <View ref={setRef('UP')} style={[styles.dpadHit, styles.dpadHitUp, isPressed('UP') && styles.dpadHitPressed]}>
+            <View
+              ref={setRef('UP')}
+              style={[styles.dpadHit, styles.dpadHitUp, {borderRadius: cs.dpadRadius}, isPressed('UP') && styles.dpadHitPressed]}>
               <IconTriangle rotation={0} />
             </View>
-            <View ref={setRef('DOWN')} style={[styles.dpadHit, styles.dpadHitDown, isPressed('DOWN') && styles.dpadHitPressed]}>
+            <View
+              ref={setRef('DOWN')}
+              style={[styles.dpadHit, styles.dpadHitDown, {borderRadius: cs.dpadRadius}, isPressed('DOWN') && styles.dpadHitPressed]}>
               <IconTriangle rotation={180} />
             </View>
-            <View ref={setRef('LEFT')} style={[styles.dpadHit, styles.dpadHitLeft, isPressed('LEFT') && styles.dpadHitPressed]}>
+            <View
+              ref={setRef('LEFT')}
+              style={[styles.dpadHit, styles.dpadHitLeft, {borderRadius: cs.dpadRadius}, isPressed('LEFT') && styles.dpadHitPressed]}>
               <IconTriangle rotation={-90} />
             </View>
-            <View ref={setRef('RIGHT')} style={[styles.dpadHit, styles.dpadHitRight, isPressed('RIGHT') && styles.dpadHitPressed]}>
+            <View
+              ref={setRef('RIGHT')}
+              style={[styles.dpadHit, styles.dpadHitRight, {borderRadius: cs.dpadRadius}, isPressed('RIGHT') && styles.dpadHitPressed]}>
               <IconTriangle rotation={90} />
             </View>
           </View>
@@ -1581,11 +1712,25 @@ function GameControls({
         {/* B/A staggered diagonally (B lower-left, A upper-right), matching the real hardware layout. */}
         <DraggableCluster id="actions" editing={editing} offset={offsets.actions} onDrag={onDrag}>
           <View style={styles.actionCluster}>
-            <View ref={setRef('B')} style={[styles.actionButton, styles.buttonB, isPressed('B') && styles.actionButtonPressed]}>
+            <View
+              ref={setRef('B')}
+              style={[
+                styles.actionButton,
+                {backgroundColor: cs.actionColorB, borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                styles.buttonBPosition,
+                isPressed('B') && styles.actionButtonPressed,
+              ]}>
               <View style={styles.actionHighlight} />
               <Text style={styles.actionLabel}>B</Text>
             </View>
-            <View ref={setRef('A')} style={[styles.actionButton, styles.buttonA, isPressed('A') && styles.actionButtonPressed]}>
+            <View
+              ref={setRef('A')}
+              style={[
+                styles.actionButton,
+                {backgroundColor: cs.actionColorA, borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                styles.buttonAPosition,
+                isPressed('A') && styles.actionButtonPressed,
+              ]}>
               <View style={styles.actionHighlight} />
               <Text style={styles.actionLabel}>A</Text>
             </View>
@@ -1733,6 +1878,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#3a2a2a',
   },
   editResetLabel: {color: '#ffb3b3', fontSize: 11, fontWeight: '700'},
+  editThemeButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#2f5f8f',
+  },
+  editThemeLabel: {color: '#cfe3fa', fontSize: 11, fontWeight: '700'},
   draggableEditing: {
     borderWidth: 1,
     borderColor: '#7ab8ff',
@@ -2036,8 +2188,8 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: 'rgba(255,255,255,0.18)',
   },
-  buttonA: {top: 0, right: 0, backgroundColor: '#c2536a'},
-  buttonB: {bottom: 0, left: 0},
+  buttonAPosition: {top: 0, right: 0},
+  buttonBPosition: {bottom: 0, left: 0},
   actionButtonPressed: {opacity: 0.7},
   actionLabel: {color: '#fff', fontSize: 20, fontWeight: '700'},
   systemRow: {
