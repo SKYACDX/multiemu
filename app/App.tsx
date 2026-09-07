@@ -35,6 +35,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
@@ -125,8 +126,14 @@ interface ControlLayout {
   screenScale: number;
 }
 const DEFAULT_CONTROL_LAYOUT: ControlLayout = {offsets: {}, screenScale: 1};
+// Landscape has no drag-to-reposition (controls sit at fixed corners,
+// see GameControls' landscape branch) but does reuse the same
+// screenScale mechanism -- defaults bigger since landscape has a lot
+// more vertical room to give the screen once it's not stacked above a
+// column of controls.
+const DEFAULT_CONTROL_LAYOUT_LANDSCAPE: ControlLayout = {offsets: {}, screenScale: 1.6};
 const MIN_SCREEN_SCALE = 0.7;
-const MAX_SCREEN_SCALE = 1.4;
+const MAX_SCREEN_SCALE = 3;
 
 // 3DS isn't emulated yet (see docs/roadmap.md) -- only accept what one of
 // the three cores can actually run, so picking the wrong file fails fast
@@ -160,6 +167,21 @@ const AUTOSAVE_INTERVAL_MS = 45_000;
 const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance', nds: 'Nintendo DS'};
 
 function App(): React.JSX.Element {
+  // The Activity survives rotation (see AndroidManifest.xml's
+  // configChanges), so this is the only signal driving the
+  // landscape/portrait layout switch below -- no remount, no lost
+  // emulator state.
+  const {width: windowWidth, height: windowHeight} = useWindowDimensions();
+  const isLandscape = windowWidth > windowHeight;
+  // landscapeStage's own onLayout measured a height *larger than the
+  // window itself* (566dp against a 411dp-tall window) -- its flex:1
+  // lets the scaled-up screenBezel push it taller than the actual
+  // viewport instead of clipping to it, and every control positioned
+  // with `top` computed from that number landed below the physical
+  // screen. Deriving the stage height from the trusted window height
+  // instead (and capping the stage's own style to match) keeps both
+  // the visible area and the control math grounded in the same number.
+  const landscapeStageHeight = Math.max(200, windowHeight - 60);
   const gameBoyRef = useRef<GameBoyViewHandle>(null);
   const gbaRef = useRef<GbaViewHandle>(null);
   const dsRef = useRef<DsViewHandle>(null);
@@ -1038,12 +1060,16 @@ function App(): React.JSX.Element {
     [system],
   );
 
-  // Loads whatever custom layout was saved for this system (or the
-  // default, if none was) -- runs whenever the active system changes,
-  // not just on mount, since GB/GBA/NDS each get their own layout.
+  // Loads whatever custom layout was saved for this system+orientation
+  // (or the matching default, if none was) -- runs whenever the active
+  // system or orientation changes, since GB/GBA/NDS each get their own
+  // layout, and landscape's fixed-corner controls need a different
+  // default scale than portrait's stacked-below-the-screen ones.
+  const controlLayoutKey = `controlLayout_${system}_${isLandscape ? 'landscape' : 'portrait'}`;
+  const defaultControlLayout = isLandscape ? DEFAULT_CONTROL_LAYOUT_LANDSCAPE : DEFAULT_CONTROL_LAYOUT;
   useEffect(() => {
     let cancelled = false;
-    getPreference(`controlLayout_${system}`)
+    getPreference(controlLayoutKey)
       .then(json => {
         if (cancelled) return;
         if (json) {
@@ -1054,20 +1080,20 @@ function App(): React.JSX.Element {
             // Fall through to the default below.
           }
         }
-        setControlLayout(DEFAULT_CONTROL_LAYOUT);
+        setControlLayout(defaultControlLayout);
       })
-      .catch(() => setControlLayout(DEFAULT_CONTROL_LAYOUT));
+      .catch(() => setControlLayout(defaultControlLayout));
     return () => {
       cancelled = true;
     };
-  }, [system]);
+  }, [controlLayoutKey, defaultControlLayout]);
 
   const persistControlLayout = useCallback(
     (layout: ControlLayout) => {
       setControlLayout(layout);
-      setPreference(`controlLayout_${system}`, JSON.stringify(layout)).catch(() => {});
+      setPreference(controlLayoutKey, JSON.stringify(layout)).catch(() => {});
     },
-    [system],
+    [controlLayoutKey],
   );
 
   const handleDragCluster = useCallback(
@@ -1086,8 +1112,8 @@ function App(): React.JSX.Element {
   );
 
   const resetControlLayout = useCallback(() => {
-    persistControlLayout(DEFAULT_CONTROL_LAYOUT);
-  }, [persistControlLayout]);
+    persistControlLayout(defaultControlLayout);
+  }, [persistControlLayout, defaultControlLayout]);
 
   // Same per-system loading pattern as controlLayout above -- each
   // system keeps its own theme since their button sets differ (NDS has
@@ -1302,6 +1328,283 @@ function App(): React.JSX.Element {
       <GameBoyView ref={gameBoyRef} style={scaledScreenStyle(styles.screen)} />
     );
 
+  // Shared between portrait and landscape -- only the drag-to-reposition
+  // hint differs, since landscape's controls sit at fixed corners
+  // instead (see GameControls' landscape branch).
+  const editToolbar = editingControls && (
+    <View style={styles.editToolbar}>
+      {!isLandscape && <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>}
+      <View style={styles.editToolbarRow}>
+        <Text style={styles.editToolbarLabel}>Tamaño de pantalla</Text>
+        <Pressable style={styles.editStepButton} onPress={() => handleScaleStep(-0.1)}>
+          <Text style={styles.editStepLabel}>−</Text>
+        </Pressable>
+        <Text style={styles.editScaleValue}>{Math.round(controlLayout.screenScale * 100)}%</Text>
+        <Pressable style={styles.editStepButton} onPress={() => handleScaleStep(0.1)}>
+          <Text style={styles.editStepLabel}>+</Text>
+        </Pressable>
+        <Pressable style={styles.editResetButton} onPress={resetControlLayout}>
+          <Text style={styles.editResetLabel}>Restablecer</Text>
+        </Pressable>
+      </View>
+      <View style={styles.editToolbarRow}>
+        <Text style={styles.editToolbarLabel}>Tema</Text>
+        <Pressable style={styles.editThemeButton} onPress={() => setScreen('themeEditor')}>
+          <Text style={styles.editThemeLabel}>Editar</Text>
+        </Pressable>
+        <Pressable style={styles.editThemeButton} onPress={() => setScreen('themesExplore')}>
+          <Text style={styles.editThemeLabel}>Explorar</Text>
+        </Pressable>
+      </View>
+      {system === 'nds' && (
+        <View style={styles.editToolbarRow}>
+          <Text style={styles.editToolbarLabel}>Cartucho GBA</Text>
+          {gbaCartLabel ? (
+            <Pressable style={styles.editThemeButton} onPress={handleEjectGbaCart}>
+              <Text style={styles.editThemeLabel} numberOfLines={1}>
+                {gbaCartLabel} (expulsar)
+              </Text>
+            </Pressable>
+          ) : (
+            <Pressable style={styles.editThemeButton} onPress={handleInsertGbaCart}>
+              <Text style={styles.editThemeLabel}>Insertar</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+    </View>
+  );
+
+  // Shared between portrait and landscape's save modals -- identical
+  // content, only the surrounding <Modal>/<Pressable> backdrop differs
+  // per layout (well, it doesn't -- but keeping one JSX literal here
+  // avoids maintaining two copies of this large block in sync).
+  const saveModalContent = (
+    <>
+      <Text style={styles.modalTitle}>Guardado manual</Text>
+      <Text style={styles.modalSubtitle}>El juego está en pausa mientras eliges un espacio.</Text>
+      {(system === 'gba' || system === 'nds') && (
+        <>
+          <View style={styles.slotsRow}>
+            {[0, 1, 2].map(slot => {
+              const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
+              const cloud = cloudSaves.find(s => s.slot === slot);
+              const cloudBusy = cloudBusySlot === slot;
+              return (
+                <View key={slot} style={styles.slotCard}>
+                  <View style={styles.slotCardTop}>
+                    <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
+                    {info.exists && (
+                      <Pressable hitSlop={8} onPress={() => handleDeleteSlot(slot)}>
+                        <IconTrash size={13} />
+                      </Pressable>
+                    )}
+                  </View>
+                  <Text style={styles.slotMeta} numberOfLines={1}>
+                    {info.exists
+                      ? new Date(info.savedAt ?? 0).toLocaleString(undefined, {
+                          day: '2-digit',
+                          month: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : 'Vacío'}
+                  </Text>
+                  <View style={styles.slotActions}>
+                    <Pressable style={styles.slotActionButton} onPress={() => handleSaveSlot(slot)}>
+                      <Text style={styles.slotActionLabel}>Guardar</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.slotActionButton, !info.exists && styles.slotActionButtonDisabled]}
+                      disabled={!info.exists}
+                      onPress={() => handleLoadSlot(slot)}>
+                      <Text style={[styles.slotActionLabel, !info.exists && styles.slotActionLabelDisabled]}>Cargar</Text>
+                    </Pressable>
+                  </View>
+                  {authToken && (
+                    <View style={styles.slotActions}>
+                      <Pressable
+                        style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusy && styles.slotActionButtonDisabled]}
+                        disabled={cloudBusy}
+                        onPress={() => handleUploadCloudSlot(slot)}>
+                        {cloudBusy ? (
+                          <ActivityIndicator size="small" color="#a0ffe8" />
+                        ) : (
+                          <>
+                            <IconCloud size={11} color="#a0ffe8" />
+                            <Text style={[styles.slotActionLabel, styles.slotActionLabelCloud]}>Subir</Text>
+                          </>
+                        )}
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.slotActionButton,
+                          styles.slotActionButtonCloud,
+                          (!cloud || cloudBusy) && styles.slotActionButtonDisabled,
+                        ]}
+                        disabled={!cloud || cloudBusy}
+                        onPress={() => handleDownloadCloudSlot(slot)}>
+                        <IconCloud size={11} color={cloud ? '#a0ffe8' : '#777'} />
+                        <Text style={[styles.slotActionLabel, cloud && styles.slotActionLabelCloud, !cloud && styles.slotActionLabelDisabled]}>
+                          Bajar
+                        </Text>
+                      </Pressable>
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+
+          {/* Written automatically every ~45s and on background -- see the
+              autoSaveState effect -- so a crash doesn't cost progress. */}
+          {(() => {
+            const autoInfo = stateSlots.find(s => s.slot === AUTOSAVE_SLOT) ?? {slot: AUTOSAVE_SLOT, exists: false};
+            return (
+              <View style={styles.gameSaveRow}>
+                <View style={{flex: 1}}>
+                  <View style={styles.slotCardTop}>
+                    <Text style={styles.slotLabel}>Automático</Text>
+                  </View>
+                  <Text style={styles.slotMeta} numberOfLines={1}>
+                    {autoInfo.exists
+                      ? new Date(autoInfo.savedAt ?? 0).toLocaleString(undefined, {
+                          day: '2-digit',
+                          month: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : 'Vacío'}
+                  </Text>
+                </View>
+                <Pressable
+                  style={[styles.slotActionButton, !autoInfo.exists && styles.slotActionButtonDisabled]}
+                  disabled={!autoInfo.exists}
+                  onPress={() => handleLoadSlot(AUTOSAVE_SLOT)}>
+                  <Text style={[styles.slotActionLabel, !autoInfo.exists && styles.slotActionLabelDisabled]}>Cargar</Text>
+                </Pressable>
+              </View>
+            );
+          })()}
+        </>
+      )}
+
+      {authToken && (
+        <View style={styles.gameSaveRow}>
+          <Text style={styles.slotLabel}>Guardado del juego</Text>
+          <View style={styles.slotActions}>
+            <Pressable
+              style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusySlot === GAME_SAVE_CLOUD_SLOT && styles.slotActionButtonDisabled]}
+              disabled={cloudBusySlot === GAME_SAVE_CLOUD_SLOT}
+              onPress={handleUploadGameSave}>
+              {cloudBusySlot === GAME_SAVE_CLOUD_SLOT ? (
+                <ActivityIndicator size="small" color="#a0ffe8" />
+              ) : (
+                <>
+                  <IconCloud size={11} color="#a0ffe8" />
+                  <Text style={[styles.slotActionLabel, styles.slotActionLabelCloud]}>Subir</Text>
+                </>
+              )}
+            </Pressable>
+            <Pressable
+              style={[
+                styles.slotActionButton,
+                styles.slotActionButtonCloud,
+                (!cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) || cloudBusySlot === GAME_SAVE_CLOUD_SLOT) &&
+                  styles.slotActionButtonDisabled,
+              ]}
+              disabled={!cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) || cloudBusySlot === GAME_SAVE_CLOUD_SLOT}
+              onPress={handleDownloadGameSave}>
+              <IconCloud size={11} color={cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) ? '#a0ffe8' : '#777'} />
+              <Text
+                style={[
+                  styles.slotActionLabel,
+                  cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) && styles.slotActionLabelCloud,
+                  !cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) && styles.slotActionLabelDisabled,
+                ]}>
+                Bajar
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+      {!authToken && <Text style={styles.modalCloudHint}>Inicia sesión en Cuenta para sincronizar guardados en la nube.</Text>}
+      <Pressable style={styles.modalCloseButton} onPress={closeSaveModal}>
+        <Text style={styles.modalCloseLabel}>Cerrar y continuar</Text>
+      </Pressable>
+    </>
+  );
+
+  if (isLandscape) {
+    return (
+      <SafeAreaView style={styles.container}>
+        {coverImageUrl && (
+          <ImageBackground
+            source={{uri: coverImageUrl}}
+            style={StyleSheet.absoluteFill}
+            blurRadius={6}
+            resizeMode="cover">
+            <View style={styles.coverOverlay} />
+          </ImageBackground>
+        )}
+        <StatusBar hidden />
+        <View style={styles.landscapeRoot}>
+          <View style={styles.landscapeTopBar}>
+            <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
+              <IconHome size={18} />
+            </Pressable>
+            <Text style={styles.landscapeRomLabel} numberOfLines={1}>
+              {romLabel}
+            </Text>
+            {([1, 2, 3] as const).map(multiplier => (
+              <Pressable
+                key={multiplier}
+                style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
+                onPress={() => handleSetSpeed(multiplier)}>
+                <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
+              </Pressable>
+            ))}
+            {(system === 'gba' || system === 'nds') && (
+              <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
+                <IconSave size={14} color="#cfe3fa" />
+              </Pressable>
+            )}
+            <Pressable
+              style={[styles.homeButton, editingControls && styles.editToggleActive]}
+              onPress={() => setEditingControls(v => !v)}
+              hitSlop={8}>
+              <IconPencil size={16} color={editingControls ? '#14151a' : '#fff'} />
+            </Pressable>
+          </View>
+
+          {editToolbar}
+
+          <View style={[styles.landscapeStage, {maxHeight: landscapeStageHeight}]}>
+            <View style={[styles.screenBezel, {backgroundColor: controlStyle.screenBezel}]}>{screenView}</View>
+            <GameControls
+              system={system}
+              dispatch={dispatchButton}
+              editing={editingControls}
+              offsets={controlLayout.offsets}
+              onDrag={handleDragCluster}
+              theme={theme}
+              orientation="landscape"
+              stageHeight={landscapeStageHeight}
+            />
+          </View>
+        </View>
+
+        <Modal visible={saveModalOpen} transparent animationType="fade" onRequestClose={closeSaveModal}>
+          <Pressable style={styles.modalBackdrop} onPress={closeSaveModal}>
+            <Pressable style={styles.modalCard} onPress={() => {}}>
+              {saveModalContent}
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       {coverImageUrl && (
@@ -1337,49 +1640,7 @@ function App(): React.JSX.Element {
               </Pressable>
             </View>
 
-            {editingControls && (
-              <View style={styles.editToolbar}>
-                <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>
-                <View style={styles.editToolbarRow}>
-                  <Text style={styles.editToolbarLabel}>Tamaño de pantalla</Text>
-                  <Pressable style={styles.editStepButton} onPress={() => handleScaleStep(-0.1)}>
-                    <Text style={styles.editStepLabel}>−</Text>
-                  </Pressable>
-                  <Text style={styles.editScaleValue}>{Math.round(controlLayout.screenScale * 100)}%</Text>
-                  <Pressable style={styles.editStepButton} onPress={() => handleScaleStep(0.1)}>
-                    <Text style={styles.editStepLabel}>+</Text>
-                  </Pressable>
-                  <Pressable style={styles.editResetButton} onPress={resetControlLayout}>
-                    <Text style={styles.editResetLabel}>Restablecer</Text>
-                  </Pressable>
-                </View>
-                <View style={styles.editToolbarRow}>
-                  <Text style={styles.editToolbarLabel}>Tema</Text>
-                  <Pressable style={styles.editThemeButton} onPress={() => setScreen('themeEditor')}>
-                    <Text style={styles.editThemeLabel}>Editar</Text>
-                  </Pressable>
-                  <Pressable style={styles.editThemeButton} onPress={() => setScreen('themesExplore')}>
-                    <Text style={styles.editThemeLabel}>Explorar</Text>
-                  </Pressable>
-                </View>
-                {system === 'nds' && (
-                  <View style={styles.editToolbarRow}>
-                    <Text style={styles.editToolbarLabel}>Cartucho GBA</Text>
-                    {gbaCartLabel ? (
-                      <Pressable style={styles.editThemeButton} onPress={handleEjectGbaCart}>
-                        <Text style={styles.editThemeLabel} numberOfLines={1}>
-                          {gbaCartLabel} (expulsar)
-                        </Text>
-                      </Pressable>
-                    ) : (
-                      <Pressable style={styles.editThemeButton} onPress={handleInsertGbaCart}>
-                        <Text style={styles.editThemeLabel}>Insertar</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                )}
-              </View>
-            )}
+            {editToolbar}
 
             <View style={[styles.consoleShell, {borderColor: controlStyle.shellBorder, backgroundColor: controlStyle.shellBackground}]}>
               <View style={[styles.screenBezel, {backgroundColor: controlStyle.screenBezel}]}>{screenView}</View>
@@ -1435,161 +1696,7 @@ function App(): React.JSX.Element {
       <Modal visible={saveModalOpen} transparent animationType="fade" onRequestClose={closeSaveModal}>
         <Pressable style={styles.modalBackdrop} onPress={closeSaveModal}>
           <Pressable style={styles.modalCard} onPress={() => {}}>
-            <Text style={styles.modalTitle}>Guardado manual</Text>
-            <Text style={styles.modalSubtitle}>El juego está en pausa mientras eliges un espacio.</Text>
-            {(system === 'gba' || system === 'nds') && (
-              <>
-                <View style={styles.slotsRow}>
-              {[0, 1, 2].map(slot => {
-                const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
-                const cloud = cloudSaves.find(s => s.slot === slot);
-                const cloudBusy = cloudBusySlot === slot;
-                return (
-                  <View key={slot} style={styles.slotCard}>
-                    <View style={styles.slotCardTop}>
-                      <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
-                      {info.exists && (
-                        <Pressable hitSlop={8} onPress={() => handleDeleteSlot(slot)}>
-                          <IconTrash size={13} />
-                        </Pressable>
-                      )}
-                    </View>
-                    <Text style={styles.slotMeta} numberOfLines={1}>
-                      {info.exists
-                        ? new Date(info.savedAt ?? 0).toLocaleString(undefined, {
-                            day: '2-digit',
-                            month: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
-                        : 'Vacío'}
-                    </Text>
-                    <View style={styles.slotActions}>
-                      <Pressable style={styles.slotActionButton} onPress={() => handleSaveSlot(slot)}>
-                        <Text style={styles.slotActionLabel}>Guardar</Text>
-                      </Pressable>
-                      <Pressable
-                        style={[styles.slotActionButton, !info.exists && styles.slotActionButtonDisabled]}
-                        disabled={!info.exists}
-                        onPress={() => handleLoadSlot(slot)}>
-                        <Text style={[styles.slotActionLabel, !info.exists && styles.slotActionLabelDisabled]}>
-                          Cargar
-                        </Text>
-                      </Pressable>
-                    </View>
-                    {authToken && (
-                      <View style={styles.slotActions}>
-                        <Pressable
-                          style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusy && styles.slotActionButtonDisabled]}
-                          disabled={cloudBusy}
-                          onPress={() => handleUploadCloudSlot(slot)}>
-                          {cloudBusy ? (
-                            <ActivityIndicator size="small" color="#a0ffe8" />
-                          ) : (
-                            <>
-                              <IconCloud size={11} color="#a0ffe8" />
-                              <Text style={[styles.slotActionLabel, styles.slotActionLabelCloud]}>Subir</Text>
-                            </>
-                          )}
-                        </Pressable>
-                        <Pressable
-                          style={[
-                            styles.slotActionButton,
-                            styles.slotActionButtonCloud,
-                            (!cloud || cloudBusy) && styles.slotActionButtonDisabled,
-                          ]}
-                          disabled={!cloud || cloudBusy}
-                          onPress={() => handleDownloadCloudSlot(slot)}>
-                          <IconCloud size={11} color={cloud ? '#a0ffe8' : '#777'} />
-                          <Text style={[styles.slotActionLabel, cloud && styles.slotActionLabelCloud, !cloud && styles.slotActionLabelDisabled]}>
-                            Bajar
-                          </Text>
-                        </Pressable>
-                      </View>
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-
-            {/* Written automatically every ~45s and on background -- see the
-                autoSaveState effect -- so a crash doesn't cost progress. */}
-            {(() => {
-              const autoInfo = stateSlots.find(s => s.slot === AUTOSAVE_SLOT) ?? {slot: AUTOSAVE_SLOT, exists: false};
-              return (
-                <View style={styles.gameSaveRow}>
-                  <View style={{flex: 1}}>
-                    <View style={styles.slotCardTop}>
-                      <Text style={styles.slotLabel}>Automático</Text>
-                    </View>
-                    <Text style={styles.slotMeta} numberOfLines={1}>
-                      {autoInfo.exists
-                        ? new Date(autoInfo.savedAt ?? 0).toLocaleString(undefined, {
-                            day: '2-digit',
-                            month: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
-                        : 'Vacío'}
-                    </Text>
-                  </View>
-                  <Pressable
-                    style={[styles.slotActionButton, !autoInfo.exists && styles.slotActionButtonDisabled]}
-                    disabled={!autoInfo.exists}
-                    onPress={() => handleLoadSlot(AUTOSAVE_SLOT)}>
-                    <Text style={[styles.slotActionLabel, !autoInfo.exists && styles.slotActionLabelDisabled]}>Cargar</Text>
-                  </Pressable>
-                </View>
-              );
-            })()}
-              </>
-            )}
-
-            {authToken && (
-              <View style={styles.gameSaveRow}>
-                <Text style={styles.slotLabel}>Guardado del juego</Text>
-                <View style={styles.slotActions}>
-                  <Pressable
-                    style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusySlot === GAME_SAVE_CLOUD_SLOT && styles.slotActionButtonDisabled]}
-                    disabled={cloudBusySlot === GAME_SAVE_CLOUD_SLOT}
-                    onPress={handleUploadGameSave}>
-                    {cloudBusySlot === GAME_SAVE_CLOUD_SLOT ? (
-                      <ActivityIndicator size="small" color="#a0ffe8" />
-                    ) : (
-                      <>
-                        <IconCloud size={11} color="#a0ffe8" />
-                        <Text style={[styles.slotActionLabel, styles.slotActionLabelCloud]}>Subir</Text>
-                      </>
-                    )}
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      styles.slotActionButton,
-                      styles.slotActionButtonCloud,
-                      (!cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) || cloudBusySlot === GAME_SAVE_CLOUD_SLOT) &&
-                        styles.slotActionButtonDisabled,
-                    ]}
-                    disabled={!cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) || cloudBusySlot === GAME_SAVE_CLOUD_SLOT}
-                    onPress={handleDownloadGameSave}>
-                    <IconCloud size={11} color={cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) ? '#a0ffe8' : '#777'} />
-                    <Text
-                      style={[
-                        styles.slotActionLabel,
-                        cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) && styles.slotActionLabelCloud,
-                        !cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) && styles.slotActionLabelDisabled,
-                      ]}>
-                      Bajar
-                    </Text>
-                  </Pressable>
-                </View>
-              </View>
-            )}
-            {!authToken && (
-              <Text style={styles.modalCloudHint}>Inicia sesión en Cuenta para sincronizar guardados en la nube.</Text>
-            )}
-            <Pressable style={styles.modalCloseButton} onPress={closeSaveModal}>
-              <Text style={styles.modalCloseLabel}>Cerrar y continuar</Text>
-            </Pressable>
+            {saveModalContent}
           </Pressable>
         </Pressable>
       </Modal>
@@ -1615,6 +1722,8 @@ function GameControls({
   offsets,
   onDrag,
   theme,
+  orientation = 'portrait',
+  stageHeight = 0,
 }: {
   system: EmulatedSystem;
   dispatch: (button: PadButtonId, pressed: boolean) => void;
@@ -1622,6 +1731,15 @@ function GameControls({
   offsets: Partial<Record<ClusterId, ClusterOffset>>;
   onDrag: (id: ClusterId, dx: number, dy: number) => void;
   theme: Theme;
+  orientation?: 'portrait' | 'landscape';
+  // Landscape only -- measured by the parent from landscapeStage's own
+  // onLayout. Bottom-anchored clusters use `top` computed from this
+  // instead of `bottom` directly (`bottom` doesn't resolve reliably
+  // inside this absolute-fill root), and it must come from the parent:
+  // a same-shaped onLayout measured *inside* GameControls' own
+  // absolute-fill root was observed returning a height larger than the
+  // window itself, pushing every bottom-anchored button off-screen.
+  stageHeight?: number;
 }) {
   const cs = resolveControlStyle(theme);
   type ViewRef = React.ElementRef<typeof View>;
@@ -1677,6 +1795,126 @@ function GameControls({
   }, [dispatch]);
 
   const isPressed = (id: PadButtonId) => pressed.has(id);
+
+  // Landscape: no drag-to-reposition (fixed corners instead -- rotating
+  // the phone already gives plenty of room without needing per-user
+  // placement), so this skips DraggableCluster/padRow/shoulderRow/
+  // systemRow entirely and just anchors each cluster's own content
+  // straight to a corner of this View, which fills whatever "stage"
+  // area App.tsx gives it (see the landscape branch of App's render --
+  // that area excludes the top bar, so nothing here overlaps it).
+  if (orientation === 'landscape') {
+    return (
+      <View
+        style={styles.landscapeControlsRoot}
+        onLayout={measureAll}
+        onStartShouldSetResponder={() => !editing}
+        onMoveShouldSetResponder={() => !editing}
+        onResponderTerminationRequest={() => false}
+        onResponderGrant={updateFromTouches}
+        onResponderMove={updateFromTouches}
+        onResponderRelease={releaseAll}
+        onResponderTerminate={releaseAll}>
+        <View style={styles.landscapeShoulderLeft}>
+          <View
+            ref={setRef('L')}
+            style={[
+              styles.shoulderButton,
+              {backgroundColor: cs.shoulderColor, borderRadius: cs.shoulderRadius},
+              system === 'gb' && styles.shoulderButtonInactive,
+              isPressed('L') && styles.shoulderButtonPressed,
+            ]}>
+            <Text style={styles.shoulderLabel}>L</Text>
+          </View>
+        </View>
+        <View style={styles.landscapeShoulderRight}>
+          <View
+            ref={setRef('R')}
+            style={[
+              styles.shoulderButton,
+              {backgroundColor: cs.shoulderColor, borderRadius: cs.shoulderRadius},
+              system === 'gb' && styles.shoulderButtonInactive,
+              isPressed('R') && styles.shoulderButtonPressed,
+            ]}>
+            <Text style={styles.shoulderLabel}>R</Text>
+          </View>
+        </View>
+
+        {system === 'nds' && (
+          <View style={[styles.landscapeXY, {top: stageHeight - 184}]}>
+            <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
+              <Text style={styles.pillLabel}>Y</Text>
+            </View>
+            <View ref={setRef('X')} style={[styles.pillButton, styles.pillButtonStart, isPressed('X') && styles.pillButtonPressed]}>
+              <Text style={styles.pillLabel}>X</Text>
+            </View>
+          </View>
+        )}
+
+        <View style={[styles.landscapeDpadWrap, {top: stageHeight - 164}]}>
+          <View style={styles.dpad}>
+            <View style={[styles.dpadBarHorizontal, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
+            <View style={[styles.dpadBarVertical, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
+            <View style={styles.dpadRivet} />
+            <View
+              ref={setRef('UP')}
+              style={[styles.dpadHit, styles.dpadHitUp, {borderRadius: cs.dpadRadius}, isPressed('UP') && styles.dpadHitPressed]}>
+              <IconTriangle rotation={0} />
+            </View>
+            <View
+              ref={setRef('DOWN')}
+              style={[styles.dpadHit, styles.dpadHitDown, {borderRadius: cs.dpadRadius}, isPressed('DOWN') && styles.dpadHitPressed]}>
+              <IconTriangle rotation={180} />
+            </View>
+            <View
+              ref={setRef('LEFT')}
+              style={[styles.dpadHit, styles.dpadHitLeft, {borderRadius: cs.dpadRadius}, isPressed('LEFT') && styles.dpadHitPressed]}>
+              <IconTriangle rotation={-90} />
+            </View>
+            <View
+              ref={setRef('RIGHT')}
+              style={[styles.dpadHit, styles.dpadHitRight, {borderRadius: cs.dpadRadius}, isPressed('RIGHT') && styles.dpadHitPressed]}>
+              <IconTriangle rotation={90} />
+            </View>
+          </View>
+        </View>
+
+        <View style={[styles.landscapeActionsWrap, {top: stageHeight - 130}]}>
+          <View style={styles.actionCluster}>
+            <View
+              ref={setRef('B')}
+              style={[
+                styles.actionButton,
+                {backgroundColor: cs.actionColorB, borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                styles.buttonBPosition,
+                isPressed('B') && styles.actionButtonPressed,
+              ]}>
+              <Text style={styles.actionLabel}>B</Text>
+            </View>
+            <View
+              ref={setRef('A')}
+              style={[
+                styles.actionButton,
+                {backgroundColor: cs.actionColorA, borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                styles.buttonAPosition,
+                isPressed('A') && styles.actionButtonPressed,
+              ]}>
+              <Text style={styles.actionLabel}>A</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={[styles.landscapeSystemRow, {top: stageHeight - 60}]}>
+          <View ref={setRef('SELECT')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('SELECT') && styles.pillButtonPressed]}>
+            <Text style={styles.pillLabel}>SELECT</Text>
+          </View>
+          <View ref={setRef('START')} style={[styles.pillButton, styles.pillButtonStart, isPressed('START') && styles.pillButtonPressed]}>
+            <Text style={styles.pillLabel}>START</Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View
@@ -1879,6 +2117,20 @@ const styles = StyleSheet.create({
   },
   topGroup: {alignItems: 'center', width: '100%'},
   bottomGroup: {alignItems: 'center', width: '100%'},
+  // Landscape: a slim top bar (not the portrait topGroup's console+title
+  // block) plus a "stage" that fills the rest -- the screen centered in
+  // it, GameControls overlaid on top absolutely. See App's isLandscape
+  // branch and GameControls' own landscape branch.
+  landscapeRoot: {flex: 1, width: '100%'},
+  landscapeTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  landscapeRomLabel: {flex: 1, color: '#ccc', fontSize: 12},
+  landscapeStage: {flex: 1, alignItems: 'center', justifyContent: 'center'},
   coverOverlay: {
     position: 'absolute',
     top: 0,
@@ -2249,6 +2501,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 16,
     marginTop: 14,
+  },
+  // Landscape overlay anchors -- see GameControls' landscape branch.
+  // Fixed corners instead of DraggableCluster's drag-to-reposition
+  // (rotating the phone already gives plenty of room without needing
+  // per-user placement for v1).
+  landscapeControlsRoot: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0},
+  landscapeShoulderLeft: {position: 'absolute', top: 8, left: 12},
+  landscapeShoulderRight: {position: 'absolute', top: 8, right: 12},
+  landscapeXY: {position: 'absolute', right: 40, width: 120, height: 44, flexDirection: 'row', gap: 10},
+  landscapeDpadWrap: {position: 'absolute', left: 20, width: 144, height: 144},
+  landscapeActionsWrap: {position: 'absolute', right: 20, width: 140, height: 110},
+  landscapeSystemRow: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 40,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 16,
   },
   pillButton: {
     paddingVertical: 8,
