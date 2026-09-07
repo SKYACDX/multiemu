@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "Args.h"
+#include "GBACart.h"
 #include "NDS.h"
 #include "NDSCart.h"
 #include "Savestate.h"
@@ -33,6 +34,10 @@ namespace {
 struct DsSession {
     std::unique_ptr<NDS> nds;
     std::string savePath;
+    // Save path for whatever GBA cart is currently in the slot-2 (see
+    // nativeInsertGbaCart) -- separate from savePath (the NDS cart's
+    // own save), empty when no GBA cart is inserted.
+    std::string gbaSavePath;
     // DS KeyInput is active-low (see NDS::SetKeyMask): bit 0 = 1 means
     // "not pressed". Same first-10-bit order as GbaButton (A, B, SELECT,
     // START, RIGHT, LEFT, UP, DOWN, R, L), with X/Y added at 10/11.
@@ -57,6 +62,28 @@ void LoadExistingSave(const std::string& path, NDSCart::NDSCartArgs& cartArgs) {
         cartArgs.SRAMLength = static_cast<u32>(len);
     }
     fclose(f);
+}
+
+// Reads a whole file into memory, or returns {nullptr, 0} if it
+// doesn't exist/can't be opened -- used for both the GBA cart ROM
+// (nativeInsertGbaCart) and its existing save file, if any. GBA ROMs
+// run at most 32MB, so unlike the main NDS ROM path this never needs
+// to avoid holding the whole file in memory.
+std::pair<std::unique_ptr<u8[]>, u32> ReadFileBytes(const std::string& path) {
+    if (path.empty()) return {nullptr, 0};
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return {nullptr, 0};
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0) {
+        fclose(f);
+        return {nullptr, 0};
+    }
+    auto data = std::make_unique<u8[]>(static_cast<size_t>(len));
+    fread(data.get(), 1, static_cast<size_t>(len), f);
+    fclose(f);
+    return {std::move(data), static_cast<u32>(len)};
 }
 
 // Shared by nativeCreate/nativeCreateFromPath -- everything past "have
@@ -237,6 +264,47 @@ JNIEXPORT jboolean JNICALL Java_com_multiemu_dscore_DsNative_nativeLoadState(JNI
     Savestate state(buffer.data(), static_cast<u32>(length), false);
     if (state.Error) return JNI_FALSE;
     return (nds.DoSavestate(&state) && !state.Error) ? JNI_TRUE : JNI_FALSE;
+}
+
+// Inserts a GBA ROM into the DS's slot-2, the same physical mechanism
+// Pal Park (Diamond/Pearl/Platinum) and the GBA-slot Pokemon transfer
+// (HeartGold/SoulSilver) use to migrate Pokemon from a 3rd-gen game --
+// melonDS's GBACart already implements the cart-detection and SRAM
+// access those games expect, this just has to load one in. gbaSavePath
+// should point at the same save file GbaView already uses for this
+// ROM (its CRC32-keyed .sav under saves/) so a transfer sees whatever
+// the user already caught playing it standalone; may be null to start
+// with a freshly-battery-backed cart. Returns false if romPath isn't
+// a GBA ROM melonDS recognizes.
+JNIEXPORT jboolean JNICALL Java_com_multiemu_dscore_DsNative_nativeInsertGbaCart(
+    JNIEnv* env, jclass, jlong handle, jstring gbaRomPath, jstring gbaSavePath) {
+    auto* session = handleToSession(handle);
+
+    const char* romPathChars = env->GetStringUTFChars(gbaRomPath, nullptr);
+    auto [romData, romLen] = ReadFileBytes(romPathChars);
+    env->ReleaseStringUTFChars(gbaRomPath, romPathChars);
+    if (!romData) return JNI_FALSE;
+
+    if (gbaSavePath) {
+        const char* savePathChars = env->GetStringUTFChars(gbaSavePath, nullptr);
+        session->gbaSavePath = savePathChars;
+        env->ReleaseStringUTFChars(gbaSavePath, savePathChars);
+    } else {
+        session->gbaSavePath.clear();
+    }
+    auto [sramData, sramLen] = ReadFileBytes(session->gbaSavePath);
+
+    // userdata here is what Platform::WriteGBASave receives -- see
+    // GBACart.cpp's SRAMWrite call sites and ds_platform.cpp.
+    auto cart = GBACart::ParseROM(std::move(romData), romLen, std::move(sramData), sramLen, &session->gbaSavePath);
+    if (!cart) return JNI_FALSE;
+
+    session->nds->SetGBACart(std::move(cart));
+    return JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeEjectGbaCart(JNIEnv*, jclass, jlong handle) {
+    handleToSession(handle)->nds->EjectGBACart();
 }
 
 }  // extern "C"

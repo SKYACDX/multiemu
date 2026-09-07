@@ -42,4 +42,26 @@ class DsEmulatorControlModule(reactContext: ReactApplicationContext) :
         val ok = view.loadState(Base64.decode(base64, Base64.DEFAULT))
         if (ok) promise.resolve(null) else promise.reject("LOAD_STATE_FAILED", "El save state no es compatible con esta ROM")
     }
+
+    /**
+     * Inserts a GBA ROM into the slot-2 for Pal Park-style transfers --
+     * see DsView.insertGbaCart. [gbaRomId] should be that ROM's CRC32
+     * (same key GbaView uses for its own save file).
+     */
+    @ReactMethod
+    fun insertGbaCart(gbaRomPath: String, gbaRomId: String?, promise: Promise) {
+        val view = activeDs
+        if (view == null) {
+            promise.reject("NO_ACTIVE_GAME", "No hay un juego de NDS cargado")
+            return
+        }
+        val ok = view.insertGbaCart(gbaRomPath, gbaRomId)
+        if (ok) promise.resolve(null) else promise.reject("INVALID_GBA_ROM", "Ese archivo no es una ROM de GBA reconocible")
+    }
+
+    @ReactMethod
+    fun ejectGbaCart(promise: Promise) {
+        activeDs?.ejectGbaCart()
+        promise.resolve(null)
+    }
 }

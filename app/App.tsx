@@ -83,8 +83,10 @@ import {
   setPreference,
 } from './src/RomLibraryNative';
 import {
+  ejectGbaCart,
   getAudioDebugInfo,
   getGameSaveBytes,
+  insertGbaCart,
   loadDsState,
   loadGbaState,
   saveDsState,
@@ -177,6 +179,12 @@ function App(): React.JSX.Element {
   const [controlLayout, setControlLayout] = useState<ControlLayout>(DEFAULT_CONTROL_LAYOUT);
   const [theme, setTheme] = useState<Theme>(() => defaultTheme('gb'));
   const [themeBusy, setThemeBusy] = useState(false);
+  // Name of the GBA ROM currently inserted in the NDS's slot-2 (Pal
+  // Park-style Pokemon transfer), or null if none -- see
+  // handleInsertGbaCart. Purely a display label; the actual cart lives
+  // in the native DsView/melonDS session and resets whenever the NDS
+  // ROM itself reloads (a new DsNative instance has an empty slot-2).
+  const [gbaCartLabel, setGbaCartLabel] = useState<string | null>(null);
   const baseRomBytes = useRef<Uint8Array>(base64ToBytes(TEST_ROM_BASE64));
   // False until the user has actually loaded their own ROM (as opposed
   // to the built-in test pattern) -- gates applying a HackRom patch, see
@@ -620,6 +628,7 @@ function App(): React.JSX.Element {
         setTimeout(() => checkGameSaveConflict(romId), 500);
       } else if (targetSystem === 'nds') {
         dsRef.current?.loadRomBase64(encoded, currentRomId.current);
+        setGbaCartLabel(null);
         listStateSlots(currentRomId.current)
           .then(setStateSlots)
           .catch(() => setStateSlots([]));
@@ -730,6 +739,7 @@ function App(): React.JSX.Element {
       gbaRef.current?.setSpeedMultiplier(1);
     } else if (system === 'nds') {
       if (currentDsRomPath.current) dsRef.current?.loadRomPath(currentDsRomPath.current, romId);
+      setGbaCartLabel(null);
     } else {
       const base64 = bytesToBase64(baseRomBytes.current);
       gameBoyRef.current?.loadRomBase64(base64, romId);
@@ -765,6 +775,7 @@ function App(): React.JSX.Element {
         currentSaveSystem.current = 'nds';
         setRomLabel(picked.name);
         setCoverImageUrl(null);
+        setGbaCartLabel(null);
         listStateSlots(romId)
           .then(setStateSlots)
           .catch(() => setStateSlots([]));
@@ -905,6 +916,7 @@ function App(): React.JSX.Element {
           currentSaveSystem.current = 'nds';
           setRomLabel(file.title);
           setCoverImageUrl(null);
+          setGbaCartLabel(null);
           listStateSlots(romId)
             .then(setStateSlots)
             .catch(() => setStateSlots([]));
@@ -1146,6 +1158,30 @@ function App(): React.JSX.Element {
     [persistTheme],
   );
 
+  // Pal Park-style Pokemon transfer: insert a GBA ROM into the running
+  // NDS game's slot-2 (see ds_jni.cpp's nativeInsertGbaCart). Reads the
+  // small GBA ROM into JS memory to compute its CRC32 -- fine at GBA's
+  // <=32MB size, and needed so the same save file GbaView would use
+  // for this exact ROM gets reused here (whatever the user already
+  // caught playing it standalone).
+  const handleInsertGbaCart = useCallback(async () => {
+    try {
+      const picked = await pickRomFilePath(['gba']);
+      const base64 = await readFileAsBase64(picked.path);
+      const gbaRomId = crc32(base64ToBytes(base64)).toString(16);
+      await insertGbaCart(picked.path, gbaRomId);
+      setGbaCartLabel(picked.name);
+    } catch (e) {
+      if (e instanceof RomPickerCancelledError) return;
+      Alert.alert('No se pudo insertar el cartucho', e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const handleEjectGbaCart = useCallback(async () => {
+    await ejectGbaCart();
+    setGbaCartLabel(null);
+  }, []);
+
   if (screen === 'home') {
     return (
       <SafeAreaView style={styles.container}>
@@ -1326,6 +1362,22 @@ function App(): React.JSX.Element {
                     <Text style={styles.editThemeLabel}>Explorar</Text>
                   </Pressable>
                 </View>
+                {system === 'nds' && (
+                  <View style={styles.editToolbarRow}>
+                    <Text style={styles.editToolbarLabel}>Cartucho GBA</Text>
+                    {gbaCartLabel ? (
+                      <Pressable style={styles.editThemeButton} onPress={handleEjectGbaCart}>
+                        <Text style={styles.editThemeLabel} numberOfLines={1}>
+                          {gbaCartLabel} (expulsar)
+                        </Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable style={styles.editThemeButton} onPress={handleInsertGbaCart}>
+                        <Text style={styles.editThemeLabel}>Insertar</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                )}
               </View>
             )}
 

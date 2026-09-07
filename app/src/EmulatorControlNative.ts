@@ -11,6 +11,8 @@ interface EmulatorControlNativeModule {
 interface DsEmulatorControlNativeModule {
   saveDsState(): Promise<string>;
   loadDsState(base64: string): Promise<void>;
+  insertGbaCart(gbaRomPath: string, gbaRomId: string | null): Promise<void>;
+  ejectGbaCart(): Promise<void>;
 }
 
 const {EmulatorControl} = NativeModules as {EmulatorControl: EmulatorControlNativeModule};
@@ -36,6 +38,22 @@ export function saveDsState(): Promise<string> {
 
 export function loadDsState(base64: string): Promise<void> {
   return DsEmulatorControl.loadDsState(base64);
+}
+
+/**
+ * Inserts a GBA ROM into the currently-running NDS game's slot-2 --
+ * the same physical mechanism Pal Park (Diamond/Pearl/Platinum) and
+ * the GBA-slot transfer (HeartGold/SoulSilver) use to migrate Pokemon
+ * from a 3rd-gen game. gbaRomId should be that ROM's CRC32 (see
+ * patchers/crc32.ts) so the transfer reuses the exact same save file
+ * GbaView already keeps for it, if the user's played it standalone.
+ */
+export function insertGbaCart(gbaRomPath: string, gbaRomId: string | null): Promise<void> {
+  return DsEmulatorControl.insertGbaCart(gbaRomPath, gbaRomId);
+}
+
+export function ejectGbaCart(): Promise<void> {
+  return DsEmulatorControl.ejectGbaCart();
 }
 
 /** TEMPORARY diagnostic -- see GbaView.kt's totalAudioFramesRead/lastAudioWriteResult. */

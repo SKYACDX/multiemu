@@ -51,6 +51,8 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeReadAudioSamples(handle: Long, outSamples: ShortArray): Int
         @JvmStatic private external fun nativeSaveState(handle: Long): ByteArray?
         @JvmStatic private external fun nativeLoadState(handle: Long, data: ByteArray): Boolean
+        @JvmStatic private external fun nativeInsertGbaCart(handle: Long, gbaRomPath: String, gbaSavePath: String?): Boolean
+        @JvmStatic private external fun nativeEjectGbaCart(handle: Long)
     }
 
     /** width*height ARGB_8888 pixels each, reused across calls. */
@@ -100,6 +102,25 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
     fun loadState(data: ByteArray): Boolean {
         check(handle != 0L) { "DsNative used after close()" }
         return nativeLoadState(handle, data)
+    }
+
+    /**
+     * Inserts a GBA ROM into the slot-2 -- the same physical mechanism
+     * Pal Park and the GBA-slot Pokemon transfer use to read a 3rd-gen
+     * game's Pokemon. [gbaSavePath] should be the same .sav path
+     * GbaView already uses for this ROM (its CRC32-keyed save under
+     * saves/) so the transfer sees whatever's already been caught
+     * playing it standalone. Returns false if it's not a GBA ROM
+     * melonDS recognizes.
+     */
+    fun insertGbaCart(gbaRomPath: String, gbaSavePath: String?): Boolean {
+        check(handle != 0L) { "DsNative used after close()" }
+        return nativeInsertGbaCart(handle, gbaRomPath, gbaSavePath)
+    }
+
+    fun ejectGbaCart() {
+        check(handle != 0L) { "DsNative used after close()" }
+        nativeEjectGbaCart(handle)
     }
 
     override fun close() {

@@ -236,9 +236,18 @@ void WriteNDSSave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen
     fclose(f);
 }
 
-// TODO: GBA slot-2 cart save passthrough -- not wired up yet (no GBA
-// cart support in the DS frontend so far), safe no-op until it is.
-void WriteGBASave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen, void* userdata) {}
+// Same shape as WriteNDSSave -- userdata is the inserted GBA cart's own
+// save path (see ds_jni.cpp's nativeInsertGbaCart), so Pal Park-style
+// transfers (melonDS's GBACart slot-2 emulation) persist across
+// sessions the same way the main NDS cart's save does.
+void WriteGBASave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen, void* userdata) {
+    auto* path = static_cast<const std::string*>(userdata);
+    if (!path || path->empty()) return;
+    FILE* f = fopen(path->c_str(), "wb");
+    if (!f) return;
+    fwrite(savedata, 1, savelen, f);
+    fclose(f);
+}
 
 // TODO: persist firmware changes (e.g. the user's DS settings) back to
 // disk -- for now firmware edits made in a session don't survive a

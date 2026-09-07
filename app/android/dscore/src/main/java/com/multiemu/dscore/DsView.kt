@@ -152,6 +152,22 @@ class DsView(context: Context) : View(context) {
         pausedByModal = value
     }
 
+    /**
+     * Inserts a GBA ROM into the slot-2 for Pal Park-style Pokemon
+     * transfers -- see DsNative.insertGbaCart. [gbaRomId] reuses the
+     * exact save path GbaView would use for this same ROM (its CRC32),
+     * so a transfer sees whatever was already caught playing it as a
+     * regular GBA game. Returns false if nothing's loaded or the file
+     * isn't a GBA ROM melonDS recognizes.
+     */
+    fun insertGbaCart(gbaRomPath: String, gbaRomId: String?): Boolean {
+        return ds?.insertGbaCart(gbaRomPath, savePathFor(gbaRomId)) ?: false
+    }
+
+    fun ejectGbaCart() {
+        ds?.ejectGbaCart()
+    }
+
     /** Full emulator state (not just cartridge save RAM) -- null if nothing's loaded or the save fails. */
     fun saveState(): ByteArray? = ds?.saveState()
 
