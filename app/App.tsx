@@ -51,6 +51,7 @@ import {
   InvalidRomExtensionError,
   pickRomFilePath,
   readFileAsBase64,
+  readFileHeaderBase64,
   RomPickerCancelledError,
 } from './src/RomFilePicker';
 import {
@@ -576,12 +577,9 @@ function App(): React.JSX.Element {
       setSpeed(1);
       setCoverImageUrl(null);
 
-      // RomHack Hub (cover art + patches) only knows GB/GBA -- skip the
-      // lookup for NDS rather than querying it with a title parsed at
-      // the wrong header offset.
-      if (targetSystem !== 'nds') {
+      {
         const lookupId = ++coverLookupId.current;
-        const romTitle = readRomTitle(bytes, targetSystem === 'gba' ? 'gba' : 'gb');
+        const romTitle = readRomTitle(bytes, targetSystem);
         findCoverArt(targetSystem, romTitle).then(url => {
           if (coverLookupId.current === lookupId) setCoverImageUrl(url);
         });
@@ -738,10 +736,11 @@ function App(): React.JSX.Element {
       hasUserRom.current = true;
 
       if (targetSystem === 'nds') {
-        // No cover art, no Recientes cache entry, no CRC32 -- all of
-        // that currently assumes the ROM's bytes are in JS memory,
-        // which is exactly what this path avoids for NDS. romId is
-        // just enough to give the save file a stable, per-ROM name.
+        // No Recientes cache entry, no CRC32 -- both currently assume the
+        // ROM's bytes are in JS memory, which is exactly what this path
+        // avoids for NDS. romId is just enough to give the save file a
+        // stable, per-ROM name. Cover art only needs the 12-byte title at
+        // the very start of the file, so it's cheap even without the rest.
         const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
         currentRomId.current = romId;
         currentDsRomPath.current = picked.path;
@@ -750,6 +749,16 @@ function App(): React.JSX.Element {
         setCoverImageUrl(null);
         setStateSlots([]);
         lastSyncedSaveCrc.current = null;
+        const lookupId = ++coverLookupId.current;
+        readFileHeaderBase64(picked.path, 0x0c)
+          .then(base64 => {
+            const romTitle = readRomTitle(base64ToBytes(base64), 'nds');
+            return findCoverArt('nds', romTitle);
+          })
+          .then(url => {
+            if (coverLookupId.current === lookupId) setCoverImageUrl(url);
+          })
+          .catch(() => {});
         // Cartridge-save cloud sync works for NDS too (see
         // readGameSavePaused/autoSyncGameSave below) -- unlike a
         // full-state save, the .sav file is small (melonDS writes

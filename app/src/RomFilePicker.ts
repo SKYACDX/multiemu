@@ -16,6 +16,7 @@ interface RomFilePickerNativeModule {
   pickRom(extensions: string[]): Promise<PickedRom>;
   pickRomPath(extensions: string[]): Promise<PickedRomPath>;
   readFileAsBase64(path: string): Promise<string>;
+  readFileHeaderBase64(path: string, length: number): Promise<string>;
 }
 
 const {RomFilePicker} = NativeModules as {RomFilePicker: RomFilePickerNativeModule};
@@ -69,4 +70,9 @@ export async function pickRomFilePath(extensions: string[]): Promise<PickedRomPa
 /** Reads back a small file at a plain filesystem path (e.g. from pickRomFilePath) as base64 -- see readFileAsBase64's Kotlin doc comment. */
 export function readFileAsBase64(path: string): Promise<string> {
   return RomFilePicker.readFileAsBase64(path);
+}
+
+/** Reads just the first `length` bytes of a file at a plain path, as base64 -- e.g. an NDS ROM's header, without loading the whole file. */
+export function readFileHeaderBase64(path: string, length: number): Promise<string> {
+  return RomFilePicker.readFileHeaderBase64(path, length);
 }

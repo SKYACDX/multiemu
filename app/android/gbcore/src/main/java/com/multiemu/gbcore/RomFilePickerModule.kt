@@ -89,6 +89,24 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    /**
+     * Reads just the first [length] bytes of a file at a plain path, as
+     * base64 -- for reading an NDS ROM's header (game title, at offset 0)
+     * without loading the whole 128-512MB file into memory the way
+     * [readFileAsBase64] would. See romTitle.ts.
+     */
+    @ReactMethod
+    fun readFileHeaderBase64(path: String, length: Int, promise: Promise) {
+        try {
+            val buffer = ByteArray(length)
+            val read = File(path).inputStream().use { it.read(buffer) }
+            val actual = if (read < 0) ByteArray(0) else buffer.copyOf(read)
+            promise.resolve(Base64.encodeToString(actual, Base64.NO_WRAP))
+        } catch (e: Exception) {
+            promise.reject("READ_ERROR", e.message, e)
+        }
+    }
+
     private fun launchPicker(extensions: ReadableArray, promise: Promise) {
         val activity = reactApplicationContext.currentActivity
         if (activity == null) {

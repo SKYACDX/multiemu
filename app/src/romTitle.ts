@@ -9,6 +9,10 @@ export function readRomTitle(bytes: Uint8Array, extension: string): string {
     // GBA header: 12-byte ASCII title at offset 0xA0.
     return decodeAscii(bytes, 0xa0, 12);
   }
+  if (extension.toLowerCase() === 'nds') {
+    // NDS header: 12-byte ASCII title at offset 0x00 (GBATEK).
+    return decodeAscii(bytes, 0x00, 12);
+  }
   // GB/GBC header: 16-byte title field (last byte or two get reused for
   // the CGB flag/manufacturer code on newer carts, but trimming trailing
   // non-printable/null bytes handles that fine either way) at 0x134.
