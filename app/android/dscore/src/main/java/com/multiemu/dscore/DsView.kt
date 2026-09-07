@@ -152,10 +152,16 @@ class DsView(context: Context) : View(context) {
         pausedByModal = value
     }
 
+    /** Full emulator state (not just cartridge save RAM) -- null if nothing's loaded or the save fails. */
+    fun saveState(): ByteArray? = ds?.saveState()
+
+    fun loadState(data: ByteArray): Boolean = ds?.loadState(data) ?: false
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         running = true
         Choreographer.getInstance().postFrameCallback(frameCallback)
+        DsEmulatorControlModule.activeDs = this
     }
 
     override fun onDetachedFromWindow() {
@@ -164,6 +170,7 @@ class DsView(context: Context) : View(context) {
         ds?.close()
         ds = null
         stopAudio()
+        if (DsEmulatorControlModule.activeDs === this) DsEmulatorControlModule.activeDs = null
         super.onDetachedFromWindow()
     }
 

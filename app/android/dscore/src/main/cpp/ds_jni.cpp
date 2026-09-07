@@ -20,6 +20,7 @@
 #include "Args.h"
 #include "NDS.h"
 #include "NDSCart.h"
+#include "Savestate.h"
 
 using namespace melonDS;
 
@@ -209,6 +210,33 @@ JNIEXPORT jint JNICALL Java_com_multiemu_dscore_DsNative_nativeReadAudioSamples(
         env->SetShortArrayRegion(outSamples, 0, read * 2, reinterpret_cast<jshort*>(buffer.data()));
     }
     return read;
+}
+
+// Full emulator state (CPU/memory/GPU/APU/etc), not just cartridge save
+// RAM -- see Savestate.h and the Qt frontend's EmuInstance::saveState
+// for the reference usage this mirrors. Unlike gba_jni.cpp's mGBA
+// passthrough, melonDS's Savestate owns and grows its own buffer, so
+// the size has to be read back from the object after DoSavestate runs.
+JNIEXPORT jbyteArray JNICALL Java_com_multiemu_dscore_DsNative_nativeSaveState(JNIEnv* env, jclass,
+                                                                                  jlong handle) {
+    NDS& nds = *handleToSession(handle)->nds;
+    Savestate state;
+    if (state.Error || !nds.DoSavestate(&state) || state.Error) return nullptr;
+    jsize length = static_cast<jsize>(state.Length());
+    jbyteArray result = env->NewByteArray(length);
+    env->SetByteArrayRegion(result, 0, length, reinterpret_cast<const jbyte*>(state.Buffer()));
+    return result;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_multiemu_dscore_DsNative_nativeLoadState(JNIEnv* env, jclass,
+                                                                                jlong handle, jbyteArray data) {
+    NDS& nds = *handleToSession(handle)->nds;
+    jsize length = env->GetArrayLength(data);
+    std::vector<u8> buffer(static_cast<size_t>(length));
+    env->GetByteArrayRegion(data, 0, length, reinterpret_cast<jbyte*>(buffer.data()));
+    Savestate state(buffer.data(), static_cast<u32>(length), false);
+    if (state.Error) return JNI_FALSE;
+    return (nds.DoSavestate(&state) && !state.Error) ? JNI_TRUE : JNI_FALSE;
 }
 
 }  // extern "C"

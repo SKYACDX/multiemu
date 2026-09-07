@@ -8,7 +8,13 @@ interface EmulatorControlNativeModule {
   setGameSaveBytes(romId: string, base64: string): Promise<void>;
 }
 
+interface DsEmulatorControlNativeModule {
+  saveDsState(): Promise<string>;
+  loadDsState(base64: string): Promise<void>;
+}
+
 const {EmulatorControl} = NativeModules as {EmulatorControl: EmulatorControlNativeModule};
+const {DsEmulatorControl} = NativeModules as {DsEmulatorControl: DsEmulatorControlNativeModule};
 
 /**
  * Full emulator state (not just cartridge save RAM) for whichever GBA
@@ -21,6 +27,15 @@ export function saveGbaState(): Promise<string> {
 
 export function loadGbaState(base64: string): Promise<void> {
   return EmulatorControl.loadGbaState(base64);
+}
+
+/** NDS equivalent of saveGbaState/loadGbaState -- see DsEmulatorControlModule.kt. */
+export function saveDsState(): Promise<string> {
+  return DsEmulatorControl.saveDsState();
+}
+
+export function loadDsState(base64: string): Promise<void> {
+  return DsEmulatorControl.loadDsState(base64);
 }
 
 /** TEMPORARY diagnostic -- see GbaView.kt's totalAudioFramesRead/lastAudioWriteResult. */

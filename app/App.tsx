@@ -80,7 +80,9 @@ import {
 import {
   getAudioDebugInfo,
   getGameSaveBytes,
+  loadDsState,
   loadGbaState,
+  saveDsState,
   saveGbaState,
   setGameSaveBytes,
 } from './src/EmulatorControlNative';
@@ -194,8 +196,9 @@ function App(): React.JSX.Element {
   const [folderLoading, setFolderLoading] = useState(false);
 
   const [speed, setSpeed] = useState<1 | 2 | 3>(1);
-  // Manual save states -- only GBA (mGBA exposes full-state save/load
-  // out of the box; gbcore doesn't implement that yet, see docs/roadmap.md).
+  // Manual save states -- GBA and NDS only (mGBA and melonDS both expose
+  // full-state save/load; gbcore doesn't implement that yet for GB/GBC,
+  // see docs/roadmap.md).
   const [stateSlots, setStateSlots] = useState<StateSlot[]>([]);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
 
@@ -280,6 +283,17 @@ function App(): React.JSX.Element {
     return romId ? `${currentSaveSystem.current}:${romId}` : null;
   }, []);
 
+  // Full-state save/load dispatches to whichever core is actually
+  // running -- GB has no equivalent (see the modal's system === 'gba' ||
+  // system === 'nds' gates), so this only ever needs to pick between two.
+  const saveEmuState = useCallback((): Promise<string> => {
+    return currentSaveSystem.current === 'nds' ? saveDsState() : saveGbaState();
+  }, []);
+
+  const loadEmuState = useCallback((base64: string): Promise<void> => {
+    return currentSaveSystem.current === 'nds' ? loadDsState(base64) : loadGbaState(base64);
+  }, []);
+
   const refreshCloudSaves = useCallback(() => {
     const gameKey = cloudGameKey();
     if (!authToken || !gameKey) {
@@ -297,7 +311,7 @@ function App(): React.JSX.Element {
       if (!authToken || !gameKey) return;
       setCloudBusySlot(slot);
       try {
-        const base64 = await saveGbaState();
+        const base64 = await saveEmuState();
         const bytes = base64ToBytes(base64);
         await uploadCloudSave(authToken, gameKey, slot, bytes, `slot${slot}.sav`);
         refreshCloudSaves();
@@ -307,7 +321,7 @@ function App(): React.JSX.Element {
         setCloudBusySlot(null);
       }
     },
-    [authToken, cloudGameKey, refreshCloudSaves],
+    [authToken, cloudGameKey, refreshCloudSaves, saveEmuState],
   );
 
   const handleDownloadCloudSlot = useCallback(
@@ -320,7 +334,7 @@ function App(): React.JSX.Element {
       try {
         const bytes = await downloadCloudSave(authToken, remote.id);
         const base64 = bytesToBase64(bytes);
-        await loadGbaState(base64);
+        await loadEmuState(base64);
         // Also persist it locally -- otherwise the slot's own "Cargar"
         // button stays stuck on whatever (or nothing) was there before,
         // even though the game now has this save state loaded live.
@@ -333,7 +347,7 @@ function App(): React.JSX.Element {
         setCloudBusySlot(null);
       }
     },
-    [authToken, cloudSaves],
+    [authToken, cloudSaves, loadEmuState],
   );
 
   // The cartridge's own in-game save (SRAM/flash), separate from the 3
@@ -451,17 +465,17 @@ function App(): React.JSX.Element {
   // sync above, which only covers the cartridge's own SRAM/flash save.
   const autoSaveState = useCallback(async () => {
     const romId = currentRomId.current;
-    if (!romId || system !== 'gba' || saveModalOpen) return;
+    if (!romId || (system !== 'gba' && system !== 'nds') || saveModalOpen) return;
     try {
-      const base64 = await saveGbaState();
+      const base64 = await saveEmuState();
       await saveStateSlot(romId, AUTOSAVE_SLOT, base64);
     } catch {
       // Best-effort -- silent, this isn't user-initiated.
     }
-  }, [system, saveModalOpen]);
+  }, [system, saveModalOpen, saveEmuState]);
 
   useEffect(() => {
-    if (screen !== 'game' || system !== 'gba') return;
+    if (screen !== 'game' || (system !== 'gba' && system !== 'nds')) return;
     const interval = setInterval(autoSaveState, AUTOSAVE_INTERVAL_MS);
     const sub = AppState.addEventListener('change', state => {
       if (state !== 'active') autoSaveState();
@@ -599,12 +613,12 @@ function App(): React.JSX.Element {
         const romId = currentRomId.current;
         setTimeout(() => checkGameSaveConflict(romId), 500);
       } else if (targetSystem === 'nds') {
-        // Cartridge save persistence is handled entirely on the native
-        // side (see ds_jni.cpp) -- no getGameSaveBytes/cloud-sync
-        // plumbing for NDS yet, and no save-state slots (DsNative
-        // doesn't implement full-state save/load yet either).
         dsRef.current?.loadRomBase64(encoded, currentRomId.current);
-        setStateSlots([]);
+        listStateSlots(currentRomId.current)
+          .then(setStateSlots)
+          .catch(() => setStateSlots([]));
+        const romId = currentRomId.current;
+        setTimeout(() => checkGameSaveConflict(romId), 500);
       } else {
         gameBoyRef.current?.loadRomBase64(encoded, currentRomId.current);
         gameBoyRef.current?.setSpeedMultiplier(1);
@@ -630,9 +644,7 @@ function App(): React.JSX.Element {
   const openSaveModal = useCallback(() => {
     setSaveModalOpen(true);
     setActiveViewPaused(true);
-    // NDS has no state-slot list yet (no melonDS savestate wiring) --
-    // leave stateSlots empty so that section of the modal stays hidden.
-    if (currentRomId.current && currentSaveSystem.current === 'gba') {
+    if (currentRomId.current) {
       listStateSlots(currentRomId.current)
         .then(setStateSlots)
         .catch(() => {});
@@ -650,14 +662,14 @@ function App(): React.JSX.Element {
       const romId = currentRomId.current;
       if (!romId) return;
       try {
-        const base64 = await saveGbaState();
+        const base64 = await saveEmuState();
         await saveStateSlot(romId, slot, base64);
         setStateSlots(await listStateSlots(romId));
       } catch (e) {
         Alert.alert('No se pudo guardar', e instanceof Error ? e.message : String(e));
       }
     },
-    [],
+    [saveEmuState],
   );
 
   const handleLoadSlot = useCallback(
@@ -666,13 +678,13 @@ function App(): React.JSX.Element {
       if (!romId) return;
       try {
         const base64 = await loadStateSlot(romId, slot);
-        await loadGbaState(base64);
+        await loadEmuState(base64);
         closeSaveModal();
       } catch (e) {
         Alert.alert('No se pudo cargar ese guardado', e instanceof Error ? e.message : String(e));
       }
     },
-    [closeSaveModal],
+    [closeSaveModal, loadEmuState],
   );
 
   const handleDeleteSlot = useCallback((slot: number) => {
@@ -747,7 +759,9 @@ function App(): React.JSX.Element {
         currentSaveSystem.current = 'nds';
         setRomLabel(picked.name);
         setCoverImageUrl(null);
-        setStateSlots([]);
+        listStateSlots(romId)
+          .then(setStateSlots)
+          .catch(() => setStateSlots([]));
         lastSyncedSaveCrc.current = null;
         const lookupId = ++coverLookupId.current;
         readFileHeaderBase64(picked.path, 0x0c)
@@ -1235,10 +1249,7 @@ function App(): React.JSX.Element {
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Text style={styles.modalTitle}>Guardado manual</Text>
             <Text style={styles.modalSubtitle}>El juego está en pausa mientras eliges un espacio.</Text>
-            {/* Save-state slots are GBA-only for now (melonDS has no
-                savestate wiring here yet -- see docs/roadmap.md), so NDS
-                only gets the cartridge-save cloud sync section below. */}
-            {system === 'gba' && (
+            {(system === 'gba' || system === 'nds') && (
               <>
                 <View style={styles.slotsRow}>
               {[0, 1, 2].map(slot => {

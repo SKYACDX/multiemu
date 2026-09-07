@@ -49,6 +49,8 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeReleaseScreen(handle: Long)
         @JvmStatic private external fun nativeGetAudioSampleRate(): Int
         @JvmStatic private external fun nativeReadAudioSamples(handle: Long, outSamples: ShortArray): Int
+        @JvmStatic private external fun nativeSaveState(handle: Long): ByteArray?
+        @JvmStatic private external fun nativeLoadState(handle: Long, data: ByteArray): Boolean
     }
 
     /** width*height ARGB_8888 pixels each, reused across calls. */
@@ -87,6 +89,17 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
     fun readAudioSamples(outSamples: ShortArray): Int {
         check(handle != 0L) { "DsNative used after close()" }
         return nativeReadAudioSamples(handle, outSamples)
+    }
+
+    /** Full emulator state (CPU/memory/GPU/APU/etc), not just the cartridge save file -- see Savestate.h. */
+    fun saveState(): ByteArray? {
+        check(handle != 0L) { "DsNative used after close()" }
+        return nativeSaveState(handle)
+    }
+
+    fun loadState(data: ByteArray): Boolean {
+        check(handle != 0L) { "DsNative used after close()" }
+        return nativeLoadState(handle, data)
     }
 
     override fun close() {
