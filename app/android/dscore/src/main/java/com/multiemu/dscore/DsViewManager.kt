@@ -16,6 +16,8 @@ import com.facebook.react.uimanager.ThemedReactContext
  *     which reliably OOMs. path comes from RomFilePickerModule.pickRomPath.
  *   - "setButtonPressed" [buttonName, pressed] -- buttonName must match
  *     a DsButton enum constant name (e.g. "A", "X", "L")
+ *   - "setPaused" [true|false] -- freezes emulation (used while the
+ *     manual-save modal is open)
  * Touch-screen input is NOT a command here -- DsView handles it
  * directly via onTouchEvent, since it already computes the bottom
  * screen's exact scaled rect for drawing.
@@ -42,6 +44,10 @@ class DsViewManager : SimpleViewManager<DsView>() {
                 val pressed = args.getBoolean(1)
                 val button = runCatching { DsButton.valueOf(buttonName) }.getOrNull() ?: return
                 view.setButtonPressed(button, pressed)
+            }
+            "setPaused" -> {
+                val paused = args?.getBoolean(0) ?: return
+                view.setPaused(paused)
             }
         }
     }

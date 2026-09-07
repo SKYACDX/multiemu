@@ -28,6 +28,7 @@ import {
   GestureResponderEvent,
   ImageBackground,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   SafeAreaView,
@@ -39,7 +40,7 @@ import {
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import DsView, {DsButton, DsViewHandle} from './src/DsView';
-import {IconCloud, IconHome, IconSave, IconTrash, IconTriangle} from './src/icons';
+import {IconCloud, IconHome, IconPencil, IconSave, IconTrash, IconTriangle} from './src/icons';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
 import HubScreen from './src/HubScreen';
@@ -72,6 +73,8 @@ import {
   saveRomToCache,
   saveStateSlot,
   StateSlot,
+  getPreference,
+  setPreference,
 } from './src/RomLibraryNative';
 import {
   getAudioDebugInfo,
@@ -101,6 +104,19 @@ const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account' | 'localLink';
 type EmulatedSystem = 'gb' | 'gba' | 'nds';
 type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'X' | 'Y' | 'SELECT' | 'START';
+
+// Draggable clusters a user can reposition in "Personalizar controles"
+// mode -- grouped (whole D-pad, whole A/B) rather than per-button, which
+// covers "mover los botones" without needing a drag handle for all 12.
+type ClusterId = 'dpad' | 'actions' | 'shoulders' | 'xy' | 'system';
+type ClusterOffset = {dx: number; dy: number};
+interface ControlLayout {
+  offsets: Partial<Record<ClusterId, ClusterOffset>>;
+  screenScale: number;
+}
+const DEFAULT_CONTROL_LAYOUT: ControlLayout = {offsets: {}, screenScale: 1};
+const MIN_SCREEN_SCALE = 0.7;
+const MAX_SCREEN_SCALE = 1.4;
 
 // 3DS isn't emulated yet (see docs/roadmap.md) -- only accept what one of
 // the three cores can actually run, so picking the wrong file fails fast
@@ -143,6 +159,15 @@ function App(): React.JSX.Element {
   // 128-512MB ROM in JS memory), just the path DsView should read it
   // from. Set by handlePickRom, consumed by the remount effect below.
   const currentDsRomPath = useRef<string | null>(null);
+  // Read by cloudGameKey/readGameSavePaused/checkGameSaveConflict -- a
+  // ref (not the system state) so it's never stale/racy relative to
+  // those closures, same reasoning as currentRomId.
+  const currentSaveSystem = useRef<EmulatedSystem>('gb');
+  // "Personalizar controles" -- per-system (a DS layout makes no sense
+  // for GB) drag-to-reposition + screen scale, persisted natively (see
+  // RomLibraryModule's getPreference/setPreference).
+  const [editingControls, setEditingControls] = useState(false);
+  const [controlLayout, setControlLayout] = useState<ControlLayout>(DEFAULT_CONTROL_LAYOUT);
   const baseRomBytes = useRef<Uint8Array>(base64ToBytes(TEST_ROM_BASE64));
   // False until the user has actually loaded their own ROM (as opposed
   // to the built-in test pattern) -- gates applying a HackRom patch, see
@@ -245,10 +270,13 @@ function App(): React.JSX.Element {
   }, []);
 
   // gameKey groups cloud saves by ROM regardless of which device produced
-  // them -- "gba:<romId>" so a future GB save format can't collide with it.
+  // them -- "<system>:<romId>" so different systems' save formats can't
+  // collide (GB never used this -- see the system !== 'gba' guards below
+  // -- so the prefix was hardcoded to "gba:" until NDS needed a second
+  // one; existing GBA keys are unaffected, they still get exactly that).
   const cloudGameKey = useCallback(() => {
     const romId = currentRomId.current;
-    return romId ? `gba:${romId}` : null;
+    return romId ? `${currentSaveSystem.current}:${romId}` : null;
   }, []);
 
   const refreshCloudSaves = useCallback(() => {
@@ -353,31 +381,45 @@ function App(): React.JSX.Element {
   // synced" from "nothing new to push" without re-uploading every tick.
   const lastSyncedSaveCrc = useRef<number | null>(null);
 
-  // Reading the .sav file while mGBA is actively running risks catching
-  // it mid-write (it writes straight through as the game saves, see
-  // EmulatorControlModule.kt) -- pausing for the handful of milliseconds
-  // a small SRAM/flash file takes to read is cheap insurance and
-  // reuses the same pause the manual-save modal already relies on.
+  // Pauses whichever view is actually showing a game -- see
+  // currentSaveSystem's own comment for why this reads that ref instead
+  // of the system state.
+  const setActiveViewPaused = useCallback((paused: boolean) => {
+    if (currentSaveSystem.current === 'nds') {
+      dsRef.current?.setPaused(paused);
+    } else {
+      gbaRef.current?.setPaused(paused);
+    }
+  }, []);
+
+  // Reading the .sav file while the core is actively running risks
+  // catching it mid-write (both mGBA and melonDS write straight through
+  // as the game saves) -- pausing for the handful of milliseconds a
+  // small SRAM/flash file takes to read is cheap insurance and reuses
+  // the same pause the manual-save modal already relies on.
   const readGameSavePaused = useCallback(async (romId: string): Promise<string | null> => {
-    gbaRef.current?.setPaused(true);
+    setActiveViewPaused(true);
     try {
       return await getGameSaveBytes(romId);
     } catch {
       return null;
     } finally {
-      gbaRef.current?.setPaused(saveModalOpen ? true : false);
+      setActiveViewPaused(saveModalOpen ? true : false);
     }
-  }, [saveModalOpen]);
+  }, [saveModalOpen, setActiveViewPaused]);
 
   // Silently pushes the current in-game save to the cloud if it changed
   // since the last sync -- the "cada que haya un cambio... se actualice
   // automáticamente" ask. Runs on a timer while playing (see the effect
-  // below) instead of hooking every individual SRAM write, which mGBA
-  // doesn't expose a callback for.
+  // below) instead of hooking every individual SRAM write, which
+  // neither core exposes a callback for. NDS's cartridge save is small
+  // (same as GBA's SRAM/flash) even though its ROM isn't, so this reuses
+  // the exact same path -- only the full-state autosave below is
+  // GBA-only.
   const autoSyncGameSave = useCallback(async () => {
     const romId = currentRomId.current;
     const gameKey = cloudGameKey();
-    if (!authToken || !gameKey || !romId || system !== 'gba') return;
+    if (!authToken || !gameKey || !romId || (system !== 'gba' && system !== 'nds')) return;
     const base64 = await readGameSavePaused(romId);
     if (!base64) return;
     const crc = crc32(base64ToBytes(base64));
@@ -392,7 +434,7 @@ function App(): React.JSX.Element {
   }, [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, system]);
 
   useEffect(() => {
-    if (screen !== 'game' || system !== 'gba' || !authToken) return;
+    if (screen !== 'game' || (system !== 'gba' && system !== 'nds') || !authToken) return;
     const interval = setInterval(autoSyncGameSave, AUTOSAVE_INTERVAL_MS);
     const sub = AppState.addEventListener('change', state => {
       if (state !== 'active') autoSyncGameSave();
@@ -436,10 +478,23 @@ function App(): React.JSX.Element {
   // stretch after backgrounding, consistent with that JS event not
   // arriving promptly while the app loses foreground.
 
-  // Right after loading a GBA ROM (see loadIntoEmulator below): if the
-  // user is logged in and the device's save differs from the cloud's,
-  // ask which one should win instead of silently picking one and
-  // possibly costing them progress either way.
+  // After overwriting the local .sav from the cloud below, the running
+  // core needs to reload it from disk -- neither core exposes a "reload
+  // save without resetting" call, so this just reloads the whole ROM
+  // (cheap either way: GBA's bytes are already in memory, NDS's native
+  // side re-reads its own path).
+  const reloadActiveRom = useCallback((romId: string) => {
+    if (currentSaveSystem.current === 'nds') {
+      if (currentDsRomPath.current) dsRef.current?.loadRomPath(currentDsRomPath.current, romId);
+    } else {
+      gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+    }
+  }, []);
+
+  // Right after loading a ROM (see loadIntoEmulator/handlePickRom): if
+  // the user is logged in and the device's save differs from the
+  // cloud's, ask which one should win instead of silently picking one
+  // and possibly costing them progress either way.
   const checkGameSaveConflict = useCallback(
     async (romId: string) => {
       const gameKey = cloudGameKey();
@@ -468,7 +523,7 @@ function App(): React.JSX.Element {
               onPress: async () => {
                 await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
                 lastSyncedSaveCrc.current = remoteCrc;
-                gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+                reloadActiveRom(romId);
               },
             },
           ]);
@@ -492,7 +547,7 @@ function App(): React.JSX.Element {
               onPress: async () => {
                 await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
                 lastSyncedSaveCrc.current = remoteCrc;
-                gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+                reloadActiveRom(romId);
               },
             },
           ],
@@ -501,7 +556,7 @@ function App(): React.JSX.Element {
         // Best-effort -- skip silently, the manual Subir/Bajar buttons still work.
       }
     },
-    [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves],
+    [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, reloadActiveRom],
   );
 
   // base64: pass it through when the caller already has one (e.g. fresh
@@ -514,6 +569,7 @@ function App(): React.JSX.Element {
     (bytes: Uint8Array, label: string, targetSystem: EmulatedSystem, base64?: string) => {
       baseRomBytes.current = bytes;
       currentRomId.current = crc32(bytes).toString(16);
+      currentSaveSystem.current = targetSystem;
       setRomLabel(label);
       setSystem(targetSystem);
       setScreen('game');
@@ -575,19 +631,21 @@ function App(): React.JSX.Element {
 
   const openSaveModal = useCallback(() => {
     setSaveModalOpen(true);
-    gbaRef.current?.setPaused(true);
-    if (currentRomId.current) {
+    setActiveViewPaused(true);
+    // NDS has no state-slot list yet (no melonDS savestate wiring) --
+    // leave stateSlots empty so that section of the modal stays hidden.
+    if (currentRomId.current && currentSaveSystem.current === 'gba') {
       listStateSlots(currentRomId.current)
         .then(setStateSlots)
         .catch(() => {});
     }
     refreshCloudSaves();
-  }, [refreshCloudSaves]);
+  }, [refreshCloudSaves, setActiveViewPaused]);
 
   const closeSaveModal = useCallback(() => {
     setSaveModalOpen(false);
-    gbaRef.current?.setPaused(false);
-  }, []);
+    setActiveViewPaused(false);
+  }, [setActiveViewPaused]);
 
   const handleSaveSlot = useCallback(
     async (slot: number) => {
@@ -687,9 +745,17 @@ function App(): React.JSX.Element {
         const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
         currentRomId.current = romId;
         currentDsRomPath.current = picked.path;
+        currentSaveSystem.current = 'nds';
         setRomLabel(picked.name);
         setCoverImageUrl(null);
         setStateSlots([]);
+        lastSyncedSaveCrc.current = null;
+        // Cartridge-save cloud sync works for NDS too (see
+        // readGameSavePaused/autoSyncGameSave below) -- unlike a
+        // full-state save, the .sav file is small (melonDS writes
+        // straight through to it the same way mGBA does), so checking
+        // it against the cloud doesn't touch the ROM bytes at all.
+        setTimeout(() => checkGameSaveConflict(romId), 500);
         // Actually loading the ROM happens in the remount effect above,
         // not here -- dsRef.current is still null at this point (DsView
         // doesn't exist in the tree until this same setSystem/setScreen
@@ -715,7 +781,7 @@ function App(): React.JSX.Element {
     } finally {
       setBusy(false);
     }
-  }, [loadIntoEmulator, refreshRecentRoms, romLabel]);
+  }, [checkGameSaveConflict, loadIntoEmulator, refreshRecentRoms, romLabel]);
 
   const openFolder = useCallback(async (picked: {uri: string; name: string}) => {
     setFolder(picked);
@@ -906,6 +972,57 @@ function App(): React.JSX.Element {
     [system],
   );
 
+  // Loads whatever custom layout was saved for this system (or the
+  // default, if none was) -- runs whenever the active system changes,
+  // not just on mount, since GB/GBA/NDS each get their own layout.
+  useEffect(() => {
+    let cancelled = false;
+    getPreference(`controlLayout_${system}`)
+      .then(json => {
+        if (cancelled) return;
+        if (json) {
+          try {
+            setControlLayout(JSON.parse(json));
+            return;
+          } catch {
+            // Fall through to the default below.
+          }
+        }
+        setControlLayout(DEFAULT_CONTROL_LAYOUT);
+      })
+      .catch(() => setControlLayout(DEFAULT_CONTROL_LAYOUT));
+    return () => {
+      cancelled = true;
+    };
+  }, [system]);
+
+  const persistControlLayout = useCallback(
+    (layout: ControlLayout) => {
+      setControlLayout(layout);
+      setPreference(`controlLayout_${system}`, JSON.stringify(layout)).catch(() => {});
+    },
+    [system],
+  );
+
+  const handleDragCluster = useCallback(
+    (id: ClusterId, dx: number, dy: number) => {
+      persistControlLayout({...controlLayout, offsets: {...controlLayout.offsets, [id]: {dx, dy}}});
+    },
+    [controlLayout, persistControlLayout],
+  );
+
+  const handleScaleStep = useCallback(
+    (delta: number) => {
+      const screenScale = Math.min(MAX_SCREEN_SCALE, Math.max(MIN_SCREEN_SCALE, controlLayout.screenScale + delta));
+      persistControlLayout({...controlLayout, screenScale});
+    },
+    [controlLayout, persistControlLayout],
+  );
+
+  const resetControlLayout = useCallback(() => {
+    persistControlLayout(DEFAULT_CONTROL_LAYOUT);
+  }, [persistControlLayout]);
+
   if (screen === 'home') {
     return (
       <SafeAreaView style={styles.container}>
@@ -986,13 +1103,18 @@ function App(): React.JSX.Element {
     );
   }
 
+  const scaledScreenStyle = (base: {width: number; height: number; backgroundColor: string; borderRadius: number}) => ({
+    ...base,
+    width: base.width * controlLayout.screenScale,
+    height: base.height * controlLayout.screenScale,
+  });
   const screenView =
     system === 'gba' ? (
-      <GbaView ref={gbaRef} style={styles.screenGba} />
+      <GbaView ref={gbaRef} style={scaledScreenStyle(styles.screenGba)} />
     ) : system === 'nds' ? (
-      <DsView ref={dsRef} style={styles.screenDs} />
+      <DsView ref={dsRef} style={scaledScreenStyle(styles.screenDs)} />
     ) : (
-      <GameBoyView ref={gameBoyRef} style={styles.screen} />
+      <GameBoyView ref={gameBoyRef} style={scaledScreenStyle(styles.screen)} />
     );
 
   return (
@@ -1022,14 +1144,32 @@ function App(): React.JSX.Element {
                   </Text>
                 </View>
               </View>
-              {system === 'gba' ? (
-                <Pressable style={styles.homeButton} onPress={handleShowAudioDebug} hitSlop={8}>
-                  <Text style={styles.debugLabel}>i</Text>
-                </Pressable>
-              ) : (
-                <View style={styles.homeButton} />
-              )}
+              <Pressable
+                style={[styles.homeButton, editingControls && styles.editToggleActive]}
+                onPress={() => setEditingControls(v => !v)}
+                hitSlop={8}>
+                <IconPencil size={17} color={editingControls ? '#14151a' : '#fff'} />
+              </Pressable>
             </View>
+
+            {editingControls && (
+              <View style={styles.editToolbar}>
+                <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>
+                <View style={styles.editToolbarRow}>
+                  <Text style={styles.editToolbarLabel}>Tamaño de pantalla</Text>
+                  <Pressable style={styles.editStepButton} onPress={() => handleScaleStep(-0.1)}>
+                    <Text style={styles.editStepLabel}>−</Text>
+                  </Pressable>
+                  <Text style={styles.editScaleValue}>{Math.round(controlLayout.screenScale * 100)}%</Text>
+                  <Pressable style={styles.editStepButton} onPress={() => handleScaleStep(0.1)}>
+                    <Text style={styles.editStepLabel}>+</Text>
+                  </Pressable>
+                  <Pressable style={styles.editResetButton} onPress={resetControlLayout}>
+                    <Text style={styles.editResetLabel}>Restablecer</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
 
             <View style={[styles.consoleShell, {borderColor: SYSTEM_ACCENT[system]}]}>
               <View style={styles.screenBezel}>{screenView}</View>
@@ -1049,7 +1189,13 @@ function App(): React.JSX.Element {
             {/* One shared touch surface for D-pad/A/B/L/R/SELECT/START -- see
                 GameControls for why these can no longer be separate Pressables
                 (L/R only do anything, and light up, once a GBA ROM is loaded). */}
-            <GameControls system={system} dispatch={dispatchButton} />
+            <GameControls
+              system={system}
+              dispatch={dispatchButton}
+              editing={editingControls}
+              offsets={controlLayout.offsets}
+              onDrag={handleDragCluster}
+            />
 
             <View style={styles.speedRow}>
               {([1, 2, 3] as const).map(multiplier => (
@@ -1061,7 +1207,7 @@ function App(): React.JSX.Element {
                 </Pressable>
               ))}
 
-              {system === 'gba' && (
+              {(system === 'gba' || system === 'nds') && (
                 <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
                   <IconSave size={16} color="#cfe3fa" />
                   <Text style={styles.saveOpenLabel}>Guardado</Text>
@@ -1080,7 +1226,12 @@ function App(): React.JSX.Element {
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Text style={styles.modalTitle}>Guardado manual</Text>
             <Text style={styles.modalSubtitle}>El juego está en pausa mientras eliges un espacio.</Text>
-            <View style={styles.slotsRow}>
+            {/* Save-state slots are GBA-only for now (melonDS has no
+                savestate wiring here yet -- see docs/roadmap.md), so NDS
+                only gets the cartridge-save cloud sync section below. */}
+            {system === 'gba' && (
+              <>
+                <View style={styles.slotsRow}>
               {[0, 1, 2].map(slot => {
                 const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
                 const cloud = cloudSaves.find(s => s.slot === slot);
@@ -1183,6 +1334,8 @@ function App(): React.JSX.Element {
                 </View>
               );
             })()}
+              </>
+            )}
 
             {authToken && (
               <View style={styles.gameSaveRow}>
@@ -1250,9 +1403,15 @@ function App(): React.JSX.Element {
 function GameControls({
   system,
   dispatch,
+  editing,
+  offsets,
+  onDrag,
 }: {
   system: EmulatedSystem;
   dispatch: (button: PadButtonId, pressed: boolean) => void;
+  editing: boolean;
+  offsets: Partial<Record<ClusterId, ClusterOffset>>;
+  onDrag: (id: ClusterId, dx: number, dy: number) => void;
 }) {
   type ViewRef = React.ElementRef<typeof View>;
   const refs = useRef<Partial<Record<PadButtonId, ViewRef | null>>>({});
@@ -1311,85 +1470,155 @@ function GameControls({
   return (
     <View
       onLayout={measureAll}
-      onStartShouldSetResponder={() => true}
-      onMoveShouldSetResponder={() => true}
+      onStartShouldSetResponder={() => !editing}
+      onMoveShouldSetResponder={() => !editing}
       onResponderTerminationRequest={() => false}
       onResponderGrant={updateFromTouches}
       onResponderMove={updateFromTouches}
       onResponderRelease={releaseAll}
       onResponderTerminate={releaseAll}>
-      <View style={styles.shoulderRow}>
-        <View
-          ref={setRef('L')}
-          style={[styles.shoulderButton, system === 'gb' && styles.shoulderButtonInactive, isPressed('L') && styles.shoulderButtonPressed]}>
-          <View style={styles.shoulderHighlight} />
-          <Text style={styles.shoulderLabel}>L</Text>
+      <DraggableCluster id="shoulders" editing={editing} offset={offsets.shoulders} onDrag={onDrag}>
+        <View style={styles.shoulderRow}>
+          <View
+            ref={setRef('L')}
+            style={[styles.shoulderButton, system === 'gb' && styles.shoulderButtonInactive, isPressed('L') && styles.shoulderButtonPressed]}>
+            <View style={styles.shoulderHighlight} />
+            <Text style={styles.shoulderLabel}>L</Text>
+          </View>
+          <View
+            ref={setRef('R')}
+            style={[styles.shoulderButton, system === 'gb' && styles.shoulderButtonInactive, isPressed('R') && styles.shoulderButtonPressed]}>
+            <View style={styles.shoulderHighlight} />
+            <Text style={styles.shoulderLabel}>R</Text>
+          </View>
         </View>
-        <View
-          ref={setRef('R')}
-          style={[styles.shoulderButton, system === 'gb' && styles.shoulderButtonInactive, isPressed('R') && styles.shoulderButtonPressed]}>
-          <View style={styles.shoulderHighlight} />
-          <Text style={styles.shoulderLabel}>R</Text>
-        </View>
-      </View>
+      </DraggableCluster>
 
       {/* X/Y only exist on the DS -- shown just for that system, above
           the D-pad/A-B row rather than reshuffling its fixed layout. */}
       {system === 'nds' && (
-        <View style={styles.systemRow}>
-          <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
-            <View style={styles.pillHighlight} />
-            <Text style={styles.pillLabel}>Y</Text>
+        <DraggableCluster id="xy" editing={editing} offset={offsets.xy} onDrag={onDrag}>
+          <View style={styles.systemRow}>
+            <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
+              <View style={styles.pillHighlight} />
+              <Text style={styles.pillLabel}>Y</Text>
+            </View>
+            <View ref={setRef('X')} style={[styles.pillButton, styles.pillButtonStart, isPressed('X') && styles.pillButtonPressed]}>
+              <View style={styles.pillHighlight} />
+              <Text style={styles.pillLabel}>X</Text>
+            </View>
           </View>
-          <View ref={setRef('X')} style={[styles.pillButton, styles.pillButtonStart, isPressed('X') && styles.pillButtonPressed]}>
-            <View style={styles.pillHighlight} />
-            <Text style={styles.pillLabel}>X</Text>
-          </View>
-        </View>
+        </DraggableCluster>
       )}
 
       <View style={styles.padRow}>
-        <View style={styles.dpad}>
-          <View style={styles.dpadBarHorizontal} />
-          <View style={styles.dpadBarVertical} />
-          <View style={styles.dpadRivet} />
-          <View ref={setRef('UP')} style={[styles.dpadHit, styles.dpadHitUp, isPressed('UP') && styles.dpadHitPressed]}>
-            <IconTriangle rotation={0} />
+        <DraggableCluster id="dpad" editing={editing} offset={offsets.dpad} onDrag={onDrag}>
+          <View style={styles.dpad}>
+            <View style={styles.dpadBarHorizontal} />
+            <View style={styles.dpadBarVertical} />
+            <View style={styles.dpadRivet} />
+            <View ref={setRef('UP')} style={[styles.dpadHit, styles.dpadHitUp, isPressed('UP') && styles.dpadHitPressed]}>
+              <IconTriangle rotation={0} />
+            </View>
+            <View ref={setRef('DOWN')} style={[styles.dpadHit, styles.dpadHitDown, isPressed('DOWN') && styles.dpadHitPressed]}>
+              <IconTriangle rotation={180} />
+            </View>
+            <View ref={setRef('LEFT')} style={[styles.dpadHit, styles.dpadHitLeft, isPressed('LEFT') && styles.dpadHitPressed]}>
+              <IconTriangle rotation={-90} />
+            </View>
+            <View ref={setRef('RIGHT')} style={[styles.dpadHit, styles.dpadHitRight, isPressed('RIGHT') && styles.dpadHitPressed]}>
+              <IconTriangle rotation={90} />
+            </View>
           </View>
-          <View ref={setRef('DOWN')} style={[styles.dpadHit, styles.dpadHitDown, isPressed('DOWN') && styles.dpadHitPressed]}>
-            <IconTriangle rotation={180} />
-          </View>
-          <View ref={setRef('LEFT')} style={[styles.dpadHit, styles.dpadHitLeft, isPressed('LEFT') && styles.dpadHitPressed]}>
-            <IconTriangle rotation={-90} />
-          </View>
-          <View ref={setRef('RIGHT')} style={[styles.dpadHit, styles.dpadHitRight, isPressed('RIGHT') && styles.dpadHitPressed]}>
-            <IconTriangle rotation={90} />
-          </View>
-        </View>
+        </DraggableCluster>
 
         {/* B/A staggered diagonally (B lower-left, A upper-right), matching the real hardware layout. */}
-        <View style={styles.actionCluster}>
-          <View ref={setRef('B')} style={[styles.actionButton, styles.buttonB, isPressed('B') && styles.actionButtonPressed]}>
-            <View style={styles.actionHighlight} />
-            <Text style={styles.actionLabel}>B</Text>
+        <DraggableCluster id="actions" editing={editing} offset={offsets.actions} onDrag={onDrag}>
+          <View style={styles.actionCluster}>
+            <View ref={setRef('B')} style={[styles.actionButton, styles.buttonB, isPressed('B') && styles.actionButtonPressed]}>
+              <View style={styles.actionHighlight} />
+              <Text style={styles.actionLabel}>B</Text>
+            </View>
+            <View ref={setRef('A')} style={[styles.actionButton, styles.buttonA, isPressed('A') && styles.actionButtonPressed]}>
+              <View style={styles.actionHighlight} />
+              <Text style={styles.actionLabel}>A</Text>
+            </View>
           </View>
-          <View ref={setRef('A')} style={[styles.actionButton, styles.buttonA, isPressed('A') && styles.actionButtonPressed]}>
-            <View style={styles.actionHighlight} />
-            <Text style={styles.actionLabel}>A</Text>
-          </View>
-        </View>
+        </DraggableCluster>
       </View>
 
-      <View style={styles.systemRow}>
-        <View ref={setRef('SELECT')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('SELECT') && styles.pillButtonPressed]}>
-          <View style={styles.pillHighlight} />
-          <Text style={styles.pillLabel}>SELECT</Text>
+      <DraggableCluster id="system" editing={editing} offset={offsets.system} onDrag={onDrag}>
+        <View style={styles.systemRow}>
+          <View ref={setRef('SELECT')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('SELECT') && styles.pillButtonPressed]}>
+            <View style={styles.pillHighlight} />
+            <Text style={styles.pillLabel}>SELECT</Text>
+          </View>
+          <View ref={setRef('START')} style={[styles.pillButton, styles.pillButtonStart, isPressed('START') && styles.pillButtonPressed]}>
+            <View style={styles.pillHighlight} />
+            <Text style={styles.pillLabel}>START</Text>
+          </View>
         </View>
-        <View ref={setRef('START')} style={[styles.pillButton, styles.pillButtonStart, isPressed('START') && styles.pillButtonPressed]}>
-          <View style={styles.pillHighlight} />
-          <Text style={styles.pillLabel}>START</Text>
-        </View>
-      </View>
+      </DraggableCluster>
+    </View>
+  );
+}
+
+/**
+ * Wraps one control cluster (the whole D-pad, the A/B pair, etc.) so it
+ * can be dragged to a new position in "Personalizar controles" mode --
+ * see App's controlLayout state. The offset is applied as a transform,
+ * which RN's measure() (GameControls' own touch hit-testing) already
+ * reports post-transform, so gameplay input keeps working at whatever
+ * position the user drags a cluster to without any extra plumbing.
+ *
+ * The drag itself uses a PanResponder scoped to this one cluster rather
+ * than GameControls' own shared responder (disabled while editing, see
+ * its onStartShouldSetResponder) so multiple clusters don't fight over
+ * who's dragging.
+ */
+function DraggableCluster({
+  id,
+  editing,
+  offset,
+  onDrag,
+  children,
+}: {
+  id: ClusterId;
+  editing: boolean;
+  offset: ClusterOffset | undefined;
+  onDrag: (id: ClusterId, dx: number, dy: number) => void;
+  children: React.ReactNode;
+}) {
+  const resolvedOffset = offset ?? {dx: 0, dy: 0};
+  // PanResponder's callbacks close over whatever `latest` pointed to
+  // when PanResponder.create ran (once, via the useRef initializer) --
+  // this ref is how they see up-to-date editing/offset values instead
+  // of a stale first-render snapshot.
+  const latest = useRef({editing, offset: resolvedOffset});
+  latest.current = {editing, offset: resolvedOffset};
+  const dragStart = useRef({dx: 0, dy: 0});
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => latest.current.editing,
+      onMoveShouldSetPanResponder: () => latest.current.editing,
+      onPanResponderGrant: () => {
+        dragStart.current = latest.current.offset;
+      },
+      onPanResponderMove: (_evt, gesture) => {
+        onDrag(id, dragStart.current.dx + gesture.dx, dragStart.current.dy + gesture.dy);
+      },
+    }),
+  ).current;
+
+  return (
+    <View
+      {...(editing ? panResponder.panHandlers : null)}
+      style={[
+        {transform: [{translateX: resolvedOffset.dx}, {translateY: resolvedOffset.dy}]},
+        editing && styles.draggableEditing,
+      ]}>
+      {children}
     </View>
   );
 }
@@ -1427,6 +1656,42 @@ const styles = StyleSheet.create({
     height: 40,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 20,
+  },
+  editToggleActive: {backgroundColor: '#7ab8ff'},
+  editToolbar: {
+    width: '100%',
+    marginTop: 8,
+    backgroundColor: '#1e2027',
+    borderRadius: 12,
+    padding: 10,
+  },
+  editToolbarHint: {color: '#999', fontSize: 11, textAlign: 'center', marginBottom: 8},
+  editToolbarRow: {flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10},
+  editToolbarLabel: {color: '#ccc', fontSize: 12},
+  editStepButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#2a2c34',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editStepLabel: {color: '#fff', fontSize: 16, fontWeight: '700', lineHeight: 18},
+  editScaleValue: {color: '#fff', fontSize: 12, fontWeight: '700', width: 40, textAlign: 'center'},
+  editResetButton: {
+    marginLeft: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#3a2a2a',
+  },
+  editResetLabel: {color: '#ffb3b3', fontSize: 11, fontWeight: '700'},
+  draggableEditing: {
+    borderWidth: 1,
+    borderColor: '#7ab8ff',
+    borderStyle: 'dashed',
+    borderRadius: 10,
   },
   debugLabel: {
     color: '#555',

@@ -37,6 +37,8 @@ interface RomLibraryNativeModule {
   saveAuthSession(token: string, username: string): Promise<void>;
   getAuthSession(): Promise<{token: string; username: string} | null>;
   clearAuthSession(): Promise<void>;
+  getPreference(key: string): Promise<string | null>;
+  setPreference(key: string, value: string): Promise<void>;
 }
 
 const {RomLibrary} = NativeModules as {RomLibrary: RomLibraryNativeModule};
@@ -116,4 +118,13 @@ export function getAuthSession(): Promise<{token: string; username: string} | nu
 
 export function clearAuthSession(): Promise<void> {
   return RomLibrary.clearAuthSession();
+}
+
+/** Small persisted string, e.g. App.tsx's per-system custom control layout (JSON). Returns null if never set. */
+export function getPreference(key: string): Promise<string | null> {
+  return RomLibrary.getPreference(key);
+}
+
+export function setPreference(key: string, value: string): Promise<void> {
+  return RomLibrary.setPreference(key, value);
 }

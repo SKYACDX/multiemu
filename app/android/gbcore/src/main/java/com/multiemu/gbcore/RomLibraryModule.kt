@@ -386,4 +386,19 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         prefs().edit().remove("auth_token").remove("auth_username").apply()
         promise.resolve(null)
     }
+
+    // ---- Generic small string preferences -- e.g. App.tsx's per-system
+    // custom control layout (button positions, screen scale), which is
+    // plain JSON small enough that a dedicated native module/schema
+    // would be overkill.
+    @ReactMethod
+    fun getPreference(key: String, promise: Promise) {
+        promise.resolve(prefs().getString("pref_$key", null))
+    }
+
+    @ReactMethod
+    fun setPreference(key: String, value: String, promise: Promise) {
+        prefs().edit().putString("pref_$key", value).apply()
+        promise.resolve(null)
+    }
 }

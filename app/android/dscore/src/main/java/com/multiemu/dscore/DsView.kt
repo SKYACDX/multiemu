@@ -36,6 +36,11 @@ class DsView(context: Context) : View(context) {
     private val audioBuffer = ShortArray(4096)
     private val paint = Paint().apply { isFilterBitmap = false }
     private var running = false
+    // Used while the manual-save modal reads the cartridge save file --
+    // see GbaView's identical pausedByModal, same reasoning: reading the
+    // .sav while melonDS could be writing through to it risks catching a
+    // torn write.
+    private var pausedByModal = false
 
     private val audioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_GAME)
@@ -44,7 +49,7 @@ class DsView(context: Context) : View(context) {
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            ds?.let { instance ->
+            if (!pausedByModal) ds?.let { instance ->
                 instance.runFrame()
                 instance.readFramebuffers()
                 topBitmap?.setPixels(instance.topFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
@@ -141,6 +146,10 @@ class DsView(context: Context) : View(context) {
 
     fun setButtonPressed(button: DsButton, pressed: Boolean) {
         ds?.setButtonPressed(button, pressed)
+    }
+
+    fun setPaused(value: Boolean) {
+        pausedByModal = value
     }
 
     override fun onAttachedToWindow() {
