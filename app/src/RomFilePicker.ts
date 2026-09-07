@@ -17,6 +17,7 @@ interface RomFilePickerNativeModule {
   pickRomPath(extensions: string[]): Promise<PickedRomPath>;
   readFileAsBase64(path: string): Promise<string>;
   readFileHeaderBase64(path: string, length: number): Promise<string>;
+  downloadRom(url: string, fileName: string, extensions: string[]): Promise<PickedRomPath>;
 }
 
 const {RomFilePicker} = NativeModules as {RomFilePicker: RomFilePickerNativeModule};
@@ -75,4 +76,23 @@ export function readFileAsBase64(path: string): Promise<string> {
 /** Reads just the first `length` bytes of a file at a plain path, as base64 -- e.g. an NDS ROM's header, without loading the whole file. */
 export function readFileHeaderBase64(path: string, length: number): Promise<string> {
   return RomFilePicker.readFileHeaderBase64(path, length);
+}
+
+/**
+ * Downloads a RomHack Hub file straight to a cache file path (extracting
+ * it first if it's a .zip) -- the memory-safe counterpart to
+ * pickRomFilePath, for the same reason: an NDS download can be
+ * 128-512MB once unzipped, too big to round-trip through a JS
+ * ArrayBuffer/base64 string.
+ */
+export async function downloadRomToPath(url: string, fileName: string, extensions: string[]): Promise<PickedRomPath> {
+  try {
+    return await RomFilePicker.downloadRom(url, fileName, extensions);
+  } catch (e) {
+    const code = (e as {code?: string} | null)?.code;
+    if (code === 'INVALID_EXTENSION' || code === 'NO_MATCH_IN_ZIP') {
+      throw new InvalidRomExtensionError(e instanceof Error ? e.message : String(e));
+    }
+    throw e;
+  }
 }

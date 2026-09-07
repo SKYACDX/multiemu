@@ -15,13 +15,14 @@ const PLATFORMS = [
   {slug: 'gb', label: 'Game Boy'},
   {slug: 'gbc', label: 'Game Boy Color'},
   {slug: 'gba', label: 'Game Boy Advance'},
+  {slug: 'nds', label: 'Nintendo DS'},
 ];
 
 // This endpoint isn't restricted to emulator-loadable files the way
 // /hacks is (RomHack Hub's own docs describe it as "arbitrary public
 // files" -- cover art, docs, etc.) -- only show ones this app can
 // actually do something with.
-const COMPATIBLE_EXTENSIONS = ['zip', 'gb', 'gbc', 'gba'];
+const COMPATIBLE_EXTENSIONS = ['zip', 'gb', 'gbc', 'gba', 'nds'];
 
 function isCompatible(file: RomHackHubFile): boolean {
   const ext = file.originalName.split('.').pop()?.toLowerCase() ?? '';
@@ -123,7 +124,7 @@ export default function FilesScreen({onSelectFile, onClose, downloading, embedde
           )}
           ListEmptyComponent={
             <Text style={styles.empty}>
-              No hay archivos compatibles (.gb/.gbc/.gba/.zip) para {PLATFORMS.find(p => p.slug === platform)?.label}.
+              No hay archivos compatibles (.gb/.gbc/.gba/.nds/.zip) para {PLATFORMS.find(p => p.slug === platform)?.label}.
             </Text>
           }
         />

@@ -14,6 +14,9 @@ import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReactMethod
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 
 private const val REQUEST_CODE_PICK_ROM = 9001
 
@@ -102,6 +105,61 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
             val read = File(path).inputStream().use { it.read(buffer) }
             val actual = if (read < 0) ByteArray(0) else buffer.copyOf(read)
             promise.resolve(Base64.encodeToString(actual, Base64.NO_WRAP))
+        } catch (e: Exception) {
+            promise.reject("READ_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Downloads [url] (a RomHack Hub file's downloadUrl) straight to a
+     * cache file, extracting it first if it's a .zip -- the same
+     * memory-safe path as [pickRomPath], needed for the same reason: an
+     * NDS download can be 128-512MB once unzipped, and round-tripping
+     * that through a JS ArrayBuffer/base64 string (the way HubScreen's
+     * old fully-in-JS download+unzip did) reliably OOMs. [fileName] is
+     * the file's own originalName (from RomHack Hub's metadata), used
+     * only to detect the .zip extension and to name the result if it
+     * isn't one.
+     */
+    @ReactMethod
+    fun downloadRom(url: String, fileName: String, extensions: ReadableArray, promise: Promise) {
+        val allowedExtensions = (0 until extensions.size()).mapNotNull { extensions.getString(it)?.lowercase() }
+        try {
+            val connection = URL(url).openConnection() as HttpURLConnection
+            connection.connect()
+            if (connection.responseCode !in 200..299) {
+                connection.disconnect()
+                promise.reject("DOWNLOAD_ERROR", "HTTP ${connection.responseCode}")
+                return
+            }
+            val rawBytes = connection.inputStream.use { it.readBytes() }
+            connection.disconnect()
+
+            val extracted = extractFromZipIfNeeded(rawBytes, fileName, allowedExtensions)
+            if (extracted == null) {
+                val isZip = fileName.substringAfterLast('.', "").lowercase() == "zip"
+                promise.reject(
+                    if (isZip) "NO_MATCH_IN_ZIP" else "INVALID_EXTENSION",
+                    if (isZip) {
+                        "El .zip no contiene ningún archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}"
+                    } else {
+                        "\"$fileName\" no es un archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}"
+                    },
+                )
+                return
+            }
+            val (bytes, name) = extracted
+            val cacheFile = File(reactApplicationContext.cacheDir, "hub_rom_${System.currentTimeMillis()}_$name")
+            FileOutputStream(cacheFile).use { it.write(bytes) }
+
+            val result = Arguments.createMap().apply {
+                putString("path", cacheFile.absolutePath)
+                putString("name", name)
+                putInt("size", bytes.size)
+            }
+            promise.resolve(result)
+        } catch (e: IOException) {
+            promise.reject("DOWNLOAD_ERROR", e.message, e)
         } catch (e: Exception) {
             promise.reject("READ_ERROR", e.message, e)
         }

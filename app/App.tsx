@@ -48,6 +48,7 @@ import LocalLinkScreen from './src/LocalLinkScreen';
 import AccountScreen from './src/AccountScreen';
 import {readRomTitle} from './src/romTitle';
 import {
+  downloadRomToPath,
   InvalidRomExtensionError,
   pickRomFilePath,
   readFileAsBase64,
@@ -89,7 +90,7 @@ import {
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
-import {downloadFileBytes, downloadPatchBytes, findCoverArt, Hack, Patch, RomHackHubFile} from './src/api/romHackHub';
+import {downloadPatchBytes, findCoverArt, Hack, Patch, RomHackHubFile} from './src/api/romHackHub';
 import {
   CloudSave,
   downloadCloudSave,
@@ -883,28 +884,53 @@ function App(): React.JSX.Element {
       setBusy(true);
       setRomLabel('Descargando…');
       try {
-        const downloaded = await downloadFileBytes(file);
-        const unzipped = extractFromZip(downloaded, SUPPORTED_ROM_EXTENSIONS);
-        const bytes = unzipped?.bytes ?? downloaded;
-        const name = unzipped?.name ?? file.originalName;
-        const extension = name.split('.').pop() ?? '';
-        if (!unzipped && extension.toLowerCase() === 'zip') {
-          throw new Error('El .zip no contiene un archivo .gb/.gbc/.gba/.nds reconocible.');
-        }
+        // Path-based, not the old fully-in-JS download+unzip+base64 --
+        // an NDS file here can be 128-512MB once unzipped, and holding
+        // that as a JS ArrayBuffer/base64 string reliably OOMs the same
+        // way a locally-picked one did (see handlePickRom).
+        const picked = await downloadRomToPath(file.downloadUrl, file.originalName, SUPPORTED_ROM_EXTENSIONS);
+        const extension = picked.name.split('.').pop() ?? '';
         const targetSystem = systemForExtension(extension);
-        const base64 = bytesToBase64(bytes);
-        loadIntoEmulator(bytes, file.title, targetSystem, base64);
         hasUserRom.current = true;
-        saveRomToCache(base64, name, targetSystem, file.title)
-          .then(refreshRecentRoms)
-          .catch(() => {});
+
+        if (targetSystem === 'nds') {
+          const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+          currentRomId.current = romId;
+          currentDsRomPath.current = picked.path;
+          currentSaveSystem.current = 'nds';
+          setRomLabel(file.title);
+          setCoverImageUrl(null);
+          listStateSlots(romId)
+            .then(setStateSlots)
+            .catch(() => setStateSlots([]));
+          lastSyncedSaveCrc.current = null;
+          const lookupId = ++coverLookupId.current;
+          readFileHeaderBase64(picked.path, 0x0c)
+            .then(base64 => {
+              const romTitle = readRomTitle(base64ToBytes(base64), 'nds');
+              return findCoverArt('nds', romTitle);
+            })
+            .then(url => {
+              if (coverLookupId.current === lookupId) setCoverImageUrl(url);
+            })
+            .catch(() => {});
+          setTimeout(() => checkGameSaveConflict(romId), 500);
+          setSystem('nds');
+          setScreen('game');
+        } else {
+          const base64 = await readFileAsBase64(picked.path);
+          loadIntoEmulator(base64ToBytes(base64), file.title, targetSystem, base64);
+          saveRomToCache(base64, picked.name, targetSystem, file.title)
+            .then(refreshRecentRoms)
+            .catch(() => {});
+        }
       } catch (e) {
         Alert.alert('No se pudo cargar el archivo', e instanceof Error ? e.message : String(e));
       } finally {
         setBusy(false);
       }
     },
-    [loadIntoEmulator, refreshRecentRoms],
+    [checkGameSaveConflict, loadIntoEmulator, refreshRecentRoms],
   );
 
   const handleDeleteRecent = useCallback(
