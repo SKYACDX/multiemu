@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import {Game, Hack, Patch, listGames, listHacks} from './api/romHackHub';
 import {IconChevronLeft} from './icons';
+import PlatformMenu from './PlatformMenu';
 
 const PLATFORMS = [
   {slug: 'gb', label: 'Game Boy'},
@@ -208,16 +209,7 @@ export default function RomLibraryScreen({onSelectPatch, onClose, embedded}: Pro
       </View>
 
       <View style={styles.platformRow}>
-        {PLATFORMS.map(p => (
-          <Pressable
-            key={p.slug}
-            style={[styles.platformTab, platform === p.slug && styles.platformTabActive]}
-            onPress={() => setPlatform(p.slug)}>
-            <Text style={[styles.platformLabel, platform === p.slug && styles.platformLabelActive]}>
-              {p.label}
-            </Text>
-          </Pressable>
-        ))}
+        <PlatformMenu platforms={PLATFORMS} value={platform} onChange={setPlatform} />
       </View>
 
       <TextInput
@@ -275,11 +267,7 @@ const styles = StyleSheet.create({
   modeTabActive: {backgroundColor: '#2f5f8f'},
   modeLabel: {color: '#999', fontSize: 13, fontWeight: '600'},
   modeLabelActive: {color: '#fff', fontSize: 13, fontWeight: '700'},
-  platformRow: {flexDirection: 'row', paddingHorizontal: 16, gap: 8, marginBottom: 8},
-  platformTab: {paddingVertical: 6, paddingHorizontal: 14, borderRadius: 16, backgroundColor: '#333'},
-  platformTabActive: {backgroundColor: '#4a90d9'},
-  platformLabel: {color: '#ccc', fontSize: 13},
-  platformLabelActive: {color: '#fff', fontWeight: '700'},
+  platformRow: {paddingHorizontal: 16, marginBottom: 8},
   searchInput: {
     marginHorizontal: 16,
     marginBottom: 8,

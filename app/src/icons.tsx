@@ -12,6 +12,16 @@ interface IconProps {
  * across devices/fonts and can't be recolored to match the theme.
  */
 
+export function IconMenu({size = 18, color = '#fff'}: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Line x1={4} y1={6} x2={20} y2={6} stroke={color} strokeWidth={2} strokeLinecap="round" />
+      <Line x1={4} y1={12} x2={20} y2={12} stroke={color} strokeWidth={2} strokeLinecap="round" />
+      <Line x1={4} y1={18} x2={20} y2={18} stroke={color} strokeWidth={2} strokeLinecap="round" />
+    </Svg>
+  );
+}
+
 export function IconHome({size = 20, color = '#fff'}: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
