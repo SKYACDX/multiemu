@@ -190,45 +190,61 @@ class DsView(context: Context) : View(context) {
         super.onDetachedFromWindow()
     }
 
+    // Landscape-shaped bounds (App.tsx gives this view a wide box when the
+    // phone is rotated) lay the two screens out left/right instead of
+    // stacked top/bottom -- stacking two tall-narrow screens inside a wide
+    // box otherwise leaves most of the width empty and squeezes both
+    // screens down to a sliver.
+    private fun isSideBySide(): Boolean = width > height
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val halfHeight = height / 2
         val top = topBitmap
         val bottom = bottomBitmap
         if (top != null && bottom != null) {
             val srcRect = Rect(0, 0, top.width, top.height)
-            canvas.drawBitmap(top, srcRect, fitRect(top.width, top.height, width, halfHeight, 0), paint)
-            canvas.drawBitmap(bottom, srcRect, fitRect(bottom.width, bottom.height, width, halfHeight, halfHeight), paint)
+            canvas.drawBitmap(top, srcRect, topScreenRect(), paint)
+            canvas.drawBitmap(bottom, srcRect, bottomScreenRect(), paint)
         }
     }
 
-    /** Centers a srcW*srcH image, aspect-preserved, inside a boxW*boxH row starting at [offsetY] -- see GbaLinkView's identical helper. */
-    private fun fitRect(srcW: Int, srcH: Int, boxW: Int, boxH: Int, offsetY: Int): Rect {
+    private fun topScreenRect(): Rect =
+        if (isSideBySide()) fitRect(DsNative.width, DsNative.height, width / 2, height, 0, 0)
+        else fitRect(DsNative.width, DsNative.height, width, height / 2, 0, 0)
+
+    private fun bottomScreenRect(): Rect =
+        if (isSideBySide()) fitRect(DsNative.width, DsNative.height, width / 2, height, width / 2, 0)
+        else fitRect(DsNative.width, DsNative.height, width, height / 2, 0, height / 2)
+
+    /** Centers a srcW*srcH image, aspect-preserved, inside a boxW*boxH cell starting at ([offsetX], [offsetY]) -- see GbaLinkView's identical helper. */
+    private fun fitRect(srcW: Int, srcH: Int, boxW: Int, boxH: Int, offsetX: Int, offsetY: Int): Rect {
         val scale = minOf(boxW.toFloat() / srcW, boxH.toFloat() / srcH)
         val w = (srcW * scale).toInt()
         val h = (srcH * scale).toInt()
-        val left = (boxW - w) / 2
+        val left = offsetX + (boxW - w) / 2
         val top = offsetY + (boxH - h) / 2
         return Rect(left, top, left + w, top + h)
     }
 
     /**
-     * The bottom half is the touch screen -- map a touch in view space to
-     * the emulated 256x192 touch-screen space using the same fitRect the
+     * The bottom screen is the touch screen -- map a touch in view space to
+     * the emulated 256x192 touch-screen space using the same rect the
      * bottom screen was just drawn with, clamping to its bounds so a
      * finger that strays into the letterbox bars still registers at the
      * nearest edge instead of being dropped.
      */
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val instance = ds ?: return false
-        val halfHeight = height / 2
-        val rect = fitRect(DsNative.width, DsNative.height, width, halfHeight, halfHeight)
+        val rect = bottomScreenRect()
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                if (event.y < rect.top - 24) {
-                    // Well above the touch screen (e.g. a stray touch that
-                    // slid up onto the top/game half) -- don't drag a
-                    // phantom touch-point onto the DS screen from there.
+                val sideBySide = isSideBySide()
+                val strayOntoTopScreen = if (sideBySide) event.x < rect.left - 24 else event.y < rect.top - 24
+                if (strayOntoTopScreen) {
+                    // Well outside the touch screen on the top/game screen's
+                    // side (e.g. a stray touch that slid over from it) --
+                    // don't drag a phantom touch-point onto the DS screen
+                    // from there.
                     return false
                 }
                 val clampedX = event.x.coerceIn(rect.left.toFloat(), rect.right.toFloat() - 1)

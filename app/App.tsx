@@ -132,8 +132,22 @@ const DEFAULT_CONTROL_LAYOUT: ControlLayout = {offsets: {}, screenScale: 1};
 // more vertical room to give the screen once it's not stacked above a
 // column of controls.
 const DEFAULT_CONTROL_LAYOUT_LANDSCAPE: ControlLayout = {offsets: {}, screenScale: 1.6};
+// Landscape cluster anchors are positioned `top: stageHeight - MARGIN -
+// <cluster height>` (see GameControls' landscape branch) -- these mirror
+// the matching styles.landscape*Wrap heights below so the two can't drift
+// out of sync (a taller dpad without a matching offset update would push
+// it toward the bottom edge of the screen again).
+const LANDSCAPE_EDGE_MARGIN = 20;
+const LANDSCAPE_DPAD_HEIGHT = 144;
+const LANDSCAPE_ACTIONS_HEIGHT = 110;
+const LANDSCAPE_SYSTEM_ROW_HEIGHT = 40;
 const MIN_SCREEN_SCALE = 0.7;
-const MAX_SCREEN_SCALE = 3;
+// Portrait's screen sits in a fixed-size consoleShell that was only ever
+// laid out to fit up to 1.4x -- landscape's stage has much more room and
+// needs the higher ceiling, but the two can't share one constant or
+// portrait's "+" button overflows its shell.
+const MAX_SCREEN_SCALE_PORTRAIT = 1.4;
+const MAX_SCREEN_SCALE_LANDSCAPE = 3;
 
 // 3DS isn't emulated yet (see docs/roadmap.md) -- only accept what one of
 // the three cores can actually run, so picking the wrong file fails fast
@@ -181,7 +195,14 @@ function App(): React.JSX.Element {
   // screen. Deriving the stage height from the trusted window height
   // instead (and capping the stage's own style to match) keeps both
   // the visible area and the control math grounded in the same number.
-  const landscapeStageHeight = Math.max(200, windowHeight - 60);
+  // landscapeHeaderHeight is measured from the top bar + editToolbar
+  // container (a plain flex column, not subject to the oversized-content
+  // measurement bug above) so opening "editar controles" -- which adds
+  // 2-3 rows above the stage -- shrinks stageHeight to match instead of
+  // leaving the pre-toolbar estimate stale and pushing every landscape
+  // control below the now-smaller visible stage.
+  const [landscapeHeaderHeight, setLandscapeHeaderHeight] = useState(40);
+  const landscapeStageHeight = Math.max(200, windowHeight - landscapeHeaderHeight - 8);
   const gameBoyRef = useRef<GameBoyViewHandle>(null);
   const gbaRef = useRef<GbaViewHandle>(null);
   const dsRef = useRef<DsViewHandle>(null);
@@ -747,11 +768,18 @@ function App(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    // Both native views unmount (destroying their emulator instance)
-    // whenever we navigate away from the game screen -- so every time
-    // the active one remounts, re-push whatever ROM is current (and its
+    // All three native views unmount (destroying their emulator instance)
+    // whenever we navigate away from the game screen -- so every time the
+    // active one remounts, re-push whatever ROM is current (and its
     // romId, so save persistence keeps working after a trip through
-    // Home/Folder/Library and back).
+    // Home/Folder/Library and back). Rotating the phone does the exact
+    // same remount (confirmed live: the native view's identity and its
+    // framebuffer both change across a rotation, leaving a permanently
+    // black screen if nothing reloads it) -- isLandscape is in the
+    // dependency list for that reason, not because anything here reads
+    // it directly. Same tradeoff as the Home/Game round trip: any
+    // progress since the last in-game save is lost, persisted saves are
+    // not.
     if (screen !== 'game') return;
     const romId = currentRomId.current ?? undefined;
     setSpeed(1);
@@ -767,7 +795,7 @@ function App(): React.JSX.Element {
       gameBoyRef.current?.loadRomBase64(base64, romId);
       gameBoyRef.current?.setSpeedMultiplier(1);
     }
-  }, [screen, system]);
+  }, [screen, system, isLandscape]);
 
   const handlePickRom = useCallback(async () => {
     prevLabelBeforeLoad.current = romLabel;
@@ -1105,10 +1133,11 @@ function App(): React.JSX.Element {
 
   const handleScaleStep = useCallback(
     (delta: number) => {
-      const screenScale = Math.min(MAX_SCREEN_SCALE, Math.max(MIN_SCREEN_SCALE, controlLayout.screenScale + delta));
+      const maxScreenScale = isLandscape ? MAX_SCREEN_SCALE_LANDSCAPE : MAX_SCREEN_SCALE_PORTRAIT;
+      const screenScale = Math.min(maxScreenScale, Math.max(MIN_SCREEN_SCALE, controlLayout.screenScale + delta));
       persistControlLayout({...controlLayout, screenScale});
     },
-    [controlLayout, persistControlLayout],
+    [controlLayout, persistControlLayout, isLandscape],
   );
 
   const resetControlLayout = useCallback(() => {
@@ -1323,7 +1352,7 @@ function App(): React.JSX.Element {
     system === 'gba' ? (
       <GbaView ref={gbaRef} style={scaledScreenStyle(styles.screenGba)} />
     ) : system === 'nds' ? (
-      <DsView ref={dsRef} style={scaledScreenStyle(styles.screenDs)} />
+      <DsView ref={dsRef} style={scaledScreenStyle(isLandscape ? styles.screenDsLandscape : styles.screenDs)} />
     ) : (
       <GameBoyView ref={gameBoyRef} style={scaledScreenStyle(styles.screen)} />
     );
@@ -1549,35 +1578,37 @@ function App(): React.JSX.Element {
         )}
         <StatusBar hidden />
         <View style={styles.landscapeRoot}>
-          <View style={styles.landscapeTopBar}>
-            <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
-              <IconHome size={18} />
-            </Pressable>
-            <Text style={styles.landscapeRomLabel} numberOfLines={1}>
-              {romLabel}
-            </Text>
-            {([1, 2, 3] as const).map(multiplier => (
+          <View onLayout={e => setLandscapeHeaderHeight(e.nativeEvent.layout.height)}>
+            <View style={styles.landscapeTopBar}>
+              <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
+                <IconHome size={18} />
+              </Pressable>
+              <Text style={styles.landscapeRomLabel} numberOfLines={1}>
+                {romLabel}
+              </Text>
+              {([1, 2, 3] as const).map(multiplier => (
+                <Pressable
+                  key={multiplier}
+                  style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
+                  onPress={() => handleSetSpeed(multiplier)}>
+                  <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
+                </Pressable>
+              ))}
+              {(system === 'gba' || system === 'nds') && (
+                <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
+                  <IconSave size={14} color="#cfe3fa" />
+                </Pressable>
+              )}
               <Pressable
-                key={multiplier}
-                style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
-                onPress={() => handleSetSpeed(multiplier)}>
-                <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
+                style={[styles.homeButton, editingControls && styles.editToggleActive]}
+                onPress={() => setEditingControls(v => !v)}
+                hitSlop={8}>
+                <IconPencil size={16} color={editingControls ? '#14151a' : '#fff'} />
               </Pressable>
-            ))}
-            {(system === 'gba' || system === 'nds') && (
-              <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
-                <IconSave size={14} color="#cfe3fa" />
-              </Pressable>
-            )}
-            <Pressable
-              style={[styles.homeButton, editingControls && styles.editToggleActive]}
-              onPress={() => setEditingControls(v => !v)}
-              hitSlop={8}>
-              <IconPencil size={16} color={editingControls ? '#14151a' : '#fff'} />
-            </Pressable>
-          </View>
+            </View>
 
-          {editToolbar}
+            {editToolbar}
+          </View>
 
           <View style={[styles.landscapeStage, {maxHeight: landscapeStageHeight}]}>
             <View style={[styles.screenBezel, {backgroundColor: controlStyle.screenBezel}]}>{screenView}</View>
@@ -1840,8 +1871,13 @@ function GameControls({
           </View>
         </View>
 
+        {/* Sits just above the actions cluster (10dp gap) -- 44 is landscapeXY's own height. */}
         {system === 'nds' && (
-          <View style={[styles.landscapeXY, {top: stageHeight - 184}]}>
+          <View
+            style={[
+              styles.landscapeXY,
+              {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_ACTIONS_HEIGHT - 10 - 44},
+            ]}>
             <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
               <Text style={styles.pillLabel}>Y</Text>
             </View>
@@ -1851,7 +1887,7 @@ function GameControls({
           </View>
         )}
 
-        <View style={[styles.landscapeDpadWrap, {top: stageHeight - 164}]}>
+        <View style={[styles.landscapeDpadWrap, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_DPAD_HEIGHT}]}>
           <View style={styles.dpad}>
             <View style={[styles.dpadBarHorizontal, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
             <View style={[styles.dpadBarVertical, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
@@ -1879,7 +1915,7 @@ function GameControls({
           </View>
         </View>
 
-        <View style={[styles.landscapeActionsWrap, {top: stageHeight - 130}]}>
+        <View style={[styles.landscapeActionsWrap, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_ACTIONS_HEIGHT}]}>
           <View style={styles.actionCluster}>
             <View
               ref={setRef('B')}
@@ -1904,7 +1940,7 @@ function GameControls({
           </View>
         </View>
 
-        <View style={[styles.landscapeSystemRow, {top: stageHeight - 60}]}>
+        <View style={[styles.landscapeSystemRow, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_SYSTEM_ROW_HEIGHT}]}>
           <View ref={setRef('SELECT')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('SELECT') && styles.pillButtonPressed]}>
             <Text style={styles.pillLabel}>SELECT</Text>
           </View>
@@ -2290,6 +2326,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     borderRadius: 4,
   },
+  // Same two 256x192 screens, laid out left/right by DsView's native
+  // onDraw once its box is wider than it is tall -- see isSideBySide()
+  // there. Combined aspect is 512:192 (8:3); this base keeps that ratio.
+  screenDsLandscape: {
+    width: 400,
+    height: 150,
+    backgroundColor: '#000',
+    borderRadius: 4,
+  },
   speakerGrill: {
     flexDirection: 'row',
     gap: 8,
@@ -2510,13 +2555,13 @@ const styles = StyleSheet.create({
   landscapeShoulderLeft: {position: 'absolute', top: 8, left: 12},
   landscapeShoulderRight: {position: 'absolute', top: 8, right: 12},
   landscapeXY: {position: 'absolute', right: 40, width: 120, height: 44, flexDirection: 'row', gap: 10},
-  landscapeDpadWrap: {position: 'absolute', left: 20, width: 144, height: 144},
-  landscapeActionsWrap: {position: 'absolute', right: 20, width: 140, height: 110},
+  landscapeDpadWrap: {position: 'absolute', left: 20, width: 144, height: LANDSCAPE_DPAD_HEIGHT},
+  landscapeActionsWrap: {position: 'absolute', right: 20, width: 140, height: LANDSCAPE_ACTIONS_HEIGHT},
   landscapeSystemRow: {
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 40,
+    height: LANDSCAPE_SYSTEM_ROW_HEIGHT,
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 16,
