@@ -18,3 +18,6 @@ node_modules/
 # Vendored external deps -- reproducible from third_party/README.md,
 # not worth bloating the repo with a full C source tree + prebuilt libs.
 /third_party/
+
+# RomHack Hub admin bearer token for publishing the app listing -- never commit.
+/.secrets/
