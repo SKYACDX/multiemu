@@ -39,6 +39,7 @@ interface RomLibraryNativeModule {
   clearAuthSession(): Promise<void>;
   getPreference(key: string): Promise<string | null>;
   setPreference(key: string, value: string): Promise<void>;
+  getAppVersionCode(): Promise<number>;
 }
 
 const {RomLibrary} = NativeModules as {RomLibrary: RomLibraryNativeModule};
@@ -127,4 +128,9 @@ export function getPreference(key: string): Promise<string | null> {
 
 export function setPreference(key: string, value: string): Promise<void> {
   return RomLibrary.setPreference(key, value);
+}
+
+/** android.defaultConfig.versionCode of the running build -- see docs/update-check.md. */
+export function getAppVersionCode(): Promise<number> {
+  return RomLibrary.getAppVersionCode();
 }

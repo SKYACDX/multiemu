@@ -93,6 +93,34 @@ export async function downloadPatchBytes(patch: Patch): Promise<Uint8Array> {
   return new Uint8Array(buffer);
 }
 
+export interface AppListing {
+  slug: string;
+  name: string;
+  tagline: string;
+  description: string;
+  features: string[];
+  iconUrl: string | null;
+  screenshots: string[];
+  updatedAt: string;
+}
+
+export interface AppRelease {
+  id: string;
+  version: string;
+  versionCode: number;
+  changelog: string;
+  minAndroidSdk: number;
+  apkUrl: string | null;
+  apkSize: number;
+  downloads: number;
+  publishedAt: string;
+}
+
+/** See docs/update-check.md -- used to check for a newer app release. */
+export function getAppInfo(): Promise<{listing: AppListing; latestRelease: AppRelease}> {
+  return apiGet('/app');
+}
+
 /**
  * A different, separate public API on RomHack Hub: arbitrary files users
  * marked public (cover art, docs, and -- unlike /hacks -- potentially

@@ -1,5 +1,12 @@
 # Aviso de actualización disponible
 
+**Implementado** (2026-09-10) -- ver `getAppInfo()` en
+`app/src/api/romHackHub.ts`, `getAppVersionCode()` en
+`app/src/RomLibraryNative.ts` (+ el método nativo en
+`RomLibraryModule.kt`), y el efecto + banner en `App.tsx` (busca
+`availableUpdate`). El resto de este documento es el diseño original,
+dejado para referencia.
+
 El backend de RomHack Hub ya expone todo lo necesario -- esto es
 puramente trabajo de la app, ningún endpoint nuevo que pedir.
 

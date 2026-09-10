@@ -27,6 +27,7 @@ import {
   AppState,
   GestureResponderEvent,
   ImageBackground,
+  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -50,7 +51,7 @@ import AccountScreen from './src/AccountScreen';
 import ThemeEditorScreen from './src/ThemeEditorScreen';
 import ThemesExploreScreen from './src/ThemesExploreScreen';
 import {createTheme, incrementThemeDownload, updateTheme} from './src/api/themes';
-import {defaultTheme, resolveControlStyle, Theme} from './src/theme';
+import {defaultTheme, resolveControlStyle, Theme, withAlpha} from './src/theme';
 import {readRomTitle} from './src/romTitle';
 import {
   downloadRomToPath,
@@ -82,6 +83,7 @@ import {
   StateSlot,
   getPreference,
   setPreference,
+  getAppVersionCode,
 } from './src/RomLibraryNative';
 import {
   ejectGbaCart,
@@ -97,7 +99,7 @@ import {
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
-import {downloadPatchBytes, findCoverArt, Hack, Patch, RomHackHubFile} from './src/api/romHackHub';
+import {downloadPatchBytes, findCoverArt, getAppInfo, Hack, Patch, RomHackHubFile} from './src/api/romHackHub';
 import {
   CloudSave,
   downloadCloudSave,
@@ -121,17 +123,22 @@ type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'X
 // covers "mover los botones" without needing a drag handle for all 12.
 type ClusterId = 'dpad' | 'actions' | 'shoulders' | 'xy' | 'system';
 type ClusterOffset = {dx: number; dy: number};
+// Everything the user can resize independently in "editar interfaz" --
+// the emulator screen plus each draggable cluster. Each keeps its own
+// scale (applied as a paint-time transform, so scaling one never moves
+// or resizes anything else) instead of one shared "screenScale" that
+// used to apply to the screen alone.
+type ScalableId = ClusterId | 'screen';
 interface ControlLayout {
   offsets: Partial<Record<ClusterId, ClusterOffset>>;
-  screenScale: number;
+  scales: Partial<Record<ScalableId, number>>;
 }
-const DEFAULT_CONTROL_LAYOUT: ControlLayout = {offsets: {}, screenScale: 1};
+const DEFAULT_CONTROL_LAYOUT: ControlLayout = {offsets: {}, scales: {}};
 // Landscape has no drag-to-reposition (controls sit at fixed corners,
-// see GameControls' landscape branch) but does reuse the same
-// screenScale mechanism -- defaults bigger since landscape has a lot
-// more vertical room to give the screen once it's not stacked above a
-// column of controls.
-const DEFAULT_CONTROL_LAYOUT_LANDSCAPE: ControlLayout = {offsets: {}, screenScale: 1.6};
+// see GameControls' landscape branch) -- the screen defaults bigger
+// since landscape has a lot more room to give it once it's not stacked
+// above a column of controls.
+const DEFAULT_CONTROL_LAYOUT_LANDSCAPE: ControlLayout = {offsets: {}, scales: {screen: 2}};
 // Landscape cluster anchors are positioned `top: stageHeight - MARGIN -
 // <cluster height>` (see GameControls' landscape branch) -- these mirror
 // the matching styles.landscape*Wrap heights below so the two can't drift
@@ -141,13 +148,24 @@ const LANDSCAPE_EDGE_MARGIN = 20;
 const LANDSCAPE_DPAD_HEIGHT = 144;
 const LANDSCAPE_ACTIONS_HEIGHT = 110;
 const LANDSCAPE_SYSTEM_ROW_HEIGHT = 40;
-const MIN_SCREEN_SCALE = 0.7;
-// Portrait's screen sits in a fixed-size consoleShell that was only ever
-// laid out to fit up to 1.4x -- landscape's stage has much more room and
-// needs the higher ceiling, but the two can't share one constant or
-// portrait's "+" button overflows its shell.
-const MAX_SCREEN_SCALE_PORTRAIT = 1.4;
-const MAX_SCREEN_SCALE_LANDSCAPE = 3;
+const MIN_SCALE = 0.7;
+// The screen is now decoupled from every cluster's layout (see
+// portraitStage/landscapeStage) and its rendered size is separately
+// capped to the device's own width/height (see scaledScreenStyle), so
+// both orientations can share one generous ceiling -- nothing it can
+// grow into displaces a button anymore.
+const MAX_SCREEN_SCALE = 4;
+// Clusters (dpad, A/B, L/R, SELECT/START, X/Y) scale from their own
+// center in place, so a lower ceiling than the screen's is enough
+// headroom before they start overlapping their neighbors.
+const MAX_CLUSTER_SCALE = 2;
+const SCALE_TARGETS: {id: ScalableId; label: string}[] = [
+  {id: 'screen', label: 'Pantalla'},
+  {id: 'dpad', label: 'Dpad'},
+  {id: 'actions', label: 'A/B'},
+  {id: 'shoulders', label: 'L/R'},
+  {id: 'system', label: 'Start/Select'},
+];
 
 // 3DS isn't emulated yet (see docs/roadmap.md) -- only accept what one of
 // the three cores can actually run, so picking the wrong file fails fast
@@ -220,6 +238,8 @@ function App(): React.JSX.Element {
   // RomLibraryModule's getPreference/setPreference).
   const [editingControls, setEditingControls] = useState(false);
   const [controlLayout, setControlLayout] = useState<ControlLayout>(DEFAULT_CONTROL_LAYOUT);
+  // Which component the size +/- controls in "editar interfaz" apply to.
+  const [scaleTarget, setScaleTarget] = useState<ScalableId>('screen');
   const [theme, setTheme] = useState<Theme>(() => defaultTheme('gb'));
   const [themeBusy, setThemeBusy] = useState(false);
   // Name of the GBA ROM currently inserted in the NDS's slot-2 (Pal
@@ -276,6 +296,37 @@ function App(): React.JSX.Element {
   const pendingTotpToken = useRef<string | null>(null);
   const [cloudSaves, setCloudSaves] = useState<CloudSave[]>([]);
   const [cloudBusySlot, setCloudBusySlot] = useState<number | null>(null);
+
+  // A newer release is available and the user hasn't dismissed this
+  // exact versionCode yet -- see the update-check effect below.
+  const [availableUpdate, setAvailableUpdate] = useState<{version: string; changelog: string; versionCode: number} | null>(
+    null,
+  );
+  const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6h, not on every launch
+  useEffect(() => {
+    (async () => {
+      try {
+        const lastCheckedAt = Number((await getPreference('lastUpdateCheckAt')) ?? 0);
+        if (Date.now() - lastCheckedAt < UPDATE_CHECK_INTERVAL_MS) return;
+        const [{latestRelease}, installedVersionCode, dismissed] = await Promise.all([
+          getAppInfo(),
+          getAppVersionCode(),
+          getPreference('dismissedUpdateVersionCode'),
+        ]);
+        setPreference('lastUpdateCheckAt', String(Date.now())).catch(() => {});
+        if (latestRelease.versionCode <= installedVersionCode) return;
+        if (Number(dismissed) === latestRelease.versionCode) return;
+        setAvailableUpdate({version: latestRelease.version, changelog: latestRelease.changelog, versionCode: latestRelease.versionCode});
+      } catch {
+        // No connection, or the endpoint is briefly down -- just try again next check window.
+      }
+    })();
+  }, []);
+
+  const dismissUpdateBanner = useCallback(() => {
+    if (availableUpdate) setPreference('dismissedUpdateVersionCode', String(availableUpdate.versionCode)).catch(() => {});
+    setAvailableUpdate(null);
+  }, [availableUpdate]);
 
   const refreshRecentRoms = useCallback(() => {
     listCachedRoms()
@@ -1131,13 +1182,20 @@ function App(): React.JSX.Element {
     [controlLayout, persistControlLayout],
   );
 
+  // The value shown/adjusted for whichever component is selected --
+  // falls back to the landscape screen's bigger default, or 1 for
+  // everything else that's never been touched.
+  const currentScale =
+    controlLayout.scales[scaleTarget] ?? (scaleTarget === 'screen' ? defaultControlLayout.scales.screen ?? 1 : 1);
+
   const handleScaleStep = useCallback(
     (delta: number) => {
-      const maxScreenScale = isLandscape ? MAX_SCREEN_SCALE_LANDSCAPE : MAX_SCREEN_SCALE_PORTRAIT;
-      const screenScale = Math.min(maxScreenScale, Math.max(MIN_SCREEN_SCALE, controlLayout.screenScale + delta));
-      persistControlLayout({...controlLayout, screenScale});
+      const max = scaleTarget === 'screen' ? MAX_SCREEN_SCALE : MAX_CLUSTER_SCALE;
+      const base = controlLayout.scales[scaleTarget] ?? (scaleTarget === 'screen' ? defaultControlLayout.scales.screen ?? 1 : 1);
+      const next = Math.min(max, Math.max(MIN_SCALE, base + delta));
+      persistControlLayout({...controlLayout, scales: {...controlLayout.scales, [scaleTarget]: next}});
     },
-    [controlLayout, persistControlLayout, isLandscape],
+    [controlLayout, persistControlLayout, scaleTarget, defaultControlLayout],
   );
 
   const resetControlLayout = useCallback(() => {
@@ -1258,6 +1316,24 @@ function App(): React.JSX.Element {
           onOpenAccount={() => setScreen('account')}
           onOpenLocalLink={() => setScreen('localLink')}
         />
+        {availableUpdate && (
+          <View style={styles.updateBanner}>
+            <View style={{flex: 1}}>
+              <Text style={styles.updateBannerTitle}>Versión {availableUpdate.version} disponible</Text>
+              <Text style={styles.updateBannerChangelog} numberOfLines={3}>
+                {availableUpdate.changelog}
+              </Text>
+            </View>
+            <Pressable
+              style={styles.updateBannerButton}
+              onPress={() => Linking.openURL('https://www.emulatornds.online/app')}>
+              <Text style={styles.updateBannerButtonLabel}>Descargar</Text>
+            </Pressable>
+            <Pressable style={styles.updateBannerClose} onPress={dismissUpdateBanner} hitSlop={8}>
+              <Text style={styles.updateBannerCloseLabel}>✕</Text>
+            </Pressable>
+          </View>
+        )}
       </SafeAreaView>
     );
   }
@@ -1342,10 +1418,17 @@ function App(): React.JSX.Element {
     );
   }
 
+  const screenScale = controlLayout.scales.screen ?? (isLandscape ? 2 : 1);
   const scaledScreenStyle = (base: {width: number; height: number; backgroundColor: string; borderRadius: number}) => ({
     ...base,
-    width: base.width * controlLayout.screenScale,
-    height: base.height * controlLayout.screenScale,
+    width: base.width * screenScale,
+    height: base.height * screenScale,
+    // However far the user scales it, the screen can never outgrow the
+    // device itself -- this is what lets the screen scale share one
+    // generous ceiling across both orientations (see MAX_SCREEN_SCALE)
+    // instead of needing a per-shape hand-tuned max.
+    maxWidth: windowWidth,
+    maxHeight: windowHeight,
   });
   const controlStyle = resolveControlStyle(theme);
   const screenView =
@@ -1360,15 +1443,27 @@ function App(): React.JSX.Element {
   // Shared between portrait and landscape -- only the drag-to-reposition
   // hint differs, since landscape's controls sit at fixed corners
   // instead (see GameControls' landscape branch).
+  // X/Y only exist on the DS, so only offer to resize them there.
+  const scaleTargets = system === 'nds' ? [...SCALE_TARGETS, {id: 'xy' as const, label: 'X/Y'}] : SCALE_TARGETS;
   const editToolbar = editingControls && (
     <View style={styles.editToolbar}>
       {!isLandscape && <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>}
+      <View style={[styles.editToolbarRow, styles.scaleTargetRow]}>
+        {scaleTargets.map(t => (
+          <Pressable
+            key={t.id}
+            style={[styles.scaleTargetChip, scaleTarget === t.id && styles.scaleTargetChipActive]}
+            onPress={() => setScaleTarget(t.id)}>
+            <Text style={[styles.scaleTargetLabel, scaleTarget === t.id && styles.scaleTargetLabelActive]}>{t.label}</Text>
+          </Pressable>
+        ))}
+      </View>
       <View style={styles.editToolbarRow}>
-        <Text style={styles.editToolbarLabel}>Tamaño de pantalla</Text>
+        <Text style={styles.editToolbarLabel}>Tamaño</Text>
         <Pressable style={styles.editStepButton} onPress={() => handleScaleStep(-0.1)}>
           <Text style={styles.editStepLabel}>−</Text>
         </Pressable>
-        <Text style={styles.editScaleValue}>{Math.round(controlLayout.screenScale * 100)}%</Text>
+        <Text style={styles.editScaleValue}>{Math.round(currentScale * 100)}%</Text>
         <Pressable style={styles.editStepButton} onPress={() => handleScaleStep(0.1)}>
           <Text style={styles.editStepLabel}>+</Text>
         </Pressable>
@@ -1611,12 +1706,13 @@ function App(): React.JSX.Element {
           </View>
 
           <View style={[styles.landscapeStage, {maxHeight: landscapeStageHeight}]}>
-            <View style={[styles.screenBezel, {backgroundColor: controlStyle.screenBezel}]}>{screenView}</View>
+            <View style={[styles.screenBezel, {backgroundColor: withAlpha(controlStyle.screenBezel, 0.55)}]}>{screenView}</View>
             <GameControls
               system={system}
               dispatch={dispatchButton}
               editing={editingControls}
               offsets={controlLayout.offsets}
+              scales={controlLayout.scales}
               onDrag={handleDragCluster}
               theme={theme}
               orientation="landscape"
@@ -1650,6 +1746,22 @@ function App(): React.JSX.Element {
       <StatusBar hidden />
       {Platform.OS === 'android' ? (
         <View style={styles.scrollContent}>
+          {/* Painted first (position:absolute, so it's also removed from
+              the column's normal flow) -- topGroup and bottomGroup are
+              plain later siblings, so they always paint on top of the
+              console/screen and lay out exactly as if it weren't there,
+              no matter how big MAX_SCREEN_SCALE lets it grow. */}
+          <View style={styles.portraitStage}>
+            <View style={[styles.consoleShell, {borderColor: controlStyle.shellBorder, backgroundColor: controlStyle.shellBackground}]}>
+              <View style={[styles.screenBezel, {backgroundColor: withAlpha(controlStyle.screenBezel, 0.55)}]}>{screenView}</View>
+              <View style={styles.speakerGrill}>
+                {[0, 1, 2, 3, 4].map(i => (
+                  <View key={i} style={[styles.speakerHole, {backgroundColor: controlStyle.shellBorder}]} />
+                ))}
+              </View>
+            </View>
+          </View>
+
           <View style={styles.topGroup}>
             <View style={styles.topBar}>
               <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
@@ -1672,15 +1784,6 @@ function App(): React.JSX.Element {
             </View>
 
             {editToolbar}
-
-            <View style={[styles.consoleShell, {borderColor: controlStyle.shellBorder, backgroundColor: controlStyle.shellBackground}]}>
-              <View style={[styles.screenBezel, {backgroundColor: controlStyle.screenBezel}]}>{screenView}</View>
-              <View style={styles.speakerGrill}>
-                {[0, 1, 2, 3, 4].map(i => (
-                  <View key={i} style={[styles.speakerHole, {backgroundColor: controlStyle.shellBorder}]} />
-                ))}
-              </View>
-            </View>
           </View>
 
           {/* Everything below sits in its own bottom-anchored group (see
@@ -1696,6 +1799,7 @@ function App(): React.JSX.Element {
               dispatch={dispatchButton}
               editing={editingControls}
               offsets={controlLayout.offsets}
+              scales={controlLayout.scales}
               onDrag={handleDragCluster}
               theme={theme}
             />
@@ -1751,6 +1855,7 @@ function GameControls({
   dispatch,
   editing,
   offsets,
+  scales,
   onDrag,
   theme,
   orientation = 'portrait',
@@ -1760,6 +1865,10 @@ function GameControls({
   dispatch: (button: PadButtonId, pressed: boolean) => void;
   editing: boolean;
   offsets: Partial<Record<ClusterId, ClusterOffset>>;
+  // Independent per-cluster size, applied as a paint-time transform (see
+  // each cluster's `clusterScale(...)` below) -- purely visual, never
+  // changes layout, so one cluster growing can't push or resize another.
+  scales: Partial<Record<ScalableId, number>>;
   onDrag: (id: ClusterId, dx: number, dy: number) => void;
   theme: Theme;
   orientation?: 'portrait' | 'landscape';
@@ -1773,6 +1882,7 @@ function GameControls({
   stageHeight?: number;
 }) {
   const cs = resolveControlStyle(theme);
+  const clusterScale = (id: ClusterId): {transform: [{scale: number}]} => ({transform: [{scale: scales[id] ?? 1}]});
   type ViewRef = React.ElementRef<typeof View>;
   const refs = useRef<Partial<Record<PadButtonId, ViewRef | null>>>({});
   const rects = useRef<Partial<Record<PadButtonId, {x: number; y: number; w: number; h: number}>>>({});
@@ -1851,7 +1961,8 @@ function GameControls({
             ref={setRef('L')}
             style={[
               styles.shoulderButton,
-              {backgroundColor: cs.shoulderColor, borderRadius: cs.shoulderRadius},
+              {backgroundColor: withAlpha(cs.shoulderColor, 0.75), borderRadius: cs.shoulderRadius},
+              clusterScale('shoulders'),
               system === 'gb' && styles.shoulderButtonInactive,
               isPressed('L') && styles.shoulderButtonPressed,
             ]}>
@@ -1863,7 +1974,8 @@ function GameControls({
             ref={setRef('R')}
             style={[
               styles.shoulderButton,
-              {backgroundColor: cs.shoulderColor, borderRadius: cs.shoulderRadius},
+              {backgroundColor: withAlpha(cs.shoulderColor, 0.75), borderRadius: cs.shoulderRadius},
+              clusterScale('shoulders'),
               system === 'gb' && styles.shoulderButtonInactive,
               isPressed('R') && styles.shoulderButtonPressed,
             ]}>
@@ -1877,6 +1989,7 @@ function GameControls({
             style={[
               styles.landscapeXY,
               {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_ACTIONS_HEIGHT - 10 - 44},
+              clusterScale('xy'),
             ]}>
             <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
               <Text style={styles.pillLabel}>Y</Text>
@@ -1888,9 +2001,9 @@ function GameControls({
         )}
 
         <View style={[styles.landscapeDpadWrap, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_DPAD_HEIGHT}]}>
-          <View style={styles.dpad}>
-            <View style={[styles.dpadBarHorizontal, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
-            <View style={[styles.dpadBarVertical, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
+          <View style={[styles.dpad, clusterScale('dpad')]}>
+            <View style={[styles.dpadBarHorizontal, {backgroundColor: withAlpha(cs.dpadColor, 0.75), borderRadius: cs.dpadRadius}]} />
+            <View style={[styles.dpadBarVertical, {backgroundColor: withAlpha(cs.dpadColor, 0.75), borderRadius: cs.dpadRadius}]} />
             <View style={styles.dpadRivet} />
             <View
               ref={setRef('UP')}
@@ -1916,12 +2029,12 @@ function GameControls({
         </View>
 
         <View style={[styles.landscapeActionsWrap, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_ACTIONS_HEIGHT}]}>
-          <View style={styles.actionCluster}>
+          <View style={[styles.actionCluster, clusterScale('actions')]}>
             <View
               ref={setRef('B')}
               style={[
                 styles.actionButton,
-                {backgroundColor: cs.actionColorB, borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                {backgroundColor: withAlpha(cs.actionColorB, 0.8), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
                 styles.buttonBPosition,
                 isPressed('B') && styles.actionButtonPressed,
               ]}>
@@ -1931,7 +2044,7 @@ function GameControls({
               ref={setRef('A')}
               style={[
                 styles.actionButton,
-                {backgroundColor: cs.actionColorA, borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                {backgroundColor: withAlpha(cs.actionColorA, 0.8), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
                 styles.buttonAPosition,
                 isPressed('A') && styles.actionButtonPressed,
               ]}>
@@ -1940,7 +2053,7 @@ function GameControls({
           </View>
         </View>
 
-        <View style={[styles.landscapeSystemRow, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_SYSTEM_ROW_HEIGHT}]}>
+        <View style={[styles.landscapeSystemRow, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_SYSTEM_ROW_HEIGHT}, clusterScale('system')]}>
           <View ref={setRef('SELECT')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('SELECT') && styles.pillButtonPressed]}>
             <Text style={styles.pillLabel}>SELECT</Text>
           </View>
@@ -1963,12 +2076,12 @@ function GameControls({
       onResponderRelease={releaseAll}
       onResponderTerminate={releaseAll}>
       <DraggableCluster id="shoulders" editing={editing} offset={offsets.shoulders} onDrag={onDrag}>
-        <View style={styles.shoulderRow}>
+        <View style={[styles.shoulderRow, clusterScale('shoulders')]}>
           <View
             ref={setRef('L')}
             style={[
               styles.shoulderButton,
-              {backgroundColor: cs.shoulderColor, borderRadius: cs.shoulderRadius},
+              {backgroundColor: withAlpha(cs.shoulderColor, 0.85), borderRadius: cs.shoulderRadius},
               system === 'gb' && styles.shoulderButtonInactive,
               isPressed('L') && styles.shoulderButtonPressed,
             ]}>
@@ -1979,7 +2092,7 @@ function GameControls({
             ref={setRef('R')}
             style={[
               styles.shoulderButton,
-              {backgroundColor: cs.shoulderColor, borderRadius: cs.shoulderRadius},
+              {backgroundColor: withAlpha(cs.shoulderColor, 0.85), borderRadius: cs.shoulderRadius},
               system === 'gb' && styles.shoulderButtonInactive,
               isPressed('R') && styles.shoulderButtonPressed,
             ]}>
@@ -1993,7 +2106,7 @@ function GameControls({
           the D-pad/A-B row rather than reshuffling its fixed layout. */}
       {system === 'nds' && (
         <DraggableCluster id="xy" editing={editing} offset={offsets.xy} onDrag={onDrag}>
-          <View style={styles.systemRow}>
+          <View style={[styles.systemRow, clusterScale('xy')]}>
             <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
               <View style={styles.pillHighlight} />
               <Text style={styles.pillLabel}>Y</Text>
@@ -2008,9 +2121,9 @@ function GameControls({
 
       <View style={styles.padRow}>
         <DraggableCluster id="dpad" editing={editing} offset={offsets.dpad} onDrag={onDrag}>
-          <View style={styles.dpad}>
-            <View style={[styles.dpadBarHorizontal, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
-            <View style={[styles.dpadBarVertical, {backgroundColor: cs.dpadColor, borderRadius: cs.dpadRadius}]} />
+          <View style={[styles.dpad, clusterScale('dpad')]}>
+            <View style={[styles.dpadBarHorizontal, {backgroundColor: withAlpha(cs.dpadColor, 0.85), borderRadius: cs.dpadRadius}]} />
+            <View style={[styles.dpadBarVertical, {backgroundColor: withAlpha(cs.dpadColor, 0.85), borderRadius: cs.dpadRadius}]} />
             <View style={styles.dpadRivet} />
             <View
               ref={setRef('UP')}
@@ -2037,12 +2150,12 @@ function GameControls({
 
         {/* B/A staggered diagonally (B lower-left, A upper-right), matching the real hardware layout. */}
         <DraggableCluster id="actions" editing={editing} offset={offsets.actions} onDrag={onDrag}>
-          <View style={styles.actionCluster}>
+          <View style={[styles.actionCluster, clusterScale('actions')]}>
             <View
               ref={setRef('B')}
               style={[
                 styles.actionButton,
-                {backgroundColor: cs.actionColorB, borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                {backgroundColor: withAlpha(cs.actionColorB, 0.85), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
                 styles.buttonBPosition,
                 isPressed('B') && styles.actionButtonPressed,
               ]}>
@@ -2053,7 +2166,7 @@ function GameControls({
               ref={setRef('A')}
               style={[
                 styles.actionButton,
-                {backgroundColor: cs.actionColorA, borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                {backgroundColor: withAlpha(cs.actionColorA, 0.85), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
                 styles.buttonAPosition,
                 isPressed('A') && styles.actionButtonPressed,
               ]}>
@@ -2065,7 +2178,7 @@ function GameControls({
       </View>
 
       <DraggableCluster id="system" editing={editing} offset={offsets.system} onDrag={onDrag}>
-        <View style={styles.systemRow}>
+        <View style={[styles.systemRow, clusterScale('system')]}>
           <View ref={setRef('SELECT')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('SELECT') && styles.pillButtonPressed]}>
             <View style={styles.pillHighlight} />
             <Text style={styles.pillLabel}>SELECT</Text>
@@ -2145,6 +2258,31 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#14151a',
   },
+  updateBanner: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    top: 90,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#1e3a5c',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#4a90d9',
+    // Android stacks by elevation, not render order (see HomeScreen's
+    // own note on this) -- higher than any of HomeScreen's own cards
+    // (max elevation:20) so this sits above them despite being a later
+    // sibling, not under.
+    elevation: 30,
+  },
+  updateBannerTitle: {color: '#fff', fontSize: 13, fontWeight: '700'},
+  updateBannerChangelog: {color: '#cfe3fa', fontSize: 11, marginTop: 2},
+  updateBannerButton: {backgroundColor: '#4a90d9', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 14},
+  updateBannerButtonLabel: {color: '#0c1420', fontSize: 12, fontWeight: '700'},
+  updateBannerClose: {padding: 4},
+  updateBannerCloseLabel: {color: '#cfe3fa', fontSize: 14, fontWeight: '700'},
   scrollContent: {
     flexGrow: 1,
     alignItems: 'center',
@@ -2152,6 +2290,7 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   topGroup: {alignItems: 'center', width: '100%'},
+  portraitStage: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center'},
   bottomGroup: {alignItems: 'center', width: '100%'},
   // Landscape: a slim top bar (not the portrait topGroup's console+title
   // block) plus a "stage" that fills the rest -- the screen centered in
@@ -2200,6 +2339,16 @@ const styles = StyleSheet.create({
   editToolbarHint: {color: '#999', fontSize: 11, textAlign: 'center', marginBottom: 8},
   editToolbarRow: {flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10},
   editToolbarLabel: {color: '#ccc', fontSize: 12},
+  scaleTargetRow: {flexWrap: 'wrap', marginBottom: 8},
+  scaleTargetChip: {
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: '#2a2c34',
+  },
+  scaleTargetChipActive: {backgroundColor: '#4a90d9'},
+  scaleTargetLabel: {color: '#ccc', fontSize: 11, fontWeight: '600'},
+  scaleTargetLabelActive: {color: '#0c1420'},
   editStepButton: {
     width: 28,
     height: 28,
@@ -2578,8 +2727,8 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 3,
   },
-  pillButtonSelect: {backgroundColor: '#3a3d47'},
-  pillButtonStart: {backgroundColor: '#454040'},
+  pillButtonSelect: {backgroundColor: 'rgba(58, 61, 71, 0.8)'},
+  pillButtonStart: {backgroundColor: 'rgba(69, 64, 64, 0.8)'},
   pillButtonPressed: {opacity: 0.7},
   pillHighlight: {
     position: 'absolute',

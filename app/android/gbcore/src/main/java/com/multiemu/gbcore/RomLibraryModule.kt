@@ -401,4 +401,17 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         prefs().edit().putString("pref_$key", value).apply()
         promise.resolve(null)
     }
+
+    /** android.defaultConfig.versionCode of the running build -- for comparing against the app listing's latestRelease.versionCode (see docs/update-check.md). */
+    @ReactMethod
+    fun getAppVersionCode(promise: Promise) {
+        val info = reactContext.packageManager.getPackageInfo(reactContext.packageName, 0)
+        val versionCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            info.longVersionCode.toInt()
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode
+        }
+        promise.resolve(versionCode)
+    }
 }

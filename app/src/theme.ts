@@ -97,6 +97,17 @@ export function shadeColor(hex: string, percent: number): string {
   return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
 }
 
+/** "#rrggbb" -> "rgba(r,g,b,alpha)", for translucent bezels/buttons over the game screen. */
+export function withAlpha(hex: string, alpha: number): string {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return hex;
+  const num = parseInt(clean, 16);
+  const r = (num >> 16) & 0xff;
+  const g = (num >> 8) & 0xff;
+  const b = num & 0xff;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 export const PALETTE_SWATCHES = [
   '#c2536a', '#8b3a4a', '#7a5cc2', '#4a90d9', '#3a5a7a', '#4fae5a',
   '#d9a34a', '#d94a4a', '#4ad9c2', '#1e2027', '#33353c', '#000000',
