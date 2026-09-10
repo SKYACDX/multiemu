@@ -102,3 +102,31 @@ export async function downloadCloudSave(token: string, id: string): Promise<Uint
 export async function deleteCloudSave(token: string, id: string): Promise<void> {
   await accountFetch(`/api/saves/${id}`, {method: 'DELETE'}, token);
 }
+
+/**
+ * See docs/feedback-api.md. token is optional -- a logged-out user can
+ * still send feedback as a guest (stricter rate limit server-side, see
+ * the doc), so every param here mirrors that: token/guestName are both
+ * optional and mutually exclusive in practice (guestName is ignored if
+ * a token is sent).
+ */
+export async function uploadFeedbackScreenshot(bytes: Uint8Array, filename: string, token?: string): Promise<string> {
+  const contentType = 'image/png';
+  const {uploadUrl, storedName} = await accountFetch<{uploadUrl: string; storedName: string}>(
+    '/api/app/feedback/upload-url',
+    {method: 'POST', body: JSON.stringify({filename, contentType})},
+    token,
+  );
+  const putResponse = await fetch(uploadUrl, {method: 'PUT', headers: {'Content-Type': contentType}, body: bytes});
+  if (!putResponse.ok) {
+    throw new Error(`No se pudo subir la captura (HTTP ${putResponse.status})`);
+  }
+  return storedName;
+}
+
+export async function sendFeedback(
+  params: {body: string; deviceInfo?: string; appVersion?: string; imageKey?: string; guestName?: string},
+  token?: string,
+): Promise<void> {
+  await accountFetch('/api/app/feedback', {method: 'POST', body: JSON.stringify(params)}, token);
+}

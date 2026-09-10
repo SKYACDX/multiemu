@@ -40,6 +40,7 @@ interface RomLibraryNativeModule {
   getPreference(key: string): Promise<string | null>;
   setPreference(key: string, value: string): Promise<void>;
   getAppVersionCode(): Promise<number>;
+  getAppVersionName(): Promise<string>;
 }
 
 const {RomLibrary} = NativeModules as {RomLibrary: RomLibraryNativeModule};
@@ -133,4 +134,8 @@ export function setPreference(key: string, value: string): Promise<void> {
 /** android.defaultConfig.versionCode of the running build -- see docs/update-check.md. */
 export function getAppVersionCode(): Promise<number> {
   return RomLibrary.getAppVersionCode();
+}
+
+export function getAppVersionName(): Promise<string> {
+  return RomLibrary.getAppVersionName();
 }

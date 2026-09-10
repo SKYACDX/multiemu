@@ -414,4 +414,11 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         }
         promise.resolve(versionCode)
     }
+
+    /** android.defaultConfig.versionName of the running build -- e.g. for the feedback form's appVersion field (see docs/feedback-api.md). */
+    @ReactMethod
+    fun getAppVersionName(promise: Promise) {
+        val info = reactContext.packageManager.getPackageInfo(reactContext.packageName, 0)
+        promise.resolve(info.versionName)
+    }
 }

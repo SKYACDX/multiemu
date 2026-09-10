@@ -19,6 +19,7 @@ interface Props {
   busy: boolean;
   username: string | null;
   onOpenAccount: () => void;
+  onOpenFeedback: () => void;
 }
 
 /**
@@ -42,9 +43,13 @@ export default function HomeScreen({
   busy,
   username,
   onOpenAccount,
+  onOpenFeedback,
 }: Props) {
   return (
     <View style={styles.container}>
+      <Pressable style={styles.feedbackButton} onPress={onOpenFeedback} hitSlop={8}>
+        <Text style={styles.feedbackLabel}>Comentarios</Text>
+      </Pressable>
       <Pressable style={styles.accountButton} onPress={onOpenAccount} hitSlop={8}>
         <IconAccount size={18} color={username ? '#a0ffe8' : '#888'} />
         {username && <Text style={styles.accountLabel} numberOfLines={1}>{username}</Text>}
@@ -167,6 +172,16 @@ const CARD_SHADOW = {
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#14151a', paddingTop: 56, paddingHorizontal: 20},
+  feedbackButton: {
+    position: 'absolute',
+    top: 14,
+    left: 16,
+    backgroundColor: '#1e2027',
+    borderRadius: 14,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  feedbackLabel: {color: '#888', fontSize: 12, fontWeight: '600'},
   accountButton: {
     position: 'absolute',
     top: 14,

@@ -48,6 +48,7 @@ import FolderScreen from './src/FolderScreen';
 import HubScreen from './src/HubScreen';
 import LocalLinkScreen from './src/LocalLinkScreen';
 import AccountScreen from './src/AccountScreen';
+import FeedbackScreen from './src/FeedbackScreen';
 import ThemeEditorScreen from './src/ThemeEditorScreen';
 import ThemesExploreScreen from './src/ThemesExploreScreen';
 import {createTheme, incrementThemeDownload, updateTheme} from './src/api/themes';
@@ -84,6 +85,7 @@ import {
   getPreference,
   setPreference,
   getAppVersionCode,
+  getAppVersionName,
 } from './src/RomLibraryNative';
 import {
   ejectGbaCart,
@@ -114,21 +116,21 @@ import {TEST_ROM_BASE64} from './src/testRom';
 
 const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
-type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account' | 'localLink' | 'themeEditor' | 'themesExplore';
+type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account' | 'localLink' | 'themeEditor' | 'themesExplore' | 'feedback';
 type EmulatedSystem = 'gb' | 'gba' | 'nds';
 type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'X' | 'Y' | 'SELECT' | 'START';
 
 // Draggable clusters a user can reposition in "Personalizar controles"
 // mode -- grouped (whole D-pad, whole A/B) rather than per-button, which
 // covers "mover los botones" without needing a drag handle for all 12.
-type ClusterId = 'dpad' | 'actions' | 'shoulders' | 'xy' | 'system';
+type ClusterId = 'dpad' | 'actions' | 'shoulders' | 'xy' | 'system' | 'screen';
 type ClusterOffset = {dx: number; dy: number};
 // Everything the user can resize independently in "editar interfaz" --
 // the emulator screen plus each draggable cluster. Each keeps its own
 // scale (applied as a paint-time transform, so scaling one never moves
 // or resizes anything else) instead of one shared "screenScale" that
 // used to apply to the screen alone.
-type ScalableId = ClusterId | 'screen';
+type ScalableId = ClusterId;
 interface ControlLayout {
   offsets: Partial<Record<ClusterId, ClusterOffset>>;
   scales: Partial<Record<ScalableId, number>>;
@@ -296,6 +298,14 @@ function App(): React.JSX.Element {
   const pendingTotpToken = useRef<string | null>(null);
   const [cloudSaves, setCloudSaves] = useState<CloudSave[]>([]);
   const [cloudBusySlot, setCloudBusySlot] = useState<number | null>(null);
+
+  // For the feedback form's appVersion field (see docs/feedback-api.md).
+  const [appVersionName, setAppVersionName] = useState('');
+  useEffect(() => {
+    getAppVersionName()
+      .then(setAppVersionName)
+      .catch(() => {});
+  }, []);
 
   // A newer release is available and the user hasn't dismissed this
   // exact versionCode yet -- see the update-check effect below.
@@ -503,6 +513,17 @@ function App(): React.JSX.Element {
   // so the periodic auto-sync effect can tell "changed since we last
   // synced" from "nothing new to push" without re-uploading every tick.
   const lastSyncedSaveCrc = useRef<number | null>(null);
+  // True once checkGameSaveConflict has actually resolved (found no
+  // conflict, or the user picked a side) for the currently-loaded ROM --
+  // reset to false alongside lastSyncedSaveCrc whenever a new ROM loads.
+  // Fixes a real data-loss bug: autoSyncGameSave used to compare against
+  // lastSyncedSaveCrc's initial `null` and treat any local save as "new",
+  // silently overwriting a real cloud save the moment its 45s timer fired
+  // -- which happens whenever the user logs in *after* the ROM already
+  // loaded (a fresh install has no session yet), since the one-time
+  // conflict check at load time bails out early with no session to check
+  // against and never gets retried on its own.
+  const saveConflictChecked = useRef(false);
 
   // Pauses whichever view is actually showing a game -- see
   // currentSaveSystem's own comment for why this reads that ref instead
@@ -531,6 +552,99 @@ function App(): React.JSX.Element {
     }
   }, [saveModalOpen, setActiveViewPaused]);
 
+  const reloadActiveRom = useCallback((romId: string) => {
+    if (currentSaveSystem.current === 'nds') {
+      if (currentDsRomPath.current) dsRef.current?.loadRomPath(currentDsRomPath.current, romId);
+    } else {
+      gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+    }
+  }, []);
+
+  /** "10/09/2026, 14:35" -- for the cloud-conflict alerts and the save modal's cloud row, so the user can tell versions apart before picking one. */
+  const formatCloudTimestamp = (iso: string) =>
+    new Date(iso).toLocaleString(undefined, {day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'});
+
+  // Right after loading a ROM (see loadIntoEmulator/handlePickRom), or
+  // from autoSyncGameSave's first tick for a ROM if this hasn't run yet
+  // (see saveConflictChecked): if the user is logged in and the device's
+  // save differs from the cloud's, ask which one should win instead of
+  // silently picking one and possibly costing them progress either way.
+  const checkGameSaveConflict = useCallback(
+    async (romId: string) => {
+      const gameKey = cloudGameKey();
+      if (!authToken || !gameKey) return;
+      try {
+        const saves = await listCloudSaves(authToken);
+        const remote = saves.find(s => s.gameKey === gameKey && s.slot === GAME_SAVE_CLOUD_SLOT);
+        const localBase64 = await readGameSavePaused(romId);
+        const localCrc = localBase64 ? crc32(base64ToBytes(localBase64)) : null;
+
+        if (!remote) {
+          saveConflictChecked.current = true; // Nothing in the cloud yet -- the autosync timer will create it.
+          return;
+        }
+
+        const remoteBytes = await downloadCloudSave(authToken, remote.id);
+        const remoteCrc = crc32(remoteBytes);
+        const remoteDate = formatCloudTimestamp(remote.updatedAt);
+
+        if (localCrc === remoteCrc) {
+          lastSyncedSaveCrc.current = remoteCrc;
+          saveConflictChecked.current = true;
+          return;
+        }
+
+        if (localCrc === null) {
+          Alert.alert(
+            'Guardado en la nube encontrado',
+            `Este juego no tiene datos locales, pero sí un guardado en la nube del ${remoteDate}. ¿Descargarlo?`,
+            [
+              {text: 'No', style: 'cancel', onPress: () => (saveConflictChecked.current = true)},
+              {
+                text: 'Descargar',
+                onPress: async () => {
+                  await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
+                  lastSyncedSaveCrc.current = remoteCrc;
+                  saveConflictChecked.current = true;
+                  reloadActiveRom(romId);
+                },
+              },
+            ],
+          );
+          return;
+        }
+
+        Alert.alert(
+          'El guardado de este juego no coincide con la nube',
+          `La nube tiene una versión del ${remoteDate}. ¿Cuál quieres conservar?`,
+          [
+            {
+              text: 'Este dispositivo',
+              onPress: async () => {
+                await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, base64ToBytes(localBase64!), 'game.sav');
+                lastSyncedSaveCrc.current = localCrc;
+                saveConflictChecked.current = true;
+                refreshCloudSaves();
+              },
+            },
+            {
+              text: 'La nube',
+              onPress: async () => {
+                await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
+                lastSyncedSaveCrc.current = remoteCrc;
+                saveConflictChecked.current = true;
+                reloadActiveRom(romId);
+              },
+            },
+          ],
+        );
+      } catch {
+        // Best-effort -- skip silently, the manual Subir/Bajar buttons still work.
+      }
+    },
+    [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, reloadActiveRom],
+  );
+
   // Silently pushes the current in-game save to the cloud if it changed
   // since the last sync -- the "cada que haya un cambio... se actualice
   // automáticamente" ask. Runs on a timer while playing (see the effect
@@ -543,6 +657,14 @@ function App(): React.JSX.Element {
     const romId = currentRomId.current;
     const gameKey = cloudGameKey();
     if (!authToken || !gameKey || !romId || (system !== 'gba' && system !== 'nds')) return;
+    // Never push blind: the very first sync for this ROM (typically
+    // "logged in after the ROM was already loaded") must reconcile
+    // against whatever's already in the cloud instead of assuming local
+    // is authoritative -- see saveConflictChecked's own comment.
+    if (!saveConflictChecked.current) {
+      checkGameSaveConflict(romId);
+      return;
+    }
     const base64 = await readGameSavePaused(romId);
     if (!base64) return;
     const crc = crc32(base64ToBytes(base64));
@@ -554,7 +676,7 @@ function App(): React.JSX.Element {
     } catch {
       // Best-effort -- the next tick (or the manual "Subir" button) retries.
     }
-  }, [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, system]);
+  }, [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, system, checkGameSaveConflict]);
 
   useEffect(() => {
     if (screen !== 'game' || (system !== 'gba' && system !== 'nds') || !authToken) return;
@@ -567,6 +689,18 @@ function App(): React.JSX.Element {
       sub.remove();
     };
   }, [screen, system, authToken, autoSyncGameSave]);
+
+  // Logging in *after* a ROM is already loaded skips the one-time
+  // conflict check at load time (no session to check against yet, see
+  // checkGameSaveConflict's own call sites) -- this catches up the
+  // instant a session appears instead of waiting up to AUTOSAVE_INTERVAL_MS
+  // for autoSyncGameSave's own fallback to kick in.
+  useEffect(() => {
+    if (screen !== 'game' || (system !== 'gba' && system !== 'nds') || !authToken) return;
+    if (saveConflictChecked.current) return;
+    const romId = currentRomId.current;
+    if (romId) checkGameSaveConflict(romId);
+  }, [screen, system, authToken, checkGameSaveConflict]);
 
   // A full-state autosave (slot 3, see AUTOSAVE_SLOT) so a crash or the
   // app getting killed doesn't lose progress -- separate from the cloud
@@ -606,82 +740,6 @@ function App(): React.JSX.Element {
   // save without resetting" call, so this just reloads the whole ROM
   // (cheap either way: GBA's bytes are already in memory, NDS's native
   // side re-reads its own path).
-  const reloadActiveRom = useCallback((romId: string) => {
-    if (currentSaveSystem.current === 'nds') {
-      if (currentDsRomPath.current) dsRef.current?.loadRomPath(currentDsRomPath.current, romId);
-    } else {
-      gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
-    }
-  }, []);
-
-  // Right after loading a ROM (see loadIntoEmulator/handlePickRom): if
-  // the user is logged in and the device's save differs from the
-  // cloud's, ask which one should win instead of silently picking one
-  // and possibly costing them progress either way.
-  const checkGameSaveConflict = useCallback(
-    async (romId: string) => {
-      const gameKey = cloudGameKey();
-      if (!authToken || !gameKey) return;
-      try {
-        const saves = await listCloudSaves(authToken);
-        const remote = saves.find(s => s.gameKey === gameKey && s.slot === GAME_SAVE_CLOUD_SLOT);
-        const localBase64 = await readGameSavePaused(romId);
-        const localCrc = localBase64 ? crc32(base64ToBytes(localBase64)) : null;
-
-        if (!remote) return; // Nothing in the cloud yet -- the autosync timer will create it.
-
-        const remoteBytes = await downloadCloudSave(authToken, remote.id);
-        const remoteCrc = crc32(remoteBytes);
-
-        if (localCrc === remoteCrc) {
-          lastSyncedSaveCrc.current = remoteCrc;
-          return;
-        }
-
-        if (localCrc === null) {
-          Alert.alert('Guardado en la nube encontrado', 'Este juego no tiene datos locales, pero sí un guardado en la nube. ¿Descargarlo?', [
-            {text: 'No', style: 'cancel'},
-            {
-              text: 'Descargar',
-              onPress: async () => {
-                await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
-                lastSyncedSaveCrc.current = remoteCrc;
-                reloadActiveRom(romId);
-              },
-            },
-          ]);
-          return;
-        }
-
-        Alert.alert(
-          'El guardado de este juego no coincide con la nube',
-          '¿Cuál quieres conservar?',
-          [
-            {
-              text: 'Este dispositivo',
-              onPress: async () => {
-                await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, base64ToBytes(localBase64!), 'game.sav');
-                lastSyncedSaveCrc.current = localCrc;
-                refreshCloudSaves();
-              },
-            },
-            {
-              text: 'La nube',
-              onPress: async () => {
-                await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
-                lastSyncedSaveCrc.current = remoteCrc;
-                reloadActiveRom(romId);
-              },
-            },
-          ],
-        );
-      } catch {
-        // Best-effort -- skip silently, the manual Subir/Bajar buttons still work.
-      }
-    },
-    [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, reloadActiveRom],
-  );
-
   // base64: pass it through when the caller already has one (e.g. fresh
   // out of the file picker) to skip re-encoding [bytes] -- for a 16-32MB
   // GBA ROM, encoding it a second time is slow and, combined with every
@@ -709,6 +767,7 @@ function App(): React.JSX.Element {
 
       const encoded = base64 ?? bytesToBase64(bytes);
       lastSyncedSaveCrc.current = null;
+      saveConflictChecked.current = false;
       if (targetSystem === 'gba') {
         gbaRef.current?.loadRomBase64(encoded, currentRomId.current);
         gbaRef.current?.setSpeedMultiplier(1);
@@ -881,6 +940,7 @@ function App(): React.JSX.Element {
           .then(setStateSlots)
           .catch(() => setStateSlots([]));
         lastSyncedSaveCrc.current = null;
+        saveConflictChecked.current = false;
         const lookupId = ++coverLookupId.current;
         readFileHeaderBase64(picked.path, 0x0c)
           .then(base64 => {
@@ -1022,6 +1082,7 @@ function App(): React.JSX.Element {
             .then(setStateSlots)
             .catch(() => setStateSlots([]));
           lastSyncedSaveCrc.current = null;
+          saveConflictChecked.current = false;
           const lookupId = ++coverLookupId.current;
           readFileHeaderBase64(picked.path, 0x0c)
             .then(base64 => {
@@ -1315,6 +1376,7 @@ function App(): React.JSX.Element {
           username={authUsername}
           onOpenAccount={() => setScreen('account')}
           onOpenLocalLink={() => setScreen('localLink')}
+          onOpenFeedback={() => setScreen('feedback')}
         />
         {availableUpdate && (
           <View style={styles.updateBanner}>
@@ -1349,6 +1411,15 @@ function App(): React.JSX.Element {
           onLogout={handleLogout}
           onClose={() => setScreen('home')}
         />
+      </>
+    );
+  }
+
+  if (screen === 'feedback') {
+    return (
+      <>
+        <StatusBar hidden />
+        <FeedbackScreen authToken={authToken} appVersion={appVersionName} onClose={() => setScreen('home')} />
       </>
     );
   }
@@ -1534,6 +1605,11 @@ function App(): React.JSX.Element {
                         })
                       : 'Vacío'}
                   </Text>
+                  {cloud && (
+                    <Text style={styles.slotMeta} numberOfLines={1}>
+                      Nube: {formatCloudTimestamp(cloud.updatedAt)}
+                    </Text>
+                  )}
                   <View style={styles.slotActions}>
                     <Pressable style={styles.slotActionButton} onPress={() => handleSaveSlot(slot)}>
                       <Text style={styles.slotActionLabel}>Guardar</Text>
@@ -1615,7 +1691,15 @@ function App(): React.JSX.Element {
 
       {authToken && (
         <View style={styles.gameSaveRow}>
-          <Text style={styles.slotLabel}>Guardado del juego</Text>
+          <View style={{flex: 1}}>
+            <Text style={styles.slotLabel}>Guardado del juego</Text>
+            <Text style={styles.slotMeta} numberOfLines={1}>
+              {(() => {
+                const cloudSave = cloudSaves.find(s => s.slot === GAME_SAVE_CLOUD_SLOT);
+                return cloudSave ? `En la nube: ${formatCloudTimestamp(cloudSave.updatedAt)}` : 'Sin guardado en la nube';
+              })()}
+            </Text>
+          </View>
           <View style={styles.slotActions}>
             <Pressable
               style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusySlot === GAME_SAVE_CLOUD_SLOT && styles.slotActionButtonDisabled]}
@@ -1752,14 +1836,16 @@ function App(): React.JSX.Element {
               console/screen and lay out exactly as if it weren't there,
               no matter how big MAX_SCREEN_SCALE lets it grow. */}
           <View style={styles.portraitStage}>
-            <View style={[styles.consoleShell, {borderColor: controlStyle.shellBorder, backgroundColor: controlStyle.shellBackground}]}>
-              <View style={[styles.screenBezel, {backgroundColor: withAlpha(controlStyle.screenBezel, 0.55)}]}>{screenView}</View>
-              <View style={styles.speakerGrill}>
-                {[0, 1, 2, 3, 4].map(i => (
-                  <View key={i} style={[styles.speakerHole, {backgroundColor: controlStyle.shellBorder}]} />
-                ))}
+            <DraggableCluster id="screen" editing={editingControls} offset={controlLayout.offsets.screen} onDrag={handleDragCluster}>
+              <View style={[styles.consoleShell, {borderColor: controlStyle.shellBorder, backgroundColor: controlStyle.shellBackground}]}>
+                <View style={[styles.screenBezel, {backgroundColor: withAlpha(controlStyle.screenBezel, 0.55)}]}>{screenView}</View>
+                <View style={styles.speakerGrill}>
+                  {[0, 1, 2, 3, 4].map(i => (
+                    <View key={i} style={[styles.speakerHole, {backgroundColor: controlStyle.shellBorder}]} />
+                  ))}
+                </View>
               </View>
-            </View>
+            </DraggableCluster>
           </View>
 
           <View style={styles.topGroup}>
@@ -2067,6 +2153,7 @@ function GameControls({
 
   return (
     <View
+      style={styles.gameControlsRoot}
       onLayout={measureAll}
       onStartShouldSetResponder={() => !editing}
       onMoveShouldSetResponder={() => !editing}
@@ -2258,6 +2345,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#14151a',
   },
+  // Android stacks by elevation, not render order (see HomeScreen's own
+  // note on this, and updateBanner above) -- consoleShell's own shadow
+  // uses elevation:10, which without this would render it on top of the
+  // buttons regardless of paint order, covering them once the screen is
+  // scaled up enough to reach them.
+  gameControlsRoot: {elevation: 15},
   updateBanner: {
     position: 'absolute',
     left: 12,
