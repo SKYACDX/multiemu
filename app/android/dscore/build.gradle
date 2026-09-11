@@ -19,7 +19,11 @@ android {
         ndk {
             // Must match the ABIs third_party/melonds was prebuilt for --
             // see third_party/melonds/build-android-<abi>/ and
-            // docs/melonds-setup.md.
+            // docs/melonds-setup.md. JIT itself (JIT_ENABLED define,
+            // below) is only actually built into arm64-v8a's core.a --
+            // melonDS's JIT has no host backend for 32-bit ARM at all
+            // (CMakeLists.txt only adds ARMJIT_x64/* or ARMJIT_A64/*
+            // sources, nothing for armeabi-v7a).
             abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
         }
     }

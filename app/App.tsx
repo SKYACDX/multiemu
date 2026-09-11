@@ -2086,6 +2086,16 @@ function GameControls({
         next.forEach(id => {
           if (!prev.has(id)) dispatch(id, true);
         });
+        // onResponderMove fires on every touch movement, including the
+        // micro-movements of a finger just *held* on the d-pad -- and
+        // holding a direction is exactly what walking around in a game
+        // is. Returning `next` unconditionally hands React a fresh Set
+        // identity every time, so it re-renders this whole control tree
+        // dozens of times a second for nothing. Keeping `prev` when the
+        // pressed set is unchanged skips that entirely; on-device
+        // profiling (simpleperf) had the JS thread at ~21% of process
+        // CPU while walking, against ~56% for emulation itself.
+        if (prev.size === next.size && [...next].every(id => prev.has(id))) return prev;
         return next;
       });
     },
@@ -2094,6 +2104,7 @@ function GameControls({
 
   const releaseAll = useCallback(() => {
     setPressed(prev => {
+      if (prev.size === 0) return prev;
       prev.forEach(id => dispatch(id, false));
       return new Set();
     });
@@ -2645,9 +2656,12 @@ const styles = StyleSheet.create({
   // drawn (see isTouchOnButton), not the screen's size, so this no
   // longer needs to be shrunk to fix that.
   screenDs: {
+    // transparent, not '#000': DsView is a SurfaceView, and a background
+    // here is painted straight over the transparent hole it punches to
+    // let its own GL layer show through -- see DsView.kt's init block.
     width: 220,
     height: 330,
-    backgroundColor: '#000',
+    backgroundColor: 'transparent',
     borderRadius: 4,
   },
   // Same two 256x192 screens, laid out left/right by DsView's native
@@ -2656,7 +2670,7 @@ const styles = StyleSheet.create({
   screenDsLandscape: {
     width: 400,
     height: 150,
-    backgroundColor: '#000',
+    backgroundColor: 'transparent',
     borderRadius: 4,
   },
   speakerGrill: {

@@ -13,12 +13,21 @@
 #include <jni.h>
 
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <android/log.h>
+#include <unistd.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
+#include <EGL/egl.h>
+#include <GLES3/gl32.h>
+
 #include "Args.h"
 #include "GBACart.h"
+#include "GPU3D_OpenGL.h"
 #include "NDS.h"
 #include "NDSCart.h"
 #include "Savestate.h"
@@ -26,6 +35,78 @@
 using namespace melonDS;
 
 namespace {
+
+// One process-wide GLES context, plus whichever surface it's currently
+// drawing into. There are two kinds of surface here:
+//
+//  - a tiny pbuffer, used before DsView hands over a real Surface (and
+//    whenever it takes one away). Nothing is ever presented from it; it
+//    exists only because an EGL context needs *a* surface to be current,
+//    and melonDS still wants to render frames in the meantime.
+//  - a window surface wrapping DsView's SurfaceView. This is the real
+//    display path: the GL compositor's output gets blitted straight into
+//    it and swapped, with no CPU round trip (no glReadPixels, no Bitmap,
+//    no Canvas) -- see BlitOutputToScreen and nativeSetSurface.
+//
+// All of this is thread-bound: every one of these calls, and every GL
+// call in a frame, has to happen on the same OS thread (DsView's emu
+// thread). nativeSetSurface is therefore posted onto that thread rather
+// than called straight from the UI thread -- see DsView.kt.
+EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
+EGLContext g_eglContext = EGL_NO_CONTEXT;
+EGLConfig g_eglConfig = nullptr;
+EGLSurface g_pbufferSurface = EGL_NO_SURFACE;
+EGLSurface g_windowSurface = EGL_NO_SURFACE;
+ANativeWindow* g_nativeWindow = nullptr;
+
+bool EnsureGLContext() {
+    if (g_eglContext != EGL_NO_CONTEXT) return true;
+
+    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (display == EGL_NO_DISPLAY || !eglInitialize(display, nullptr, nullptr)) {
+        __android_log_print(ANDROID_LOG_ERROR, "melonDS", "GL renderer: eglGetDisplay/eglInitialize failed");
+        return false;
+    }
+
+    // WINDOW_BIT *and* PBUFFER_BIT: the same config has to serve both
+    // surface kinds, since the context is created once and then moved
+    // between them as DsView's Surface comes and goes.
+    const EGLint configAttribs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+        EGL_NONE,
+    };
+    EGLConfig config;
+    EGLint numConfigs = 0;
+    if (!eglChooseConfig(display, configAttribs, &config, 1, &numConfigs) || numConfigs == 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "melonDS", "GL renderer: eglChooseConfig failed");
+        return false;
+    }
+
+    const EGLint pbufferAttribs[] = {EGL_WIDTH, 4, EGL_HEIGHT, 4, EGL_NONE};
+    EGLSurface pbuffer = eglCreatePbufferSurface(display, config, pbufferAttribs);
+
+    const EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+    EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, contextAttribs);
+    if (!context || pbuffer == EGL_NO_SURFACE || !eglMakeCurrent(display, pbuffer, pbuffer, context)) {
+        __android_log_print(ANDROID_LOG_ERROR, "melonDS", "GL renderer: eglCreateContext/eglMakeCurrent failed");
+        return false;
+    }
+
+    g_eglDisplay = display;
+    g_eglConfig = config;
+    g_pbufferSurface = pbuffer;
+    g_eglContext = context;
+    // tid matters, not trivia: this context is bound to whichever thread
+    // got here first, and every later GL call (frames, nativeSetSurface)
+    // silently no-ops from any other one -- so it has to match the tid
+    // logged by the window-surface line below.
+    __android_log_print(
+        ANDROID_LOG_INFO, "melonDS", "GL renderer: context ready on tid %d, GL_VERSION: %s",
+        gettid(), glGetString(GL_VERSION));
+    return true;
+}
 
 // One emulated console + the bits Platform:: callbacks (ds_platform.cpp)
 // need out-of-band -- SRAM writeback goes through the cart's own
@@ -42,9 +123,51 @@ struct DsSession {
     // "not pressed". Same first-10-bit order as GbaButton (A, B, SELECT,
     // START, RIGHT, LEFT, UP, DOWN, R, L), with X/Y added at 10/11.
     u32 keyMask = 0xFFF;
+    // Set on the first nativeRunFrame call (see TryEnableGLRenderer) so
+    // the GL renderer is only ever attempted once per session, whether
+    // or not it actually succeeds.
+    bool glRendererAttempted = false;
+    // Both screens, already composited (2D+3D) by melonDS's own GL
+    // compositor -- see nativeRunFrame's comment on why this replaces
+    // PrepareCaptureFrame/GetLine for the accelerated renderer. RGBA8,
+    // 256 wide, resized to the compositor's actual output height (only
+    // used -- and only ever non-empty -- when accelerated).
+    std::vector<u8> compositedOutput;
 };
 
 DsSession* handleToSession(jlong handle) { return reinterpret_cast<DsSession*>(handle); }
+
+// Swaps in the OpenGL 3D renderer if a GLES context could be set up --
+// falls back to melonDS's default software renderer (already active,
+// nothing to undo) on any failure. See docs/melonds-setup.md.
+void TryEnableGLRenderer(DsSession* session) {
+    if (!EnsureGLContext()) return;
+
+    auto glRenderer = GLRenderer::New();
+    if (!glRenderer) {
+        __android_log_print(ANDROID_LOG_ERROR, "melonDS", "GL renderer: GLRenderer::New() failed, staying on software renderer");
+        return;
+    }
+    // ScaleFactor/ScreenW/ScreenH all default-construct to 0 (see
+    // GPU3D_OpenGL.h) -- a real frontend (e.g. melonDS's own Qt UI)
+    // always calls this explicitly from a user-facing render-scale
+    // setting, so without it every framebuffer/texture GLRenderer::New()
+    // allocated is sized 0x0 and nothing ever actually renders (a black
+    // screen -- the GPU has nothing to draw into, not a driver bug).
+    // Scale 1 = native 256x192, no supersampling upscale.
+    glRenderer->SetScaleFactor(1);
+    // GPU::SetRenderer3D (not GPU3D.SetCurrentRenderer directly!) --
+    // it also calls InitFramebuffers(), which resizes GPU::Framebuffer
+    // to the wider layout the accelerated path needs ((256*3+1)*192,
+    // vs plain 256*192 for software). Calling SetCurrentRenderer
+    // directly skips that resize, leaving Framebuffer allocated at the
+    // old, smaller size while GPU2D_Soft.cpp's DrawScanline (which
+    // doesn't care which renderer is active) keeps writing at the new,
+    // wider stride -- a heap-buffer-overflow past the smaller
+    // allocation, confirmed with ASan (see docs/melonds-setup.md).
+    session->nds->GPU.SetRenderer3D(std::move(glRenderer));
+    __android_log_print(ANDROID_LOG_INFO, "melonDS", "GL renderer: active");
+}
 
 // Reads an existing save file whole, if any -- ParseROM wants the
 // cart's initial SRAM contents up front, not lazily.
@@ -171,7 +294,120 @@ JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeDestroy(JNIEnv*, 
 }
 
 JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeRunFrame(JNIEnv*, jclass, jlong handle) {
-    handleToSession(handle)->nds->RunFrame();
+    auto* session = handleToSession(handle);
+    if (!session->glRendererAttempted) {
+        session->glRendererAttempted = true;
+        TryEnableGLRenderer(session);
+    }
+    session->nds->RunFrame();
+    // The accelerated renderer's real display path: GPU2D_Soft.cpp only
+    // calls GetLine() (and so only ever updates GPU::Framebuffer's 3D
+    // content) when the DS's own VRAM-capture hardware feature happens to
+    // be enabled (a CaptureCnt bit regular gameplay essentially never
+    // sets) -- confirmed by root-causing this exact bug: real polygons
+    // were being rendered every frame (RenderNumPolygons > 0) while the
+    // screen stayed solid black, because nothing was pulling that render
+    // off the GPU. The real path a frontend is supposed to use is
+    // melonDS's own GL compositor, which blends 2D+3D directly on the
+    // GPU every frame regardless of CaptureCnt (GPU::FinishFrame calls
+    // GPU3D.Blit(), unconditionally, whenever accelerated) -- so read
+    // *that* compositor's output instead. See GPU3D.h's ReadOutputScreen.
+    // With a window surface up, nativePresentFrame does the display work
+    // instead (straight GPU->screen); this CPU readback only runs for the
+    // Bitmap/Canvas fallback path, which is what's left when there's no
+    // Surface (e.g. the view isn't attached yet).
+    if (session->nds->GPU.GPU3D.IsRendererAccelerated() && g_windowSurface == EGL_NO_SURFACE) {
+        auto& renderer = session->nds->GPU.GPU3D.GetCurrentRenderer();
+        int width, height;
+        renderer.GetOutputSize(width, height);
+        session->compositedOutput.resize(static_cast<size_t>(width) * height * 4);
+        // Async, one frame behind (see GPU3D.h's comment) -- a false
+        // return (no frame landed yet) just leaves compositedOutput at
+        // whatever it already held, which is either last frame's still-
+        // valid image or (only ever on the very first call) zeroed/black.
+        renderer.ReadOutputScreen(session->nds->GPU.FrontBuffer, session->compositedOutput.data());
+    }
+}
+
+// Hands over (or takes away, with surface == null) the SurfaceView's
+// Surface. MUST run on the emu thread, same as every other GL call here
+// -- DsView posts it there rather than calling it from the UI thread.
+JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeSetSurface(
+    JNIEnv* env, jclass, jobject surface) {
+    if (!EnsureGLContext()) return;
+
+    // Drop whatever we had: a Surface can be replaced (rotation, resize)
+    // or destroyed, and the old EGLSurface/ANativeWindow are dead either
+    // way. Park the context on the pbuffer first so it never sits current
+    // on a surface that's about to be destroyed.
+    if (g_windowSurface != EGL_NO_SURFACE) {
+        eglMakeCurrent(g_eglDisplay, g_pbufferSurface, g_pbufferSurface, g_eglContext);
+        eglDestroySurface(g_eglDisplay, g_windowSurface);
+        g_windowSurface = EGL_NO_SURFACE;
+    }
+    if (g_nativeWindow) {
+        ANativeWindow_release(g_nativeWindow);
+        g_nativeWindow = nullptr;
+    }
+    if (!surface) return;
+
+    ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
+    if (!window) {
+        __android_log_print(ANDROID_LOG_ERROR, "melonDS", "GL renderer: ANativeWindow_fromSurface failed");
+        return;
+    }
+    EGLSurface eglSurface = eglCreateWindowSurface(g_eglDisplay, g_eglConfig, window, nullptr);
+    if (eglSurface == EGL_NO_SURFACE || !eglMakeCurrent(g_eglDisplay, eglSurface, eglSurface, g_eglContext)) {
+        __android_log_print(ANDROID_LOG_ERROR, "melonDS",
+                            "GL renderer: eglCreateWindowSurface/eglMakeCurrent failed on tid %d (0x%x)",
+                            gettid(), eglGetError());
+        ANativeWindow_release(window);
+        return;
+    }
+    // Don't block the emu loop waiting on the display's vsync: the loop
+    // does its own pacing (see DsView's frameRunnable) and a frame here
+    // routinely costs more than one refresh interval anyway, so swapping
+    // with an interval of 1 would just reintroduce the stall this whole
+    // path exists to remove.
+    eglSwapInterval(g_eglDisplay, 0);
+
+    g_nativeWindow = window;
+    g_windowSurface = eglSurface;
+    __android_log_print(ANDROID_LOG_INFO, "melonDS", "GL renderer: window surface ready on tid %d (%dx%d)",
+                        gettid(), ANativeWindow_getWidth(window), ANativeWindow_getHeight(window));
+}
+
+// Draws the frame straight from the GL compositor's output to the window
+// surface. Rects are top-left-origin pixels in surface space (DsView
+// computes the same letterboxed rects it used to pass to Canvas).
+// Returns false if there's no window surface, in which case the caller
+// should fall back to the Bitmap/Canvas path.
+JNIEXPORT jboolean JNICALL Java_com_multiemu_dscore_DsNative_nativePresentFrame(
+    JNIEnv*, jclass, jlong handle,
+    jint topX, jint topY, jint topW, jint topH,
+    jint botX, jint botY, jint botW, jint botH,
+    jint surfaceWidth, jint surfaceHeight) {
+    if (g_windowSurface == EGL_NO_SURFACE) return JNI_FALSE;
+    auto* session = handleToSession(handle);
+    if (!session->nds->GPU.GPU3D.IsRendererAccelerated()) return JNI_FALSE;
+
+    glViewport(0, 0, surfaceWidth, surfaceHeight);
+    session->nds->GPU.GPU3D.GetCurrentRenderer().BlitToScreen(
+        session->nds->GPU.FrontBuffer, topX, topY, topW, topH, botX, botY, botW, botH, surfaceHeight);
+    // A failed blit is invisible otherwise: the clear inside BlitToScreen
+    // still runs, so the symptom is a plain black screen with the
+    // emulator apparently running fine. Only the first few frames -- this
+    // is a bring-up check, not a per-frame cost.
+    static int errorChecksLeft = 3;
+    if (errorChecksLeft > 0) {
+        errorChecksLeft--;
+        GLenum err = glGetError();
+        __android_log_print(err == GL_NO_ERROR ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, "melonDS",
+                            "GL renderer: present glGetError=0x%x surface=%dx%d top=%d,%d %dx%d bot=%d,%d %dx%d",
+                            err, surfaceWidth, surfaceHeight, topX, topY, topW, topH, botX, botY, botW, botH);
+    }
+    eglSwapBuffers(g_eglDisplay, g_windowSurface);
+    return JNI_TRUE;
 }
 
 JNIEXPORT jint JNICALL Java_com_multiemu_dscore_DsNative_nativeGetWidth(JNIEnv*, jclass) { return 256; }
@@ -186,9 +422,38 @@ JNIEXPORT jint JNICALL Java_com_multiemu_dscore_DsNative_nativeGetHeight(JNIEnv*
 // per-pixel conversion needed (unlike gba_jni.cpp's toArgb8888).
 JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeGetFramebuffer(
     JNIEnv* env, jclass, jlong handle, jint screen, jintArray outPixels) {
-    NDS& nds = *handleToSession(handle)->nds;
-    const u32* buf = nds.GPU.Framebuffer[nds.GPU.FrontBuffer][screen].get();
-    env->SetIntArrayRegion(outPixels, 0, 256 * 192, reinterpret_cast<const jint*>(buf));
+    auto* session = handleToSession(handle);
+    NDS& nds = *session->nds;
+    if (!nds.GPU.GPU3D.IsRendererAccelerated()) {
+        const u32* buf = nds.GPU.Framebuffer[nds.GPU.FrontBuffer][screen].get();
+        env->SetIntArrayRegion(outPixels, 0, 256 * 192, reinterpret_cast<const jint*>(buf));
+        return;
+    }
+    // session->compositedOutput (filled every frame in nativeRunFrame) is
+    // both screens already composited by melonDS's own GL shader, stacked
+    // top-then-bottom with a small padding gap between them -- see
+    // GLCompositor's vertex layout (GPU_OpenGL.cpp) -- 256 wide, so row
+    // r starts at byte r*256*4. Row 0 is the top of the top screen (no
+    // vertical flip needed -- confirmed visually, not just from reading
+    // the vertex math, while root-causing this). The compositor shader
+    // already re-expands from the DS's native 6-bit precision to 8-bit as
+    // its last step, so only the channel order needs handling here: it
+    // writes R,G,B,A in memory (we changed its swizzle from upstream's
+    // .bgr so the direct GPU->window blit in BlitOutputToScreen lands the
+    // right way round -- see GPU_OpenGL_shaders.h), while a
+    // Bitmap.Config.ARGB_8888 int wants B,G,R,A. Hence the swap, which
+    // upstream's ordering used to give for free. Only the
+    // no-window-surface fallback reaches this, so the per-pixel cost
+    // never lands on the normal path.
+    constexpr int kBottomScreenRowOffset = 192 + 2;  // top screen + 2-row padding gap
+    int rowOffset = (screen == 0) ? 0 : kBottomScreenRowOffset;
+    const u32* buf = reinterpret_cast<const u32*>(session->compositedOutput.data()) + rowOffset * 256;
+    jint argb[256 * 192];
+    for (int i = 0; i < 256 * 192; i++) {
+        u32 px = buf[i];
+        argb[i] = static_cast<jint>((px & 0xFF00FF00u) | ((px & 0xFFu) << 16) | ((px >> 16) & 0xFFu));
+    }
+    env->SetIntArrayRegion(outPixels, 0, 256 * 192, argb);
 }
 
 // buttonBit must match DsButton's ordinal (see DsNative.kt) -- same

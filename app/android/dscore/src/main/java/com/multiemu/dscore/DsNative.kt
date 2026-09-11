@@ -1,5 +1,7 @@
 package com.multiemu.dscore
 
+import android.view.Surface
+
 /**
  * Thin Kotlin wrapper around melonDS's core (see ds_jni.cpp/ds_platform.cpp).
  * Mirrors GbaNative's one-instance-per-native-object shape, doubled for
@@ -37,6 +39,19 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
             return DsNative(handle)
         }
 
+        /**
+         * Hands the SurfaceView's Surface (or null, when it goes away) to
+         * the native GL layer, which wraps it in an EGL window surface so
+         * frames can be blitted GPU->screen with no CPU round trip -- see
+         * ds_jni.cpp's nativeSetSurface. Process-global, not per-session
+         * (the GL context is), so it takes no handle and stays valid
+         * across ROM loads. MUST be called on the same thread that runs
+         * frames: an EGL context is thread-bound.
+         */
+        fun setSurface(surface: Surface?) = nativeSetSurface(surface)
+
+        @JvmStatic private external fun nativeSetSurface(surface: Surface?)
+
         @JvmStatic private external fun nativeCreate(rom: ByteArray, savePath: String?): Long
         @JvmStatic private external fun nativeCreateFromPath(romPath: String, savePath: String?): Long
         @JvmStatic private external fun nativeDestroy(handle: Long)
@@ -44,6 +59,12 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeGetWidth(): Int
         @JvmStatic private external fun nativeGetHeight(): Int
         @JvmStatic private external fun nativeGetFramebuffer(handle: Long, screen: Int, outPixels: IntArray)
+        @JvmStatic private external fun nativePresentFrame(
+            handle: Long,
+            topX: Int, topY: Int, topW: Int, topH: Int,
+            botX: Int, botY: Int, botW: Int, botH: Int,
+            surfaceWidth: Int, surfaceHeight: Int,
+        ): Boolean
         @JvmStatic private external fun nativeSetButtonPressed(handle: Long, buttonId: Int, pressed: Boolean)
         @JvmStatic private external fun nativeTouchScreen(handle: Long, x: Int, y: Int)
         @JvmStatic private external fun nativeReleaseScreen(handle: Long)
@@ -69,6 +90,29 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
         check(handle != 0L) { "DsNative used after close()" }
         nativeGetFramebuffer(handle, 0, topFramebuffer)
         nativeGetFramebuffer(handle, 1, bottomFramebuffer)
+    }
+
+    /**
+     * Draws the frame straight from the GL compositor to the window
+     * surface handed over by [setSurface], skipping the whole
+     * GPU->CPU->Bitmap->Canvas path [readFramebuffers] feeds. Rects are
+     * top-left-origin pixels in surface space. Returns false when there's
+     * no window surface (or the software renderer is active), in which
+     * case the caller has to fall back to that CPU path.
+     */
+    fun presentFrame(
+        top: android.graphics.Rect,
+        bottom: android.graphics.Rect,
+        surfaceWidth: Int,
+        surfaceHeight: Int,
+    ): Boolean {
+        check(handle != 0L) { "DsNative used after close()" }
+        return nativePresentFrame(
+            handle,
+            top.left, top.top, top.width(), top.height(),
+            bottom.left, bottom.top, bottom.width(), bottom.height(),
+            surfaceWidth, surfaceHeight,
+        )
     }
 
     fun setButtonPressed(button: DsButton, pressed: Boolean) {

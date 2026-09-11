@@ -11,16 +11,21 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
+import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.Process
-import android.view.Choreographer
 import android.view.MotionEvent
-import android.view.View
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import java.io.File
 
 /**
- * NDS equivalent of GbaView: owns one [DsNative] instance, drives it via
- * [Choreographer], and paints both screens stacked top (game) / bottom
+ * NDS equivalent of GbaView: owns one [DsNative] instance, drives it from
+ * a self-paced loop on its own thread (see frameRunnable -- deliberately
+ * not vsync/Choreographer-driven, unlike GbaView, because a single NDS
+ * frame can cost more than one vsync interval), and paints both screens
+ * stacked top (game) / bottom
  * (touch), each letterboxed to its native 256x192 aspect ratio -- same
  * split as GbaLinkView's top/bottom halves, just one console instead of
  * two. The bottom half doubles as the touch screen: this view handles
@@ -28,7 +33,21 @@ import java.io.File
  * touch-screen space) rather than routing it through JS, since the
  * exact scaled rect is already computed here for drawing.
  */
-class DsView(context: Context) : View(context) {
+class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
+
+    // Surface dimensions, written from the surface callbacks (UI thread)
+    // and read by the emu thread each frame -- volatile so the emu thread
+    // isn't reading a stale or half-updated pair.
+    @Volatile private var surfaceWidth = 0
+    @Volatile private var surfaceHeight = 0
+    @Volatile private var hasSurface = false
+
+    // Cleared for this session the first time presentFrame reports it
+    // can't draw (no GL compositor -- i.e. the GL renderer failed to come
+    // up and melonDS is on its software renderer), which switches the
+    // display over to the Canvas fallback below for good. The two can't
+    // share a Surface: EGL owns it, or lockCanvas does.
+    @Volatile private var useGlPresent = true
 
     @Volatile private var ds: DsNative? = null
     private var topBitmap: Bitmap? = null
@@ -58,21 +77,76 @@ class DsView(context: Context) : View(context) {
     // frame while the emu thread finishes the frame it's mid-way through.
     private val dsLock = Any()
     private var emuThread: HandlerThread? = null
+    private var emuHandler: Handler? = null
+
+    init {
+        holder.addCallback(this)
+        // The on-screen controls (and the title bar) are React Native
+        // views laid out *over* this one, and a z-ordered-on-top surface
+        // would bury them. Media overlay keeps this layer below the
+        // window, which shows through the transparent hole SurfaceView
+        // punches in it -- which is also why App.tsx's screenDs style
+        // must stay backgroundColor:'transparent'. An opaque background
+        // there is repainted over that hole by View.draw() and hides the
+        // frames completely (they still reach the window's back buffer,
+        // so nothing errors -- it just goes black).
+        setZOrderMediaOverlay(true)
+    }
 
     private val audioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_GAME)
         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
         .build()
 
-    private val frameCallback = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
+    // Frame-timing diagnostic (logged once a second): tells CPU-bound
+    // (avgWork over budget) apart from pacing-bound (work fits, frames
+    // still late). Cheap enough to leave in.
+    private var statWorkNanos = 0L
+    private var statFrames = 0
+    private var statWindowStart = 0L
+
+    // The DS runs at ~59.8237Hz, not the display's 60 -- this is that
+    // period, which is what the emulation is paced against below.
+    private val frameIntervalNanos = (1_000_000_000.0 / 59.8237).toLong()
+    private var nextFrameTargetNanos = 0L
+
+    // Self-paced, NOT Choreographer/vsync-driven. Emulating one frame of
+    // a 3D-heavy NDS scene costs well over one 16.6ms vsync interval on
+    // this class of device (measured ~36ms), and a vsync-driven callback
+    // can only ever start work on a vsync boundary -- so 36ms of work
+    // waits out a *third* interval (50ms) and ~14ms per frame is spent
+    // idle, pinning the emulator to exactly 60/3 = 20fps. Pacing against
+    // the DS's own frame period instead runs those same 36ms back to
+    // back for ~28fps, and makes every future millisecond saved show up
+    // as fps instead of being rounded away by vsync quantization.
+    private val frameRunnable = object : Runnable {
+        override fun run() {
+            if (!running) return
+            val workStart = System.nanoTime()
             if (!pausedByModal) {
                 synchronized(dsLock) {
                     ds?.let { instance ->
                         instance.runFrame()
-                        instance.readFramebuffers()
-                        topBitmap?.setPixels(instance.topFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
-                        bottomBitmap?.setPixels(instance.bottomFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
+
+                        // Straight GPU->screen when there's a window
+                        // surface and a GL compositor behind it: no
+                        // readback, no int[] copy across JNI, no Bitmap,
+                        // no Canvas, and no work handed to the UI thread.
+                        val presented = hasSurface && useGlPresent &&
+                            instance.presentFrame(topScreenRect(), bottomScreenRect(), surfaceWidth, surfaceHeight)
+                        if (!presented) {
+                            if (hasSurface && useGlPresent) {
+                                // Software renderer (no compositor to read
+                                // from) -- hand the Surface back so
+                                // lockCanvas can have it instead.
+                                useGlPresent = false
+                                DsNative.setSurface(null)
+                            }
+                            instance.readFramebuffers()
+                            topBitmap?.setPixels(instance.topFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
+                            bottomBitmap?.setPixels(instance.bottomFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
+                            drawBitmapsToSurface()
+                        }
 
                         val frames = instance.readAudioSamples(audioBuffer)
                         if (frames > 0) {
@@ -80,9 +154,37 @@ class DsView(context: Context) : View(context) {
                         }
                     }
                 }
-                post { invalidate() }
+
+                statWorkNanos += System.nanoTime() - workStart
+                statFrames++
+                if (statWindowStart == 0L) statWindowStart = workStart
+                val elapsed = workStart - statWindowStart
+                if (elapsed >= 1_000_000_000L) {
+                    val avgMs = (statWorkNanos / statFrames) / 1_000_000.0
+                    val fps = statFrames * 1_000_000_000.0 / elapsed
+                    android.util.Log.i(
+                        "DsPerf",
+                        "fps=%.1f avgWork=%.2fms busy=%.0f%%".format(fps, avgMs, statWorkNanos * 100.0 / elapsed),
+                    )
+                    statWorkNanos = 0
+                    statFrames = 0
+                    statWindowStart = workStart
+                }
             }
-            if (running) Choreographer.getInstance().postFrameCallback(this)
+
+            val now = System.nanoTime()
+            nextFrameTargetNanos += frameIntervalNanos
+            // Running behind (the normal case on a 3D-heavy scene): give
+            // up on catching up -- re-anchoring to now instead of letting
+            // the deficit accumulate keeps this from spinning through a
+            // burst of catch-up frames the moment the scene gets cheap
+            // again, which would play back as a speed-up glitch.
+            if (nextFrameTargetNanos < now) {
+                nextFrameTargetNanos = now
+                emuHandler?.post(this)
+            } else {
+                emuHandler?.postDelayed(this, (nextFrameTargetNanos - now) / 1_000_000L)
+            }
         }
     }
 
@@ -151,18 +253,37 @@ class DsView(context: Context) : View(context) {
         audioTrack?.play()
     }
 
+    /**
+     * Runs [block] on the emu thread. Every GL call in this class has to
+     * go through here: an EGL context is bound to exactly one thread, and
+     * the one that matters is the thread running frames. Creating the
+     * emulator elsewhere (RN delivers loadRom* on the UI thread) makes
+     * ds_jni.cpp's EnsureGLContext bind the context *there*, leaving the
+     * emu thread with no current context -- every subsequent GL call,
+     * including nativeSetSurface's eglMakeCurrent, then silently does
+     * nothing. Falls back to running inline before the thread exists.
+     */
+    private fun onEmuThread(block: () -> Unit) {
+        val handler = emuHandler
+        if (handler == null || Looper.myLooper() === handler.looper) block() else handler.post(block)
+    }
+
     /** romId (e.g. the ROM's CRC32) keys its save file -- pass null to skip persistence. Only for small (e.g. homebrew) ROMs -- see loadRomFromPath. */
-    fun loadRom(rom: ByteArray, romId: String?) = synchronized(dsLock) {
-        ds?.close()
-        stopAudio()
-        afterLoad(DsNative.load(rom, savePathFor(romId)))
+    fun loadRom(rom: ByteArray, romId: String?) = onEmuThread {
+        synchronized(dsLock) {
+            ds?.close()
+            stopAudio()
+            afterLoad(DsNative.load(rom, savePathFor(romId)))
+        }
     }
 
     /** Reads the ROM straight off disk -- see DsNative.loadFromPath. This is the path a real (128-512MB) NDS ROM should take. */
-    fun loadRomFromPath(romPath: String, romId: String?) = synchronized(dsLock) {
-        ds?.close()
-        stopAudio()
-        afterLoad(DsNative.loadFromPath(romPath, savePathFor(romId)))
+    fun loadRomFromPath(romPath: String, romId: String?) = onEmuThread {
+        synchronized(dsLock) {
+            ds?.close()
+            stopAudio()
+            afterLoad(DsNative.loadFromPath(romPath, savePathFor(romId)))
+        }
     }
 
     fun setButtonPressed(button: DsButton, pressed: Boolean) = synchronized(dsLock) {
@@ -200,23 +321,39 @@ class DsView(context: Context) : View(context) {
         val thread = HandlerThread("DsEmuThread", Process.THREAD_PRIORITY_URGENT_DISPLAY)
         thread.start()
         emuThread = thread
-        android.os.Handler(thread.looper).post { Choreographer.getInstance().postFrameCallback(frameCallback) }
+        val handler = Handler(thread.looper)
+        emuHandler = handler
+        nextFrameTargetNanos = System.nanoTime()
+        // The Surface can already exist by the time the emu thread does
+        // (surfaceCreated fires on attach, and it had no handler to post
+        // to then) -- hand it over now if so.
+        if (hasSurface && useGlPresent) {
+            val surface = holder.surface
+            handler.post { DsNative.setSurface(surface) }
+        }
+        handler.post(frameRunnable)
         DsEmulatorControlModule.activeDs = this
     }
 
     override fun onDetachedFromWindow() {
         running = false
-        // quit() (not quitSafely()) drops any not-yet-dispatched frame
-        // callback outright, then join() waits out whatever doFrame() call
-        // is already in flight -- only once that's guaranteed finished is
-        // it safe to close() the native handle below without racing it.
-        emuThread?.quit()
+        // Tear the emulator down *on the emu thread*: ~NDS destroys the
+        // GLRenderer, whose glDelete* calls only do anything on the thread
+        // the context is current on (see onEmuThread). quitSafely (not
+        // quit) so this already-due message still gets dispatched -- the
+        // frame callback, if one is due too, sees running == false and
+        // returns immediately.
+        emuHandler?.post {
+            synchronized(dsLock) {
+                ds?.close()
+                ds = null
+            }
+            stopAudio()
+        }
+        emuThread?.quitSafely()
         emuThread?.join()
         emuThread = null
-        synchronized(dsLock) {
-            ds?.close()
-            ds = null
-        }
+        emuHandler = null
         stopAudio()
         if (DsEmulatorControlModule.activeDs === this) DsEmulatorControlModule.activeDs = null
         super.onDetachedFromWindow()
@@ -229,16 +366,60 @@ class DsView(context: Context) : View(context) {
     // screens down to a sliver.
     private fun isSideBySide(): Boolean = width > height
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        synchronized(dsLock) {
-            val top = topBitmap
-            val bottom = bottomBitmap
-            if (top != null && bottom != null) {
-                val srcRect = Rect(0, 0, top.width, top.height)
-                canvas.drawBitmap(top, srcRect, topScreenRect(), paint)
-                canvas.drawBitmap(bottom, srcRect, bottomScreenRect(), paint)
+    // Fallback display path, only used when there's no GL compositor to
+    // present from (see useGlPresent). A SurfaceView's content doesn't go
+    // through View.onDraw at all -- it's a separate layer -- so this locks
+    // the Surface's own Canvas instead. Called on the emu thread, already
+    // holding dsLock.
+    private fun drawBitmapsToSurface() {
+        if (!hasSurface) return
+        val top = topBitmap ?: return
+        val bottom = bottomBitmap ?: return
+        val canvas = try {
+            holder.lockCanvas()
+        } catch (e: IllegalStateException) {
+            null
+        } ?: return
+        try {
+            canvas.drawColor(android.graphics.Color.BLACK)
+            val srcRect = Rect(0, 0, top.width, top.height)
+            canvas.drawBitmap(top, srcRect, topScreenRect(), paint)
+            canvas.drawBitmap(bottom, srcRect, bottomScreenRect(), paint)
+        } finally {
+            holder.unlockCanvasAndPost(canvas)
+        }
+    }
+
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        // The EGL window surface has to be created on the emu thread (EGL
+        // is thread-bound), so hand it over there rather than here.
+        val surface = holder.surface
+        hasSurface = true
+        emuHandler?.post { if (useGlPresent) DsNative.setSurface(surface) }
+    }
+
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        surfaceWidth = width
+        surfaceHeight = height
+        val surface = holder.surface
+        // Re-wrap: a resize hands out a new buffer geometry, and the old
+        // EGLSurface is stale.
+        emuHandler?.post { if (useGlPresent) DsNative.setSurface(surface) }
+    }
+
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        hasSurface = false
+        // Block until the emu thread has actually let go of the Surface:
+        // returning from here while it still holds an EGLSurface on a
+        // destroyed window is a crash.
+        val handler = emuHandler
+        if (handler != null) {
+            val done = java.util.concurrent.CountDownLatch(1)
+            handler.post {
+                DsNative.setSurface(null)
+                done.countDown()
             }
+            done.await(1, java.util.concurrent.TimeUnit.SECONDS)
         }
     }
 
