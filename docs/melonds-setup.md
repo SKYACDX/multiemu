@@ -8,42 +8,70 @@ apply to any distribution of a build that includes it).
 dscore links against melonDS's `libcore.a` the same way gbacore links
 against mGBA's `libmgba.a` -- see `app/android/dscore/src/main/cpp/`.
 
-Clone at the pinned tag:
+## Getting the source
+
+`third_party/` is gitignored, so this tree is **not** versioned with the
+app -- our changes to it live as a patch under `patches/melonds/`
+instead. Clone at the pinned tag and apply it:
 
 ```bash
 git clone --depth 1 --branch 1.1 https://github.com/melonDS-emu/melonDS.git third_party/melonds
+git -C third_party/melonds am ../../patches/melonds/*.patch
 ```
 
-Then, for each ABI dscore builds for (arm64-v8a, armeabi-v7a, x86_64),
-configure and build just the `core` static lib (no Qt/SDL frontend, no
-GL renderer, no JIT, no GDB stub -- see below for why):
+That patch is one commit against tag 1.1 covering everything dscore
+needs from the core: GLES portability, the window-surface display path,
+the compositor's colour order, and VRAM dirty-tracked texture uploads.
+Its own commit message explains each group. Regenerate it after changing
+the vendored source:
 
 ```bash
-cmake -GNinja -S third_party/melonds -B third_party/melonds/build-android-<ABI> \
-  -DCMAKE_MAKE_PROGRAM=<path-to-ninja> \
-  -DCMAKE_TOOLCHAIN_FILE=<NDK>/build/cmake/android.toolchain.cmake \
-  -DANDROID_ABI=<ABI> -DANDROID_PLATFORM=android-24 \
-  -DBUILD_QT_SDL=OFF -DENABLE_OGLRENDERER=OFF -DENABLE_GDBSTUB=OFF -DENABLE_JIT=OFF \
-  -DCMAKE_BUILD_TYPE=Release
+git -C third_party/melonds format-patch <upstream-base>..HEAD --stdout > patches/melonds/0001-multiemu-android.patch
+```
+
+## Building
+
+For each ABI dscore builds for, configure and build just the `core`
+static lib (no Qt/SDL frontend, no GDB stub):
+
+```bash
+cmake -GNinja -S third_party/melonds -B third_party/melonds/build-android-<ABI>   -DCMAKE_MAKE_PROGRAM=<path-to-ninja>   -DCMAKE_TOOLCHAIN_FILE=<NDK>/build/cmake/android.toolchain.cmake   -DANDROID_ABI=<ABI> -DANDROID_PLATFORM=android-24   -DBUILD_QT_SDL=OFF -DENABLE_GDBSTUB=OFF -DENABLE_OGLRENDERER=ON   -DENABLE_JIT=<ON for arm64-v8a, OFF otherwise>   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=<ON for arm64-v8a, OFF otherwise>   -DCMAKE_BUILD_TYPE=Release
 
 cmake --build third_party/melonds/build-android-<ABI> --target core
 ```
 
-Notes on the flags:
+Gradle does **not** drive this -- the core is prebuilt out-of-band and
+imported as a prebuilt `.a` (see dscore's CMakeLists.txt), so editing
+anything under `third_party/melonds/src/` needs this rebuild before
+`assembleDebug`/`assembleRelease` picks it up.
+
+Two flags differ per ABI:
+
+- **`ENABLE_JIT`: arm64-v8a only.** melonDS ships JIT host backends for
+  x86-64 and AArch64 only (`ARMJIT_x64/`, `ARMJIT_A64/`) -- there is no
+  32-bit ARM backend at all, so armeabi-v7a does not compile with it on.
+  x86_64 is the emulator rather than a real device, so it isn't worth
+  the rebuild. dscore repeats a matching `JIT_ENABLED` define per ABI;
+  the two must agree or `sizeof(NDS)` differs between translation units
+  (see that CMakeLists.txt -- it was a real heap corruption).
+- **`CMAKE_INTERPROCEDURAL_OPTIMIZATION` (ThinLTO): arm64-v8a only.** On
+  armeabi-v7a and x86_64 it fails to link, `__tls_get_addr` undefined.
+
+Notes on the other flags:
 
 - **`-GNinja` is required.** CMake's default generator on Windows is
   Visual Studio, which does not cross-compile correctly against the NDK
   toolchain file -- Gradle's own CMake integration always uses Ninja
   internally, so this matches that. The Android SDK's `cmake` package
   ships a `ninja` binary alongside `cmake` if one isn't on PATH.
-- **`ENABLE_JIT=OFF`**: melonDS's JIT recompiles guest ARM code to host
-  machine code at runtime: fast, but a correctness- and stability-risk
-  multiplier on a brand-new integration. Interpreter-only first; JIT can
-  be revisited once a ROM is confirmed booting and playable.
-- **`ENABLE_OGLRENDERER=OFF`**: software 3D renderer only for now, same
-  reasoning -- fewer moving parts while bringing this up. melonDS's
-  software renderer is what real hardware output looks like pixel-for-
-  pixel-ish; OpenGL is a (faster, less accurate) upgrade path.
+> **Both of the decisions recorded further down were later reversed.**
+> The sections titled "left `ENABLE_JIT=OFF`" and "left
+> `ENABLE_OGLRENDERER=OFF`" are kept as the record of what went wrong on
+> the first attempt, but both are ON for arm64-v8a now. The JIT failure
+> was never a melonDS bug -- it was the `sizeof(NDS)` ODR mismatch
+> described above -- and the GL renderer needed the GLES portability
+> fixes and the display path that now live in `patches/melonds/`.
+
 - `teakra` (DSi DSP emulation) is vendored inside melonDS's own source
   tree (`third_party/melonds/src/teakra/`), not a separate clone -- it
   builds automatically as part of the `core` target and produces its own

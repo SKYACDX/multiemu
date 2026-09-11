@@ -15,8 +15,13 @@ build/
 node_modules/
 .DS_Store
 
-# Vendored external deps -- reproducible from third_party/README.md,
-# not worth bloating the repo with a full C source tree + prebuilt libs.
+# Vendored external deps -- not worth bloating the repo with full C
+# source trees + prebuilt libs. Reproducible from docs/mgba-setup.md and
+# docs/melonds-setup.md, which pin the upstream tag and the exact
+# configure flags. melonDS is *not* used unmodified: our changes to it
+# are versioned as patches/melonds/*.patch, applied on top of that tag
+# -- so anything edited under third_party/melonds/src/ has to be folded
+# back into that patch or it is lost with this directory.
 /third_party/
 
 # RomHack Hub admin bearer token for publishing the app listing -- never commit.

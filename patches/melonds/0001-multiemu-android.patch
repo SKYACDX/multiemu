@@ -1,0 +1,1514 @@
+From b3fbab006cbd2cfca4cdc229dc14540a4cd86b17 Mon Sep 17 00:00:00 2001
+From: WilbertACDX <115293547+WilbertACDX@users.noreply.github.com>
+Date: Fri, 11 Sep 2026 16:39:47 -0600
+Subject: [PATCH] Android/GLES port: window-surface display path, colour order,
+ VRAM dirty uploads
+
+Patches the vendored core for multiemu's Android frontend (arm64, GLES
+3.2 on an Adreno 610). Grouped by what they fix:
+
+GLES portability
+- GPU3D_OpenGL.cpp: GL_UNSIGNED_SHORT_1_5_5_5_REV doesn't exist in GLES
+  and silently no-ops the palette upload, so unpack ABGR1555 on the CPU
+  and upload as GL_UNSIGNED_BYTE instead.
+- GPU3D_OpenGL_shaders.h: usampler2D has no default precision in GLES;
+  Adreno tolerated the omission, ANGLE correctly rejected it.
+- Assorted MSVC-portability fixes (DSi_DSP, DSi_AES, ARCodeFile,
+  ARDatabaseDAT, DSi_NWifi, GPU2D_Soft, GPU3D, NonStupidBitfield, SPU)
+  so the same tree builds for the desktop RenderDoc harness used to
+  debug all of the above.
+
+Display path
+- GPU_OpenGL: BlitOutputToScreen blits the compositor's output straight
+  to the bound window surface, replacing a
+  glReadPixels -> JNI int[] -> Bitmap -> Canvas round trip per frame.
+  ReadOutputScreenAsync keeps that CPU path alive as a fallback, but via
+  a PBO so it no longer stalls the CPU behind the GPU.
+- GPU3D.h/GPU3D_OpenGL.h: the virtuals the frontend needs to reach both.
+- GPU_OpenGL_shaders.h: the compositor's final swizzle is .rgb, not
+  upstream's .bgr. Upstream only ever samples that texture; we blit it to
+  an RGBA8 window, where .bgr lands red and blue crossed (a blue sky
+  renders orange).
+
+Performance
+- GPU3D_OpenGL.cpp: do what upstream's own
+  "SUCKY!!! TODO: detect when VRAM blocks are modified!" asks for. It
+  re-uploaded all 4x128K of texture VRAM plus 6 CPU-unpacked palette
+  blocks every 3D frame -- ~700K of texture traffic per frame, measured
+  as the largest single block of driver time in the emulation thread
+  (23.6% of it, simpleperf on device). The tracking already exists and
+  the software renderer already uses it (VRAMDirty + DeriveState, 512
+  byte granularity), so use it here too and skip untouched blocks.
+
+Measured on a CMA-LX3 (Adreno 610) walking around outdoors in Pokemon
+SoulSilver: 21fps -> 56-57fps, 36ms -> 15.7ms per frame.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/ARCodeFile.cpp         |  55 ++++++++++---------
+ src/ARDatabaseDAT.cpp      |  14 +++--
+ src/ARMJIT_Memory.cpp      |   9 +++
+ src/CMakeLists.txt         |  28 +++++++++-
+ src/DSi_AES.h              |  12 +++-
+ src/DSi_DSP.cpp            |  37 ++++++++-----
+ src/DSi_DSP.h              |  13 +++++
+ src/DSi_NWifi.cpp          |   6 +-
+ src/GPU.cpp                |  25 +++++++--
+ src/GPU2D_Soft.cpp         |  10 +++-
+ src/GPU3D.cpp              |   9 ++-
+ src/GPU3D.h                |  25 +++++++++
+ src/GPU3D_OpenGL.cpp       | 110 +++++++++++++++++++++++++++++++++----
+ src/GPU3D_OpenGL.h         |  16 ++++++
+ src/GPU3D_OpenGL_shaders.h | 104 ++++++++++++++++++++---------------
+ src/GPU_OpenGL.cpp         | 110 ++++++++++++++++++++++++++++++++++++-
+ src/GPU_OpenGL.h           |  34 ++++++++++++
+ src/GPU_OpenGL_shaders.h   |  54 ++++++++++++------
+ src/NonStupidBitfield.h    |  14 +++++
+ src/OpenGLSupport.cpp      |   9 +--
+ src/SPU.cpp                |   9 ++-
+ 21 files changed, 568 insertions(+), 135 deletions(-)
+
+diff --git a/src/ARCodeFile.cpp b/src/ARCodeFile.cpp
+index df6d26e..820b6ca 100644
+--- a/src/ARCodeFile.cpp
++++ b/src/ARCodeFile.cpp
+@@ -136,12 +136,13 @@ bool ARCodeFile::Load()
+             isincode = false;
+             isincat = true;
+ 
++            // Positional, not designated -- see ARDatabaseDAT.cpp's identical note.
+             ARCodeCat cat = {
+-                .Parent = &RootCat,
+-                .Name = catname,
+-                .Description = "",
+-                .OnlyOneCodeEnabled = onlyone!=0,
+-                .Children = {}
++                &RootCat,
++                catname,
++                "",
++                onlyone!=0,
++                {}
+             };
+             RootCat.Children.emplace_back(cat);
+             curcat = &std::get<ARCodeCat>(RootCat.Children.back());
+@@ -171,12 +172,13 @@ bool ARCodeFile::Load()
+ 
+             isincode = true;
+ 
++            // Positional, not designated -- see ARDatabaseDAT.cpp's identical note.
+             ARCode code = {
+-                .Parent = curcat,
+-                .Name = codename,
+-                .Description = "",
+-                .Enabled = enable!=0,
+-                .Code = {}
++                curcat,
++                codename,
++                "",
++                enable!=0,
++                {}
+             };
+             curcat->Children.emplace_back(code);
+             curcode = &std::get<ARCode>(curcat->Children.back());
+@@ -324,12 +326,13 @@ void ARCodeFile::Import(ARDatabaseEntry& dbentry, ARCodeEnableMap& enablemap, bo
+             if (!shouldimport)
+                 continue;
+ 
++            // Positional, not designated -- see ARDatabaseDAT.cpp's identical note.
+             ARCodeCat newcat = {
+-                .Parent = &RootCat,
+-                .Name = cat.Name,
+-                .Description = cat.Description,
+-                .OnlyOneCodeEnabled = cat.OnlyOneCodeEnabled,
+-                .Children = {}
++                &RootCat,
++                cat.Name,
++                cat.Description,
++                cat.OnlyOneCodeEnabled,
++                {}
+             };
+             RootCat.Children.emplace_back(newcat);
+             ARCodeCat* parentptr = &std::get<ARCodeCat>(RootCat.Children.back());
+@@ -340,12 +343,13 @@ void ARCodeFile::Import(ARDatabaseEntry& dbentry, ARCodeEnableMap& enablemap, bo
+                 if (hasenablemap && (!enablemap[&code]))
+                     continue;
+ 
++                // Positional, not designated -- see ARDatabaseDAT.cpp's identical note.
+                 ARCode newcode = {
+-                    .Parent = parentptr,
+-                    .Name = code.Name,
+-                    .Description = code.Description,
+-                    .Enabled = code.Enabled,
+-                    .Code = code.Code
++                    parentptr,
++                    code.Name,
++                    code.Description,
++                    code.Enabled,
++                    code.Code
+                 };
+                 parentptr->Children.emplace_back(newcode);
+             }
+@@ -356,12 +360,13 @@ void ARCodeFile::Import(ARDatabaseEntry& dbentry, ARCodeEnableMap& enablemap, bo
+             if (hasenablemap && (!enablemap[&code]))
+                 continue;
+ 
++            // Positional, not designated -- see ARDatabaseDAT.cpp's identical note.
+             ARCode newcode = {
+-                .Parent = &RootCat,
+-                .Name = code.Name,
+-                .Description = code.Description,
+-                .Enabled = code.Enabled,
+-                .Code = code.Code
++                &RootCat,
++                code.Name,
++                code.Description,
++                code.Enabled,
++                code.Code
+             };
+             RootCat.Children.emplace_back(newcode);
+         }
+diff --git a/src/ARDatabaseDAT.cpp b/src/ARDatabaseDAT.cpp
+index 7246480..82c9de9 100644
+--- a/src/ARDatabaseDAT.cpp
++++ b/src/ARDatabaseDAT.cpp
+@@ -231,12 +231,16 @@ bool ARDatabaseDAT::LoadCheatCodes(EntryInfo& info, ARDatabaseEntry& entry)
+                 return false;
+             }
+ 
++            // Positional, not designated ({.Field = value, ...}) --
++            // MSVC requires /std:c++20 for designated initializers, which
++            // this project doesn't build with; same field order as
++            // ARCodeCat's declaration (ARCodeFile.h) either way.
+             ARCodeCat cat = {
+-                    .Parent = &entry.RootCat,
+-                    .Name = itemname,
+-                    .Description = itemdesc,
+-                    .OnlyOneCodeEnabled = !!(itemflags & (1<<24)),
+-                    .Children = {}
++                    &entry.RootCat,
++                    itemname,
++                    itemdesc,
++                    !!(itemflags & (1<<24)),
++                    {}
+             };
+             entry.RootCat.Children.emplace_back(cat);
+             curcat = &std::get<ARCodeCat>(entry.RootCat.Children.back());
+diff --git a/src/ARMJIT_Memory.cpp b/src/ARMJIT_Memory.cpp
+index 09bad07..f1571aa 100644
+--- a/src/ARMJIT_Memory.cpp
++++ b/src/ARMJIT_Memory.cpp
+@@ -916,10 +916,19 @@ ARMJIT_Memory::ARMJIT_Memory(melonDS::NDS& nds) : NDS(nds)
+     }
+     shm_unlink(fastmemPidName);
+ #endif
++#if !defined(__ANDROID__)
++    // Android already sized MemoryFile above (ASharedMemory_create takes
++    // the size up front; the /dev/ashmem fallback sets it via
++    // ASHMEM_SET_SIZE) -- ftruncate()'ing it again here, even to the same
++    // size, fails with EINVAL on Android's memfd-backed ashmem regions
++    // (their seals don't allow a further resize). Only shm_open above
++    // (the non-Android POSIX path) actually creates a zero-length object
++    // that needs this.
+     if (ftruncate(MemoryFile, MemoryTotalSize) < 0)
+     {
+         Log(LogLevel::Error, "Failed to allocate memory using ftruncate! (%s)", strerror(errno));
+     }
++#endif
+ 
+     mmap(MemoryBase, MemoryTotalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, MemoryFile, 0);
+ #endif
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index e85dd42..91bf109 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -91,13 +91,23 @@ if (ENABLE_OGLRENDERER)
+         GPU_OpenGL.cpp
+         GPU_OpenGL_shaders.h
+         GPU3D_OpenGL.cpp
+-        GPU3D_Compute.cpp
+         GPU3D_TexcacheOpenGL.cpp
+         GPU3D_TexcacheOpenGL.h
+         GPU3D_OpenGL_shaders.h
+         OpenGLSupport.cpp)
+-
+-    target_compile_definitions(core PUBLIC OGLRENDERER_ENABLED)
++    # GPU3D_Compute.cpp (an alternate compute-shader-based 3D renderer,
++    # ComputeRenderer -- self-contained, referenced nowhere else in the
++    # codebase) is deliberately left out: it uses several desktop-only
++    # GL calls (glMapBuffer, glGetTexImage) we'd otherwise have to patch
++    # for GLES with no benefit, since our Android port only ever
++    # constructs GLRenderer (see ds_jni.cpp), never ComputeRenderer.
++
++    # PlatformOGL.h defaults to pulling in melonDS's own glad (desktop
++    # GL function loader) -- Android only has GLES, so point it at the
++    # NDK's own GLES3.2 headers instead (see docs/melonds-setup.md).
++    # GLES functions are directly-linkable symbols from libGLESv3.so, no
++    # runtime loader needed the way desktop GL requires one.
++    target_compile_definitions(core PUBLIC OGLRENDERER_ENABLED "MELONDS_GL_HEADER=<GLES3/gl32.h>")
+ endif()
+ 
+ if (ENABLE_JIT)
+@@ -235,3 +245,15 @@ endif()
+ #  )
+ #endif()
+ 
++# One-off diagnostic build for the memory corruption surfacing near the
++# OpenGL 3D renderer (see docs/melonds-setup.md) -- ENABLE_ASAN=ON
++# compiles `core` itself with ASan instrumentation so an out-of-bounds
++# write gets caught at the actual buggy line instead of wherever it
++# happens to crash later. dscore's own CMakeLists.txt matches this with
++# the same flag for dsjni.cpp/ds_platform.cpp, since mixing sanitized
++# and unsanitized code in one process risks missing the write itself.
++if (ENABLE_ASAN)
++    target_compile_options(core PUBLIC -fsanitize=address -fno-omit-frame-pointer)
++    target_link_options(core PUBLIC -fsanitize=address)
++endif()
++
+diff --git a/src/DSi_AES.h b/src/DSi_AES.h
+index b0b1c71..86636a0 100644
+--- a/src/DSi_AES.h
++++ b/src/DSi_AES.h
+@@ -26,16 +26,24 @@
+ 
+ namespace melonDS
+ {
++// __attribute((always_inline)) is GCC/Clang-only syntax with no MSVC
++// equivalent spelling (not even one MSVC ignores gracefully) -- MSVC gets
++// __forceinline instead, its own always-inline attribute.
++#if defined(_MSC_VER) && !defined(__clang__)
++#define MELONDS_ALWAYS_INLINE __forceinline
++#else
++#define MELONDS_ALWAYS_INLINE __attribute((always_inline))
++#endif
+ #pragma GCC diagnostic push
+ #pragma GCC diagnostic ignored "-Wattributes"
+ #if defined(__GNUC__) && (__GNUC__ >= 11) && defined(__SIZEOF_INT128__) // gcc 11.*
+ // NOTE: Yes, the compiler does *not* recognize this code pattern, so it is indeed an optimization.
+-__attribute((always_inline)) static void Bswap128(void* Dst, const void* Src)
++MELONDS_ALWAYS_INLINE static void Bswap128(void* Dst, const void* Src)
+ {
+     *(__int128*)Dst = __builtin_bswap128(*(__int128*)Src);
+ }
+ #else
+-__attribute((always_inline)) static void Bswap128(void* Dst, const void* Src)
++MELONDS_ALWAYS_INLINE static void Bswap128(void* Dst, const void* Src)
+ {
+     for (int i = 0; i < 16; ++i)
+     {
+diff --git a/src/DSi_DSP.cpp b/src/DSi_DSP.cpp
+index 1779d40..2ec13df 100644
+--- a/src/DSi_DSP.cpp
++++ b/src/DSi_DSP.cpp
+@@ -290,22 +290,33 @@ void DSi_DSP::StartDSPLLE()
+ 
+     // these happen instantaneously and without too much regard for bus aribtration
+     // rules, so, this might have to be changed later on
++    // Bound via std::bind to real member functions below, not lambdas --
++    // see AHBMRead8 etc.'s declaration comment in DSi_DSP.h.
+     Teakra::AHBMCallback cb;
+-    cb.read8 = [this](auto addr) { return DSi.ARM9Read8(addr); };
+-    cb.write8 = [this](auto addr, auto val) { DSi.ARM9Write8(addr, val); };
+-    cb.read16 = [this](auto addr) { return DSi.ARM9Read16(addr); };
+-    cb.write16 = [this](auto addr, auto val) { DSi.ARM9Write16(addr, val); };
+-    cb.read32 = [this](auto addr) { return DSi.ARM9Read32(addr); };
+-    cb.write32 = [this](auto addr, auto val) { DSi.ARM9Write32(addr, val); };
++    cb.read8 = std::bind(&DSi_DSP::AHBMRead8, this, _1);
++    cb.write8 = std::bind(&DSi_DSP::AHBMWrite8, this, _1, _2);
++    cb.read16 = std::bind(&DSi_DSP::AHBMRead16, this, _1);
++    cb.write16 = std::bind(&DSi_DSP::AHBMWrite16, this, _1, _2);
++    cb.read32 = std::bind(&DSi_DSP::AHBMRead32, this, _1);
++    cb.write32 = std::bind(&DSi_DSP::AHBMWrite32, this, _1, _2);
+     teakra->SetAHBMCallback(cb);
+ 
+-    teakra->SetMicEnableCallback([this](bool enable)
+-     {
+-         if (enable)
+-             DSi.Mic.Start(Mic_DSi_DSP);
+-         else
+-             DSi.Mic.Stop(Mic_DSi_DSP);
+-     });
++    teakra->SetMicEnableCallback(std::bind(&DSi_DSP::SetMicEnabled, this, _1));
++}
++
++u8 DSi_DSP::AHBMRead8(u32 addr) { return DSi.ARM9Read8(addr); }
++void DSi_DSP::AHBMWrite8(u32 addr, u8 val) { DSi.ARM9Write8(addr, val); }
++u16 DSi_DSP::AHBMRead16(u32 addr) { return DSi.ARM9Read16(addr); }
++void DSi_DSP::AHBMWrite16(u32 addr, u16 val) { DSi.ARM9Write16(addr, val); }
++u32 DSi_DSP::AHBMRead32(u32 addr) { return DSi.ARM9Read32(addr); }
++void DSi_DSP::AHBMWrite32(u32 addr, u32 val) { DSi.ARM9Write32(addr, val); }
++
++void DSi_DSP::SetMicEnabled(bool enable)
++{
++    if (enable)
++        DSi.Mic.Start(Mic_DSi_DSP);
++    else
++        DSi.Mic.Stop(Mic_DSi_DSP);
+ }
+ 
+ 
+diff --git a/src/DSi_DSP.h b/src/DSi_DSP.h
+index c7ade5a..96346d2 100644
+--- a/src/DSi_DSP.h
++++ b/src/DSi_DSP.h
+@@ -129,6 +129,19 @@ public:
+     u16 DSPRead16(u32 addr);
+     void DSPWrite16(u32 addr, u16 val);
+ 
++    // Bound via std::bind (see StartDSPLLE), not a lambda, matching
++    // DSPRead16/DSPWrite16's own pattern above -- MSVC's parser trips
++    // over a lambda body referencing the DSi& member here (member and
++    // enclosing class share the name "DSi"), a quirk Clang/GCC don't
++    // have. Real member functions sidestep it entirely.
++    u8 AHBMRead8(u32 addr);
++    void AHBMWrite8(u32 addr, u8 val);
++    u16 AHBMRead16(u32 addr);
++    void AHBMWrite16(u32 addr, u16 val);
++    u32 AHBMRead32(u32 addr);
++    void AHBMWrite32(u32 addr, u32 val);
++    void SetMicEnabled(bool enable);
++
+     void SampleClock(s16 output[2], s16 input);
+ 
+ private:
+diff --git a/src/DSi_NWifi.cpp b/src/DSi_NWifi.cpp
+index 269d69a..d189569 100644
+--- a/src/DSi_NWifi.cpp
++++ b/src/DSi_NWifi.cpp
+@@ -1054,7 +1054,11 @@ void DSi_NWifi::WMI_Command()
+ 
+         case 0x000E: // get channel list
+             {
+-                int nchan = 11; // TODO: customize??
++                // constexpr, not a plain int -- reply[]'s size needs a
++                // real compile-time constant (nchan never actually
++                // varies despite the TODO above); GCC/Clang silently
++                // accept this as a VLA extension, MSVC doesn't.
++                constexpr int nchan = 11; // TODO: customize??
+                 u8 reply[2 + (nchan*2) + 2];
+ 
+                 reply[0] = 0;
+diff --git a/src/GPU.cpp b/src/GPU.cpp
+index e1c7ddc..2f24a1a 100644
+--- a/src/GPU.cpp
++++ b/src/GPU.cpp
+@@ -17,9 +17,26 @@
+ */
+ 
+ #include <string.h>
++#ifdef _MSC_VER
++#include <intrin.h>
++#endif
+ #include "NDS.h"
+ #include "GPU.h"
+ 
++namespace {
++// Portable count-trailing-zeros -- __builtin_ctz is GCC/Clang-only.
++// mask is never 0 at either call site below (both check that first).
++inline int CountTrailingZeros(melonDS::u32 mask) {
++#ifdef _MSC_VER
++    unsigned long index;
++    _BitScanForward(&index, mask);
++    return static_cast<int>(index);
++#else
++    return __builtin_ctz(mask);
++#endif
++}
++}  // namespace
++
+ #include "ARMJIT.h"
+ 
+ #include "GPU2D_Soft.h"
+@@ -358,14 +375,14 @@ void GPU::InitFramebuffers() noexcept
+ u8* GPU::GetUniqueBankPtr(u32 mask, u32 offset) noexcept
+ {
+     if (!mask || (mask & (mask - 1)) != 0) return NULL;
+-    int num = __builtin_ctz(mask);
++    int num = CountTrailingZeros(mask);
+     return &VRAM[num][offset & VRAMMask[num]];
+ }
+ 
+ const u8* GPU::GetUniqueBankPtr(u32 mask, u32 offset) const noexcept
+ {
+     if (!mask || (mask & (mask - 1)) != 0) return NULL;
+-    int num = __builtin_ctz(mask);
++    int num = CountTrailingZeros(mask);
+     return &VRAM[num][offset & VRAMMask[num]];
+ }
+ 
+@@ -1090,7 +1107,7 @@ NonStupidBitField<Size/VRAMDirtyGranularity> VRAMTrackingSet<Size, MappingGranul
+ 
+             while (mapping != 0)
+             {
+-                u32 num = __builtin_ctz(mapping);
++                u32 num = CountTrailingZeros(mapping);
+                 mapping &= ~(1 << num);
+ 
+                 // hack for **speed**
+@@ -1125,7 +1142,7 @@ NonStupidBitField<Size/VRAMDirtyGranularity> VRAMTrackingSet<Size, MappingGranul
+ 
+     while (banksToBeZeroed != 0)
+     {
+-        u32 num = __builtin_ctz(banksToBeZeroed);
++        u32 num = CountTrailingZeros(banksToBeZeroed);
+         banksToBeZeroed &= ~(1 << num);
+         gpu.VRAMDirty[num].Clear();
+     }
+diff --git a/src/GPU2D_Soft.cpp b/src/GPU2D_Soft.cpp
+index 2f8afcb..0bf6795 100644
+--- a/src/GPU2D_Soft.cpp
++++ b/src/GPU2D_Soft.cpp
+@@ -16,6 +16,8 @@
+     with melonDS. If not, see http://www.gnu.org/licenses/.
+ */
+ 
++#include <atomic>
++
+ #include "GPU2D_Soft.h"
+ #include "GPU.h"
+ #include "GPU3D.h"
+@@ -914,8 +916,12 @@ void SoftRenderer::DrawBG_3D()
+ template<bool mosaic, SoftRenderer::DrawPixel drawPixel>
+ void SoftRenderer::DrawBG_Text(u32 line, u32 bgnum)
+ {
+-    // workaround for backgrounds missing on aarch64 with lto build
+-    asm volatile ("" : : : "memory");
++    // workaround for backgrounds missing on aarch64 with lto build --
++    // GCC/Clang inline-asm syntax, no MSVC equivalent spelling at all
++    // (MSVC's inline asm is x86-only, doesn't exist for x64);
++    // atomic_signal_fence is the portable C++11 way to ask for the exact
++    // same thing, a compiler-only (not CPU) memory/reordering barrier.
++    std::atomic_signal_fence(std::memory_order_seq_cst);
+ 
+     u16 bgcnt = CurUnit->BGCnt[bgnum];
+ 
+diff --git a/src/GPU3D.cpp b/src/GPU3D.cpp
+index 1204741..39a4d41 100644
+--- a/src/GPU3D.cpp
++++ b/src/GPU3D.cpp
+@@ -26,6 +26,13 @@
+ #include "Platform.h"
+ #include "GPU3D.h"
+ 
++// __builtin_unreachable is GCC/Clang-only; MSVC's spelling is __assume(0).
++#ifdef _MSC_VER
++#define MELONDS_UNREACHABLE() __assume(0)
++#else
++#define MELONDS_UNREACHABLE() __builtin_unreachable()
++#endif
++
+ namespace melonDS
+ {
+ using Platform::Log;
+@@ -2346,7 +2353,7 @@ void GPU3D::ExecuteCommand() noexcept
+                     break;
+ 
+                 default:
+-                    __builtin_unreachable();
++                    MELONDS_UNREACHABLE();
+                 }
+             }
+         }
+diff --git a/src/GPU3D.h b/src/GPU3D.h
+index 08c2208..9507cce 100644
+--- a/src/GPU3D.h
++++ b/src/GPU3D.h
+@@ -355,6 +355,31 @@ public:
+     virtual void PrepareCaptureFrame() {}
+     virtual void BindOutputTexture(int buffer) {}
+ 
++    // Reads the accelerated renderer's own already-composited (2D+3D,
++    // both screens stacked) output straight from its GL compositor --
++    // see GLCompositor::RenderFrame/ReadOutputScreenAsync. This is the
++    // actual display path for the accelerated renderer; PrepareCaptureFrame/
++    // GetLine only feed the DS's own optional VRAM-capture hardware
++    // feature (CaptureCnt), which most games never enable, so a frontend
++    // that only calls those two never sees real accelerated 3D content.
++    // dst must hold width*height RGBA8 pixels, where width/height come
++    // from GetOutputSize(). Asynchronous and one frame behind (see
++    // GLCompositor::ReadOutputScreenAsync) -- returns false (dst
++    // untouched) if no frame has landed yet, true otherwise. No-op
++    // (returns false) on the software renderer, which has no compositor
++    // -- callers should check IsRendererAccelerated() first, same as for
++    // GetLine's own use.
++    virtual bool ReadOutputScreen(int frontBuffer, void* dst) { return false; }
++    virtual void GetOutputSize(int& width, int& height) { width = 0; height = 0; }
++
++    // Draws both screens straight to whatever window surface is current,
++    // skipping the CPU entirely -- see GLCompositor::BlitOutputToScreen.
++    // Rects are top-left-origin pixels. No-op on the software renderer.
++    virtual void BlitToScreen(int frontBuffer,
++                              int topX, int topY, int topW, int topH,
++                              int botX, int botY, int botW, int botH,
++                              int surfaceHeight) {}
++
+     virtual bool NeedsShaderCompile() { return false; }
+     virtual void ShaderCompileStep(int& current, int& count) {}
+ 
+diff --git a/src/GPU3D_OpenGL.cpp b/src/GPU3D_OpenGL.cpp
+index 706c75e..5b1f80b 100644
+--- a/src/GPU3D_OpenGL.cpp
++++ b/src/GPU3D_OpenGL.cpp
+@@ -28,6 +28,34 @@
+ namespace melonDS
+ {
+ 
++// GL_UNSIGNED_SHORT_1_5_5_5_REV (desktop-only, no GLES core or extension
++// equivalent -- confirmed by testing, not just by its absence from GLES
++// headers) let desktop GL read the DS's native ABGR1555 VRAM palette
++// bytes straight into a GL_RGB5_A1 texture with no CPU-side unpacking.
++// On GLES the combination is simply invalid: the driver silently no-ops
++// the upload (no GL error, nothing in logcat), so TexPalMem keeps
++// whatever it was cleared to -- every textured polygon's palette lookup
++// then reads back black/transparent forever, while untextured
++// (vertex-colored) geometry, which never touches this texture, renders
++// fine. Unpacking each 16-bit ABGR1555 entry into real 8-bit RGBA on the
++// CPU and uploading with GL_UNSIGNED_BYTE sidesteps the packed-type
++// question entirely -- every GL/GLES implementation supports that combo.
++static void UnpackABGR1555(const u8* src, u8* dstRGBA8, u32 numPixels)
++{
++    for (u32 i = 0; i < numPixels; i++)
++    {
++        u16 v = static_cast<u16>(src[i * 2]) | (static_cast<u16>(src[i * 2 + 1]) << 8);
++        u8 r5 = v & 0x1F;
++        u8 g5 = (v >> 5) & 0x1F;
++        u8 b5 = (v >> 10) & 0x1F;
++        u8 a1 = (v >> 15) & 0x1;
++        dstRGBA8[i * 4 + 0] = static_cast<u8>((r5 << 3) | (r5 >> 2));
++        dstRGBA8[i * 4 + 1] = static_cast<u8>((g5 << 3) | (g5 >> 2));
++        dstRGBA8[i * 4 + 2] = static_cast<u8>((b5 << 3) | (b5 >> 2));
++        dstRGBA8[i * 4 + 3] = a1 ? 0xFF : 0x00;
++    }
++}
++
+ bool GLRenderer::BuildRenderShader(u32 flags, const std::string& vs, const std::string& fs)
+ {
+     char shadername[32];
+@@ -110,8 +138,10 @@ std::unique_ptr<GLRenderer> GLRenderer::New() noexcept
+     glEnable(GL_DEPTH_TEST);
+     glEnable(GL_STENCIL_TEST);
+ 
+-    glDepthRange(0, 1);
+-    glClearDepth(1.0);
++    // GLES has no glDepthRange/glClearDepth (desktop-only, GLdouble
++    // args) -- only the 'f' (GLfloat) variants, which GLES3 always has.
++    glDepthRangef(0.0f, 1.0f);
++    glClearDepthf(1.0f);
+ 
+     if (!OpenGL::CompileVertexFragmentProgram(result->ClearShaderPlain,
+             kClearVS, kClearFS,
+@@ -276,7 +306,7 @@ std::unique_ptr<GLRenderer> GLRenderer::New() noexcept
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB5_A1, 1024, 48, 0, GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV, NULL);
++    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB5_A1, 1024, 48, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+ 
+     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+ 
+@@ -315,6 +345,7 @@ void GLRenderer::Reset(GPU& gpu)
+ {
+     // This is where the compositor's Reset() method would be called,
+     // except there's no such method right now.
++    FullVRAMUpload = true;
+ }
+ 
+ void GLRenderer::SetBetterPolygons(bool betterpolygons) noexcept
+@@ -348,6 +379,18 @@ void GLRenderer::SetRenderSettings(bool betterpolygons, int scale) noexcept
+     glBindTexture(GL_TEXTURE_2D, AttrBufferTex);
+     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, ScreenW, ScreenH, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+ 
++    // DownScaleBufferTex (unlike ColorBufferTex/DepthBufferTex/AttrBufferTex
++    // just above) never got a glTexImage2D call anywhere in upstream
++    // melonDS -- SetupDefaultTexParams only sets wrap/filter parameters,
++    // never allocates storage. Without this, DownscaleFramebuffer is
++    // incomplete and PrepareCaptureFrame's blit+glReadPixels silently
++    // produces nothing (an all-black frame, not a GL error) -- this is
++    // the fixed native-resolution (256x192) target PrepareCaptureFrame
++    // always blits into regardless of ScaleFactor, so its size doesn't
++    // scale with ScreenW/ScreenH the way the other three do above.
++    glBindTexture(GL_TEXTURE_2D, DownScaleBufferTex);
++    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 192, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++
+     glBindFramebuffer(GL_FRAMEBUFFER, DownscaleFramebuffer);
+     glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, DownScaleBufferTex, 0);
+ 
+@@ -1171,12 +1214,39 @@ void GLRenderer::RenderFrame(GPU& gpu)
+     ShaderConfig.uFogShift = gpu.GPU3D.RenderFogShift;
+ 
+     glBindBuffer(GL_UNIFORM_BUFFER, ShaderConfigUBO);
+-    void* unibuf = glMapBuffer(GL_UNIFORM_BUFFER, GL_WRITE_ONLY);
++    // GLES has no glMapBuffer (desktop-only) -- glMapBufferRange with an
++    // explicit range is the only mapping API it has.
++    void* unibuf = glMapBufferRange(GL_UNIFORM_BUFFER, 0, sizeof(ShaderConfig), GL_MAP_WRITE_BIT);
+     if (unibuf) memcpy(unibuf, &ShaderConfig, sizeof(ShaderConfig));
+     glUnmapBuffer(GL_UNIFORM_BUFFER);
+ 
+-    // SUCKY!!!!!!!!!!!!!!!!!!
+-    // TODO: detect when VRAM blocks are modified!
++    // Upstream re-uploads all of texture VRAM (4 x 128K) and every
++    // palette block (6 x 16K, each CPU-unpacked to RGBA8 first) on every
++    // single 3D frame, with a "SUCKY!!! TODO: detect when VRAM blocks are
++    // modified!" comment on top -- ~700K of texture traffic per frame,
++    // measured on an Adreno 610 as the single largest block of driver
++    // time in the emulation thread (23% of it, via simpleperf).
++    //
++    // The detection it asks for already exists and is what the *software*
++    // renderer uses (see GPU3D_Soft.cpp's RenderFrame): the GPU tracks
++    // every VRAM write into VRAMDirty at 512-byte granularity, and
++    // DeriveState folds that -- plus any change of VRAM mapping, which
++    // dirties everything -- into one bitfield per set. It must be called
++    // exactly once per frame: it also clears the bits it reports.
++    auto textureDirty = gpu.VRAMDirty_Texture.DeriveState(gpu.VRAMMap_Texture, gpu);
++    auto texPalDirty = gpu.VRAMDirty_TexPal.DeriveState(gpu.VRAMMap_TexPal, gpu);
++
++    // Bit i of those bitfields is one 512-byte chunk, so a 128K texture
++    // block spans 256 bits (4 u64 words) and a 16K palette block 32 bits
++    // (half a word) -- the same indexing DeriveState itself writes with.
++    auto textureBlockDirty = [&](int i) {
++        return textureDirty.Data[i*4 + 0] | textureDirty.Data[i*4 + 1]
++             | textureDirty.Data[i*4 + 2] | textureDirty.Data[i*4 + 3];
++    };
++    auto texPalBlockDirty = [&](int i) {
++        return texPalDirty.Data[i / 2] & (0xFFFFFFFFULL << ((i & 1) * 32));
++    };
++
+     glActiveTexture(GL_TEXTURE0);
+     glBindTexture(GL_TEXTURE_2D, TexMemID);
+     for (int i = 0; i < 4; i++)
+@@ -1189,6 +1259,12 @@ void GLRenderer::RenderFrame(GPU& gpu)
+         else if (mask & (1<<2)) vram = gpu.VRAM_C;
+         else if (mask & (1<<3)) vram = gpu.VRAM_D;
+ 
++        // The GPU-side texture keeps whatever was uploaded last, so an
++        // untouched block needs nothing. FullVRAMUpload forces the first
++        // frame (and the one after a Reset, where the GL texture's
++        // contents no longer match anything the tracking knows about).
++        if (!FullVRAMUpload && !textureBlockDirty(i)) continue;
++
+         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i*128, 1024, 128, GL_RED_INTEGER, GL_UNSIGNED_BYTE, vram);
+     }
+ 
+@@ -1204,8 +1280,13 @@ void GLRenderer::RenderFrame(GPU& gpu)
+         else if (mask & (1<<5)) vram = gpu.VRAM_F;
+         else if (mask & (1<<6)) vram = gpu.VRAM_G;
+ 
+-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i*8, 1024, 8, GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV, vram);
++        if (!FullVRAMUpload && !texPalBlockDirty(i)) continue;
++
++        u8 rgba8[1024 * 8 * 4];
++        UnpackABGR1555(vram, rgba8, 1024 * 8);
++        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i*8, 1024, 8, GL_RGBA, GL_UNSIGNED_BYTE, rgba8);
+     }
++    FullVRAMUpload = false;
+ 
+     glDisable(GL_SCISSOR_TEST);
+     glEnable(GL_DEPTH_TEST);
+@@ -1296,12 +1377,21 @@ void GLRenderer::PrepareCaptureFrame()
+     glBindFramebuffer(GL_READ_FRAMEBUFFER, MainFramebuffer);
+     glReadBuffer(GL_COLOR_ATTACHMENT0);
+     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, DownscaleFramebuffer);
+-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
++    // GLES has no glDrawBuffer (desktop-only) -- only glDrawBuffers,
++    // which takes an array even for a single attachment.
++    GLenum drawBuf = GL_COLOR_ATTACHMENT0;
++    glDrawBuffers(1, &drawBuf);
+     glBlitFramebuffer(0, 0, ScreenW, ScreenH, 0, 0, 256, 192, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+ 
+     glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
+     glBindFramebuffer(GL_READ_FRAMEBUFFER, DownscaleFramebuffer);
+-    glReadPixels(0, 0, 256, 192, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
++    // GL_BGRA is desktop-core / GLES-extension-only (GL_EXT_read_format_bgra,
++    // confirmed present -- see docs/melonds-setup.md's GL capability probe)
++    // -- GLES headers don't declare the plain GL_BGRA token, so spell it
++    // out with its numeric value (same one the extension and desktop GL
++    // both use, 0x80E1) rather than pulling in gl2ext.h for one constant.
++    constexpr GLenum kBGRA = 0x80E1;
++    glReadPixels(0, 0, 256, 192, kBGRA, GL_UNSIGNED_BYTE, NULL);
+ }
+ 
+ void GLRenderer::Blit(const GPU& gpu)
+@@ -1321,7 +1411,7 @@ u32* GLRenderer::GetLine(int line)
+     if (line == 0)
+     {
+         glBindBuffer(GL_PIXEL_PACK_BUFFER, PixelbufferID);
+-        u8* data = (u8*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
++        u8* data = (u8*)glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * stride * 192, GL_MAP_READ_BIT);
+         if (data) memcpy(&Framebuffer[stride*0], data, 4*stride*192);
+         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+     }
+diff --git a/src/GPU3D_OpenGL.h b/src/GPU3D_OpenGL.h
+index b780522..6f75b11 100644
+--- a/src/GPU3D_OpenGL.h
++++ b/src/GPU3D_OpenGL.h
+@@ -50,6 +50,16 @@ public:
+ 
+     void BindOutputTexture(int buffer) override;
+ 
++    bool ReadOutputScreen(int frontBuffer, void* dst) override { return CurGLCompositor.ReadOutputScreenAsync(frontBuffer, dst); }
++    void BlitToScreen(int frontBuffer,
++                      int topX, int topY, int topW, int topH,
++                      int botX, int botY, int botW, int botH,
++                      int surfaceHeight) override
++    {
++        CurGLCompositor.BlitOutputToScreen(frontBuffer, {topX, topY, topW, topH}, {botX, botY, botW, botH}, surfaceHeight);
++    }
++    void GetOutputSize(int& width, int& height) override { width = CurGLCompositor.GetOutputWidth(); height = CurGLCompositor.GetOutputHeight(); }
++
+     static std::unique_ptr<GLRenderer> New() noexcept;
+ private:
+     // Used by New()
+@@ -150,6 +160,12 @@ private:
+     GLuint TexMemID {};
+     GLuint TexPalMemID {};
+ 
++    // Forces the next frame to re-upload every texture/palette VRAM
++    // block regardless of the dirty tracking (GPU3D_OpenGL.cpp's
++    // RenderFrame): the tracking only says what the *emulated* GPU wrote,
++    // which says nothing about what the GL texture currently holds after
++    // a reset or a fresh renderer.
++    bool FullVRAMUpload = true;
+     int ScaleFactor {};
+     bool BetterPolygons {};
+     int ScreenW {}, ScreenH {};
+diff --git a/src/GPU3D_OpenGL_shaders.h b/src/GPU3D_OpenGL_shaders.h
+index ab9985c..504f4e1 100644
+--- a/src/GPU3D_OpenGL_shaders.h
++++ b/src/GPU3D_OpenGL_shaders.h
+@@ -19,7 +19,20 @@
+ #ifndef GPU3D_OPENGL_SHADERS_H
+ #define GPU3D_OPENGL_SHADERS_H
+ 
+-#define kShaderHeader "#version 140"
++// GLSL ES 3.20 for Android/GLES (see docs/melonds-setup.md's OpenGL
++// renderer port) -- was "#version 140" (desktop GL) upstream. This
++// vendored copy only ever builds for our own Android target (no Qt/SDL
++// desktop frontend, see CMakeLists.txt's BUILD_QT_SDL=OFF), so there's
++// no reason to keep it dual-compatible with desktop GL.
++// usampler2D has no default precision in GLSL ES (unlike sampler2D,
++// which defaults to lowp in fragment shaders) and needs one declared
++// explicitly or every usampler2D use is a compile error -- missing here
++// even though GPU_OpenGL_shaders.h's compositor shaders (right next
++// door) already declare it correctly. Adreno's shader compiler is
++// apparently lenient about the omission (this shader has compiled and
++// rendered real content on a real Adreno device all session); ANGLE's
++// GLSL ES validator correctly rejects it per spec.
++#define kShaderHeader "#version 320 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp usampler2D;\n"
+ 
+ namespace melonDS
+ {
+@@ -42,16 +55,19 @@ uniform uvec4 uColor;
+ uniform uint uOpaquePolyID;
+ uniform uint uFogFlag;
+ 
+-out vec4 oColor;
+-out vec4 oAttr;
++// GLES has no glBindFragDataLocation (desktop-only) -- output locations
++// must be declared right here instead (see OpenGLSupport.cpp's
++// CompileVertexFragmentProgram, which skips that call for this build).
++layout(location = 0) out vec4 oColor;
++layout(location = 1) out vec4 oAttr;
+ 
+ void main()
+ {
+     oColor = vec4(uColor).bgra / 31.0;
+     oAttr.r = float(uOpaquePolyID) / 63.0;
+-    oAttr.g = 0;
++    oAttr.g = 0.0;
+     oAttr.b = float(uFogFlag);
+-    oAttr.a = 1;
++    oAttr.a = 1.0;
+ }
+ )";
+ 
+@@ -85,7 +101,7 @@ layout(std140) uniform uConfig
+     int uFogShift;
+ };
+ 
+-out vec4 oColor;
++layout(location = 0) out vec4 oColor;
+ 
+ // make up for crapo zbuffer precision
+ bool isless(float a, float b)
+@@ -112,13 +128,13 @@ void main()
+     ivec2 coord = ivec2(gl_FragCoord.xy);
+     int scale = 1;//int(uScreenSize.x / 256);
+ 
+-    vec4 ret = vec4(0,0,0,0);
++    vec4 ret = vec4(0.0,0.0,0.0,0.0);
+     vec4 depth = texelFetch(DepthBuffer, coord, 0);
+     vec4 attr = texelFetch(AttrBuffer, coord, 0);
+ 
+     int polyid = int(attr.r * 63.0);
+ 
+-    if (attr.g != 0)
++    if (attr.g != 0.0)
+     {
+         vec4 depthU = texelFetch(DepthBuffer, coord + ivec2(0,-scale), 0);
+         vec4 attrU = texelFetch(AttrBuffer, coord + ivec2(0,-scale), 0);
+@@ -142,7 +158,7 @@ void main()
+             if ((uDispCnt & (1<<4)) != 0)
+                 ret.a = 0.5;
+             else
+-                ret.a = 1;
++                ret.a = 1.0;
+         }
+     }
+ 
+@@ -167,7 +183,7 @@ layout(std140) uniform uConfig
+     int uFogShift;
+ };
+ 
+-out vec4 oColor;
++layout(location = 0) out vec4 oColor;
+ 
+ vec4 CalculateFog(float depth)
+ {
+@@ -204,11 +220,11 @@ void main()
+ {
+     ivec2 coord = ivec2(gl_FragCoord.xy);
+ 
+-    vec4 ret = vec4(0,0,0,0);
++    vec4 ret = vec4(0.0,0.0,0.0,0.0);
+     vec4 depth = texelFetch(DepthBuffer, coord, 0);
+     vec4 attr = texelFetch(AttrBuffer, coord, 0);
+ 
+-    if (attr.b != 0) ret = CalculateFog(depth.r);
++    if (attr.b != 0.0) ret = CalculateFog(depth.r);
+ 
+     oColor = ret;
+ }
+@@ -261,8 +277,8 @@ smooth in vec4 fColor;
+ smooth in vec2 fTexcoord;
+ flat in ivec3 fPolygonAttr;
+ 
+-out vec4 oColor;
+-out vec4 oAttr;
++layout(location = 0) out vec4 oColor;
++layout(location = 1) out vec4 oAttr;
+ 
+ int TexcoordWrap(int c, int maxc, int mode)
+ {
+@@ -308,7 +324,7 @@ vec4 TextureFetch_I2(ivec2 addr, ivec4 st, int wrapmode, float alpha0)
+     addr.y = (addr.y << 2) + pixel.r;
+     vec4 color = texelFetch(TexPalMem, ivec2(addr.y&0x3FF, addr.y>>10), 0);
+ 
+-    return vec4(color.rgb, (pixel.r>0)?1:alpha0);
++    return vec4(color.rgb, (pixel.r>0)?1.0:alpha0);
+ }
+ 
+ vec4 TextureFetch_I4(ivec2 addr, ivec4 st, int wrapmode, float alpha0)
+@@ -324,7 +340,7 @@ vec4 TextureFetch_I4(ivec2 addr, ivec4 st, int wrapmode, float alpha0)
+     addr.y = (addr.y << 3) + pixel.r;
+     vec4 color = texelFetch(TexPalMem, ivec2(addr.y&0x3FF, addr.y>>10), 0);
+ 
+-    return vec4(color.rgb, (pixel.r>0)?1:alpha0);
++    return vec4(color.rgb, (pixel.r>0)?1.0:alpha0);
+ }
+ 
+ vec4 TextureFetch_I8(ivec2 addr, ivec4 st, int wrapmode, float alpha0)
+@@ -338,7 +354,7 @@ vec4 TextureFetch_I8(ivec2 addr, ivec4 st, int wrapmode, float alpha0)
+     addr.y = (addr.y << 3) + pixel.r;
+     vec4 color = texelFetch(TexPalMem, ivec2(addr.y&0x3FF, addr.y>>10), 0);
+ 
+-    return vec4(color.rgb, (pixel.r>0)?1:alpha0);
++    return vec4(color.rgb, (pixel.r>0)?1.0:alpha0);
+ }
+ 
+ vec4 TextureFetch_Compressed(ivec2 addr, ivec4 st, int wrapmode)
+@@ -555,7 +571,7 @@ vec4 TextureLookup_Linear(vec2 texcoord)
+     float fx = fracpart.x;
+     vec4 AB;
+     if (A.a < (0.5/31.0) && B.a < (0.5/31.0))
+-        AB = vec4(0);
++        AB = vec4(0.0);
+     else
+     {
+         //if (A.a < (0.5/31.0) || B.a < (0.5/31.0))
+@@ -567,7 +583,7 @@ vec4 TextureLookup_Linear(vec2 texcoord)
+     fx = fracpart.x;
+     vec4 CD;
+     if (C.a < (0.5/31.0) && D.a < (0.5/31.0))
+-        CD = vec4(0);
++        CD = vec4(0.0);
+     else
+     {
+         //if (C.a < (0.5/31.0) || D.a < (0.5/31.0))
+@@ -579,7 +595,7 @@ vec4 TextureLookup_Linear(vec2 texcoord)
+     fx = fracpart.y;
+     vec4 ret;
+     if (AB.a < (0.5/31.0) && CD.a < (0.5/31.0))
+-        ret = vec4(0);
++        ret = vec4(0.0);
+     else
+     {
+         //if (AB.a < (0.5/31.0) || CD.a < (0.5/31.0))
+@@ -602,7 +618,7 @@ vec4 FinalColor()
+         if ((uDispCnt & (1<<1)) == 0)
+         {
+             // toon
+-            vec3 tooncolor = uToonColors[int(vcol.r * 31)].rgb;
++            vec3 tooncolor = uToonColors[int(vcol.r * 31.0)].rgb;
+             vcol.rgb = tooncolor;
+         }
+         else
+@@ -639,7 +655,7 @@ vec4 FinalColor()
+     {
+         if ((uDispCnt & (1<<1)) != 0)
+         {
+-            vec3 tooncolor = uToonColors[int(vcol.r * 31)].rgb;
++            vec3 tooncolor = uToonColors[int(vcol.r * 31.0)].rgb;
+             col.rgb = min(col.rgb + tooncolor, 1.0);
+         }
+     }
+@@ -700,13 +716,13 @@ const char* kRenderFS_ZO = R"(
+ void main()
+ {
+     vec4 col = FinalColor();
+-    if (col.a < 30.5/31) discard;
++    if (col.a < 30.5/31.0) discard;
+ 
+     oColor = col;
+     oAttr.r = float((fPolygonAttr.x >> 24) & 0x3F) / 63.0;
+-    oAttr.g = 0;
++    oAttr.g = 0.0;
+     oAttr.b = float((fPolygonAttr.x >> 15) & 0x1);
+-    oAttr.a = 1;
++    oAttr.a = 1.0;
+ }
+ )";
+ 
+@@ -717,13 +733,13 @@ smooth in float fZ;
+ void main()
+ {
+     vec4 col = FinalColor();
+-    if (col.a < 30.5/31) discard;
++    if (col.a < 30.5/31.0) discard;
+ 
+     oColor = col;
+     oAttr.r = float((fPolygonAttr.x >> 24) & 0x3F) / 63.0;
+-    oAttr.g = 0;
++    oAttr.g = 0.0;
+     oAttr.b = float((fPolygonAttr.x >> 15) & 0x1);
+-    oAttr.a = 1;
++    oAttr.a = 1.0;
+     gl_FragDepth = fZ;
+ }
+ )";
+@@ -733,10 +749,10 @@ const char* kRenderFS_ZE = R"(
+ void main()
+ {
+     vec4 col = FinalColor();
+-    if (col.a < 30.5/31) discard;
++    if (col.a < 30.5/31.0) discard;
+ 
+-    oAttr.g = 1;
+-    oAttr.a = 1;
++    oAttr.g = 1.0;
++    oAttr.a = 1.0;
+ }
+ )";
+ 
+@@ -747,10 +763,10 @@ smooth in float fZ;
+ void main()
+ {
+     vec4 col = FinalColor();
+-    if (col.a < 30.5/31) discard;
++    if (col.a < 30.5/31.0) discard;
+ 
+-    oAttr.g = 1;
+-    oAttr.a = 1;
++    oAttr.g = 1.0;
++    oAttr.a = 1.0;
+     gl_FragDepth = fZ;
+ }
+ )";
+@@ -760,12 +776,12 @@ const char* kRenderFS_ZT = R"(
+ void main()
+ {
+     vec4 col = FinalColor();
+-    if (col.a < 0.5/31) discard;
+-    if (col.a >= 30.5/31) discard;
++    if (col.a < 0.5/31.0) discard;
++    if (col.a >= 30.5/31.0) discard;
+ 
+     oColor = col;
+-    oAttr.b = 0;
+-    oAttr.a = 1;
++    oAttr.b = 0.0;
++    oAttr.a = 1.0;
+ }
+ )";
+ 
+@@ -776,12 +792,12 @@ smooth in float fZ;
+ void main()
+ {
+     vec4 col = FinalColor();
+-    if (col.a < 0.5/31) discard;
+-    if (col.a >= 30.5/31) discard;
++    if (col.a < 0.5/31.0) discard;
++    if (col.a >= 30.5/31.0) discard;
+ 
+     oColor = col;
+-    oAttr.b = 0;
+-    oAttr.a = 1;
++    oAttr.b = 0.0;
++    oAttr.a = 1.0;
+     gl_FragDepth = fZ;
+ }
+ )";
+@@ -790,7 +806,7 @@ const char* kRenderFS_ZSM = R"(
+ 
+ void main()
+ {
+-    oColor = vec4(0,0,0,1);
++    oColor = vec4(0.0,0.0,0.0,1.0);
+ }
+ )";
+ 
+@@ -800,7 +816,7 @@ smooth in float fZ;
+ 
+ void main()
+ {
+-    oColor = vec4(0,0,0,1);
++    oColor = vec4(0.0,0.0,0.0,1.0);
+     gl_FragDepth = fZ;
+ }
+ )";
+diff --git a/src/GPU_OpenGL.cpp b/src/GPU_OpenGL.cpp
+index 888f508..c264375 100644
+--- a/src/GPU_OpenGL.cpp
++++ b/src/GPU_OpenGL.cpp
+@@ -116,6 +116,10 @@ GLCompositor::GLCompositor(GLuint compShader) noexcept : CompShader(compShader)
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+     }
+ 
++    // See ReadOutputScreenAsync -- storage is (re)allocated once ScreenW/H
++    // are known, in SetScaleFactor.
++    glGenBuffers(1, &ReadbackPBO);
++
+     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+ }
+ 
+@@ -129,6 +133,7 @@ GLCompositor::~GLCompositor()
+ 
+     glDeleteVertexArrays(1, &CompVertexArrayID);
+     glDeleteBuffers(1, &CompVertexBufferID);
++    glDeleteBuffers(1, &ReadbackPBO);
+ 
+     glDeleteProgram(CompShader);
+ }
+@@ -145,7 +150,9 @@ GLCompositor::GLCompositor(GLCompositor&& other) noexcept :
+     CompVertexArrayID(other.CompVertexArrayID),
+     CompScreenInputTex(other.CompScreenInputTex),
+     CompScreenOutputTex(other.CompScreenOutputTex),
+-    CompScreenOutputFB(other.CompScreenOutputFB)
++    CompScreenOutputFB(other.CompScreenOutputFB),
++    ReadbackPBO(other.ReadbackPBO),
++    ReadbackPending(other.ReadbackPending)
+ {
+     other.CompScreenOutputFB = {};
+     other.CompScreenInputTex = {};
+@@ -153,6 +160,8 @@ GLCompositor::GLCompositor(GLCompositor&& other) noexcept :
+     other.CompVertexArrayID = {};
+     other.CompVertexBufferID = {};
+     other.CompShader = {};
++    other.ReadbackPBO = {};
++    other.ReadbackPending = false;
+ }
+ 
+ GLCompositor& GLCompositor::operator=(GLCompositor&& other) noexcept
+@@ -184,12 +193,18 @@ GLCompositor& GLCompositor::operator=(GLCompositor&& other) noexcept
+         glDeleteFramebuffers(CompScreenOutputFB.size(), &CompScreenOutputFB[0]);
+         CompScreenOutputFB = other.CompScreenOutputFB;
+ 
++        glDeleteBuffers(1, &ReadbackPBO);
++        ReadbackPBO = other.ReadbackPBO;
++        ReadbackPending = other.ReadbackPending;
++
+         other.CompScreenOutputFB = {};
+         other.CompScreenInputTex = {};
+         other.CompScreenOutputTex = {};
+         other.CompVertexArrayID = {};
+         other.CompVertexBufferID = {};
+         other.CompShader = {};
++        other.ReadbackPBO = {};
++        other.ReadbackPending = false;
+     }
+ 
+     return *this;
+@@ -220,6 +235,12 @@ void GLCompositor::SetScaleFactor(int scale) noexcept
+         free(zeroPixels);
+     }
+ 
++    // Size changed, so any read already in flight targets a buffer of the
++    // wrong size -- drop it instead of copying it out next call.
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, ReadbackPBO);
++    glBufferData(GL_PIXEL_PACK_BUFFER, static_cast<GLsizeiptr>(ScreenW) * ScreenH * 4, NULL, GL_STREAM_READ);
++    ReadbackPending = false;
++
+     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+ }
+ 
+@@ -236,6 +257,93 @@ void GLCompositor::Stop(const GPU& gpu) noexcept
+     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+ }
+ 
++void GLCompositor::BlitOutputToScreen(int buf, const ScreenRect& top, const ScreenRect& bottom, int surfaceHeight) noexcept
++{
++    // Source layout inside CompScreenOutputTex, in GL's bottom-left-origin
++    // space: rows 0..192*Scale are the *top* screen, then 2*Scale rows of
++    // padding, then the bottom screen (see SetScaleFactor's vertex setup).
++    const int screenH = 192 * Scale;
++    const int padding = 2 * Scale;
++
++    // Same unbind ReadOutputScreenAsync needs, and for the same reason:
++    // the compositor's draw call leaves its output texture bound, and
++    // reading from a texture that is simultaneously the blit source is a
++    // feedback loop -- GL_INVALID_OPERATION, which fails the blit and
++    // leaves only the clear below, i.e. a black screen.
++    glBindTexture(GL_TEXTURE_2D, 0);
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, CompScreenOutputFB[buf]);
++    glReadBuffer(GL_COLOR_ATTACHMENT0);
++    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
++
++    glDisable(GL_SCISSOR_TEST);
++    glClearColor(0.f, 0.f, 0.f, 1.f);
++    glClear(GL_COLOR_BUFFER_BIT);
++
++    auto blit = [&](int srcY0, int srcY1, const ScreenRect& dst) {
++        // srcY0 is the row holding the image's *visual top* (the
++        // compositor renders each screen vertically flipped relative to
++        // GL's bottom-left origin -- confirmed by reading the output back
++        // and looking at it, not just from the vertex math). Passing the
++        // destination's top edge first and bottom edge second is what
++        // asks glBlitFramebuffer for that vertical flip.
++        const int dstTop = surfaceHeight - dst.y;
++        const int dstBottom = surfaceHeight - (dst.y + dst.h);
++        // GL_NEAREST, not GL_LINEAR: matches the Paint(isFilterBitmap =
++        // false) the Canvas path this replaces used, so upscaling stays
++        // crisp/pixelated rather than going blurry.
++        glBlitFramebuffer(0, srcY0, ScreenW, srcY1,
++                          dst.x, dstTop, dst.x + dst.w, dstBottom,
++                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
++    };
++
++    blit(0, screenH, top);
++    blit(screenH + padding, screenH + padding + screenH, bottom);
++}
++
++bool GLCompositor::ReadOutputScreenAsync(int buf, void* dst) noexcept
++{
++    // If a read issued on a *previous* call has landed by now (it's had a
++    // whole frame to do so), grab it before issuing this frame's. First
++    // call ever (nothing pending yet) leaves dst untouched and returns
++    // false -- same one-frame-behind tradeoff GLRenderer's own
++    // PrepareCaptureFrame/GetLine pair already makes (GPU3D_OpenGL.cpp).
++    bool gotData = false;
++    if (ReadbackPending)
++    {
++        glBindBuffer(GL_PIXEL_PACK_BUFFER, ReadbackPBO);
++        void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(ScreenW) * ScreenH * 4, GL_MAP_READ_BIT);
++        if (mapped)
++        {
++            memcpy(dst, mapped, static_cast<size_t>(ScreenW) * ScreenH * 4);
++            gotData = true;
++        }
++        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
++    }
++
++    // Clearing bindings the compositor's own draw call left behind (its
++    // output texture as an implicit render target) before reading is
++    // required, not just tidy -- without it glReadPixels raised
++    // GL_INVALID_OPERATION on ANGLE/D3D11 (confirmed via glGetError while
++    // bringing this up on desktop) even though the source framebuffer
++    // itself reported GL_FRAMEBUFFER_COMPLETE.
++    glBindTexture(GL_TEXTURE_2D, 0);
++    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, CompScreenOutputFB[buf]);
++    glReadBuffer(GL_COLOR_ATTACHMENT0);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, ReadbackPBO);
++    // NULL destination with a PIXEL_PACK_BUFFER bound queues this
++    // transfer and returns immediately, no CPU/GPU sync -- unlike the
++    // glFinish()+direct-pointer version this replaces, which confirmed
++    // via on-device simpleperf profiling to be a real, avoidable stall
++    // (every frame serializing the CPU behind the GPU), not a
++    // theoretical one.
++    glReadPixels(0, 0, ScreenW, ScreenH, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++    ReadbackPending = true;
++
++    return gotData;
++}
++
+ void GLCompositor::RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept
+ {
+     int backbuf = gpu.FrontBuffer ^ 1;
+diff --git a/src/GPU_OpenGL.h b/src/GPU_OpenGL.h
+index 3461ca8..b7e06a5 100644
+--- a/src/GPU_OpenGL.h
++++ b/src/GPU_OpenGL.h
+@@ -45,6 +45,36 @@ public:
+     void Stop(const GPU& gpu) noexcept;
+     void RenderFrame(const GPU& gpu, Renderer3D& renderer) noexcept;
+     void BindOutputTexture(int buf);
++
++    // Reads CompScreenOutputTex[buf] (both screens already composited,
++    // stacked top-then-bottom with a small padding gap between them --
++    // see SetScaleFactor) straight off the GPU via its own FBO. dst must
++    // hold ScreenW*ScreenH RGBA8 pixels; see GetOutputWidth/Height.
++    //
++    // Asynchronous, one frame behind (same design as GLRenderer's own
++    // PrepareCaptureFrame/GetLine pair, GPU3D_OpenGL.cpp): this issues an
++    // async glReadPixels into a PBO and, if a *previous* call's read has
++    // landed by now, copies THAT into dst first -- so it never blocks
++    // waiting on the GPU. Returns false (dst untouched) only on the very
++    // first call, before any readback has had a frame to land in.
++    // ReadOutputScreen (the old name) did the equivalent synchronously
++    // with an explicit glFinish(), which serializes the CPU behind the
++    // GPU every single frame -- confirmed via on-device simpleperf
++    // profiling to be a real, avoidable cost, not just theoretical.
++    bool ReadOutputScreenAsync(int buf, void* dst) noexcept;
++    [[nodiscard]] int GetOutputWidth() const noexcept { return ScreenW; }
++    [[nodiscard]] int GetOutputHeight() const noexcept { return ScreenH; }
++
++    // Blits both screens straight from CompScreenOutputFB[buf] to the
++    // default framebuffer (i.e. whatever window surface is current), each
++    // into its own destination rect, with no CPU round trip at all --
++    // the alternative to ReadOutputScreenAsync for a frontend that has a
++    // real window surface rather than a CPU-side bitmap to fill.
++    // Destination rects are in top-left-origin pixels (the coordinate
++    // space a UI toolkit hands you); surfaceHeight flips them into GL's
++    // bottom-left-origin space.
++    struct ScreenRect { int x, y, w, h; };
++    void BlitOutputToScreen(int buf, const ScreenRect& top, const ScreenRect& bottom, int surfaceHeight) noexcept;
+ private:
+     GLCompositor(GLuint CompShader) noexcept;
+     int Scale = 0;
+@@ -66,6 +96,10 @@ private:
+     GLuint CompScreenInputTex = 0;
+     std::array<GLuint, 2> CompScreenOutputTex {};
+     std::array<GLuint, 2> CompScreenOutputFB {};
++
++    // See ReadOutputScreenAsync.
++    GLuint ReadbackPBO = 0;
++    bool ReadbackPending = false;
+ };
+ 
+ }
+diff --git a/src/GPU_OpenGL_shaders.h b/src/GPU_OpenGL_shaders.h
+index 04af221..537e5c3 100644
+--- a/src/GPU_OpenGL_shaders.h
++++ b/src/GPU_OpenGL_shaders.h
+@@ -21,7 +21,12 @@
+ 
+ namespace melonDS
+ {
+-const char* kCompositorVS = R"(#version 140
++// GLSL ES 3.20 port -- was "#version 140" upstream, see
++// GPU3D_OpenGL_shaders.h's kShaderHeader comment for why this vendored
++// copy doesn't need to stay desktop-GL-compatible.
++const char* kCompositorVS = R"(#version 320 es
++precision highp float;
++precision highp int;
+ 
+ in vec2 vPosition;
+ in vec2 vTexcoord;
+@@ -40,7 +45,11 @@ void main()
+ }
+ )";
+ 
+-const char* kCompositorFS_Nearest = R"(#version 140
++const char* kCompositorFS_Nearest = R"(#version 320 es
++precision highp float;
++precision highp int;
++precision highp usampler2D;
++precision highp sampler2D;
+ 
+ uniform uint u3DScale;
+ 
+@@ -49,7 +58,7 @@ uniform sampler2D _3DTex;
+ 
+ smooth in vec2 fTexcoord;
+ 
+-out vec4 oColor;
++layout(location = 0) out vec4 oColor;
+ 
+ void main()
+ {
+@@ -76,9 +85,9 @@ void main()
+             // 3D on top, blending
+ 
+             float xpos = fTexcoord.x + _3dxpos;
+-            float ypos = mod(fTexcoord.y, 192);
+-            ivec4 _3dpix = ivec4(texelFetch(_3DTex, ivec2(vec2(xpos, ypos)*u3DScale), 0).bgra
+-                         * vec4(63,63,63,31));
++            float ypos = mod(fTexcoord.y, 192.0);
++            ivec4 _3dpix = ivec4(texelFetch(_3DTex, ivec2(vec2(xpos, ypos)*float(u3DScale)), 0).bgra
++                         * vec4(63.0,63.0,63.0,31.0));
+ 
+             if (_3dpix.a > 0)
+             {
+@@ -96,9 +105,9 @@ void main()
+             // 3D on bottom, blending
+ 
+             float xpos = fTexcoord.x + _3dxpos;
+-            float ypos = mod(fTexcoord.y, 192);
+-            ivec4 _3dpix = ivec4(texelFetch(_3DTex, ivec2(vec2(xpos, ypos)*u3DScale), 0).bgra
+-                         * vec4(63,63,63,31));
++            float ypos = mod(fTexcoord.y, 192.0);
++            ivec4 _3dpix = ivec4(texelFetch(_3DTex, ivec2(vec2(xpos, ypos)*float(u3DScale)), 0).bgra
++                         * vec4(63.0,63.0,63.0,31.0));
+ 
+             if (_3dpix.a > 0)
+             {
+@@ -116,9 +125,9 @@ void main()
+             // 3D on top, normal/fade
+ 
+             float xpos = fTexcoord.x + _3dxpos;
+-            float ypos = mod(fTexcoord.y, 192);
+-            ivec4 _3dpix = ivec4(texelFetch(_3DTex, ivec2(vec2(xpos, ypos)*u3DScale), 0).bgra
+-                         * vec4(63,63,63,31));
++            float ypos = mod(fTexcoord.y, 192.0);
++            ivec4 _3dpix = ivec4(texelFetch(_3DTex, ivec2(vec2(xpos, ypos)*float(u3DScale)), 0).bgra
++                         * vec4(63.0,63.0,63.0,31.0));
+ 
+             if (_3dpix.a > 0)
+             {
+@@ -161,7 +170,12 @@ void main()
+ 
+     // TODO: filters
+ 
+-    oColor = vec4(vec3(pixel.bgr) / 255.0, 1.0);
++    // .rgb, not upstream's .bgr: upstream never reads this texture as raw
++    // memory -- its frontend samples it -- but we blit it straight to the
++    // window surface, which is RGBA8. With the .bgr swizzle the blit
++    // lands red and blue crossed (a blue sky renders orange, confirmed on
++    // device). ds_jni.cpp's CPU readback fallback compensates.
++    oColor = vec4(vec3(pixel.rgb) / 255.0, 1.0);
+ }
+ )";
+ 
+@@ -180,7 +194,7 @@ out vec4 oColor;
+ 
+ ivec4 Get3DPixel(vec2 pos)
+ {
+-    return ivec4(texelFetch(_3DTex, ivec2(pos*u3DScale), 0).bgra
++    return ivec4(texelFetch(_3DTex, ivec2(pos*float(u3DScale)), 0).bgra
+          * vec4(63,63,63,31));
+ }
+ 
+@@ -261,7 +275,7 @@ void main()
+         float yfract = fract(fTexcoord.y);
+ 
+         float xpos = val3.r + xfract;
+-        float ypos = mod(fTexcoord.y, 192);
++        float ypos = mod(fTexcoord.y, 192.0);
+         ivec4 _3dpix = Get3DPixel(vec2(xpos,ypos));
+ 
+         ivec4 p00 = GetFullPixel(val1, val2, val3, _3dpix);
+@@ -484,7 +498,7 @@ vec4 Get2DPixel(vec2 texcoord, int level)
+ 
+ ivec4 Get3DPixel(vec2 pos)
+ {
+-    return ivec4(texelFetch(_3DTex, ivec2(pos*u3DScale), 0).bgra
++    return ivec4(texelFetch(_3DTex, ivec2(pos*float(u3DScale)), 0).bgra
+          * vec4(63,63,63,31));
+ }
+ 
+@@ -636,6 +650,12 @@ ivec4 GetFiltered2DPixel(int level)
+     }
+ 
+     vec3 dst[16];
++)" /* split into two adjacent (compiler-concatenated) raw string literals
++      here, purely to stay under MSVC's ~64KB single-string-literal limit --
++      this shader is dead code for this integration anyway (see this file's
++      header comment on kCompositorFS_Linear/xBRZ), never referenced by any
++      C++ call site, so it only needs to compile, not run; content/behavior
++      is unchanged either way. */ R"(
+     dst[ 0] = src[0];
+     dst[ 1] = src[0];
+     dst[ 2] = src[0];
+@@ -767,7 +787,7 @@ void main()
+         int eva, evb, evy;
+ 
+         float xpos = val3.r + fract(fTexcoord.x);
+-        float ypos = mod(fTexcoord.y, 192);
++        float ypos = mod(fTexcoord.y, 192.0);
+         ivec4 _3dpix = Get3DPixel(vec2(xpos, ypos));
+ 
+         if (compmode == 4)
+diff --git a/src/NonStupidBitfield.h b/src/NonStupidBitfield.h
+index bfb3f50..6d47505 100644
+--- a/src/NonStupidBitfield.h
++++ b/src/NonStupidBitfield.h
+@@ -26,6 +26,20 @@
+ #include <initializer_list>
+ #include <algorithm>
+ 
++#ifdef _MSC_VER
++#include <intrin.h>
++namespace melonDS {
++// Portable 64-bit count-trailing-zeros -- __builtin_ctzll is GCC/Clang-only.
++// Every call site below already guards against an all-zero input.
++inline u32 NonStupidBitfield_ctzll(u64 v) {
++    unsigned long index;
++    _BitScanForward64(&index, v);
++    return static_cast<u32>(index);
++}
++}
++#define __builtin_ctzll(v) melonDS::NonStupidBitfield_ctzll(v)
++#endif
++
+ namespace melonDS
+ {
+ 
+diff --git a/src/OpenGLSupport.cpp b/src/OpenGLSupport.cpp
+index 4cdff2c..92146e0 100644
+--- a/src/OpenGLSupport.cpp
++++ b/src/OpenGLSupport.cpp
+@@ -341,10 +341,11 @@ bool CompileVertexFragmentProgram(GLuint& result,
+     {
+         glBindAttribLocation(result, target.Location, target.Name);
+     }
+-    for (const AttributeTarget& target : fragmentOutAttrs)
+-    {
+-        glBindFragDataLocation(result, target.Location, target.Name);
+-    }
++    // GLES has no glBindFragDataLocation (desktop-only) -- fragment
++    // output locations are instead declared directly in the shader
++    // source via layout(location = N) (see GPU3D_OpenGL_shaders.h and
++    // GPU_OpenGL_shaders.h), so fragmentOutAttrs is unused here.
++    (void)fragmentOutAttrs;
+ 
+     linkingSucess = LinkProgram(result, shaders, 2);
+ 
+diff --git a/src/SPU.cpp b/src/SPU.cpp
+index 3c4aca7..f85c37e 100644
+--- a/src/SPU.cpp
++++ b/src/SPU.cpp
+@@ -19,6 +19,7 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <cmath>
++#include <vector>
+ #include "Platform.h"
+ #include "NDS.h"
+ #include "Mic.h"
+@@ -1022,9 +1023,11 @@ void SPU::EndFrame()
+     BlipTimer = 0;
+ 
+     int avail = blip_samples_avail(BlipLeft);
+-    s16 temp[avail * 2];
+-    blip_read_samples(BlipLeft, temp, avail, true);
+-    blip_read_samples(BlipRight, temp + 1, avail, true);
++    // Genuinely variable-length (avail is a runtime value) -- GCC/Clang
++    // accept this as a VLA extension, MSVC doesn't support VLAs at all.
++    std::vector<s16> temp(static_cast<size_t>(avail) * 2);
++    blip_read_samples(BlipLeft, temp.data(), avail, true);
++    blip_read_samples(BlipRight, temp.data() + 1, avail, true);
+ 
+     Platform::Mutex_Lock(AudioLock);
+     for (int i = 0; i < avail * 2; i += 2)
+-- 
+2.44.0.windows.1
+
