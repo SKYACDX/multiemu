@@ -23,8 +23,10 @@ export interface StateSlot {
 
 interface RomLibraryNativeModule {
   saveToCache(base64: string, name: string, system: string, label: string): Promise<CachedRom>;
+  saveToCachePath(path: string, name: string, system: string, label: string): Promise<CachedRom & {path: string}>;
   listCache(): Promise<CachedRom[]>;
   loadFromCache(id: string): Promise<{base64: string}>;
+  loadPathFromCache(id: string): Promise<{path: string}>;
   deleteFromCache(id: string): Promise<void>;
   pickFolder(): Promise<{uri: string; name: string}>;
   getLastFolder(): Promise<{uri: string; name: string} | null>;
@@ -52,6 +54,11 @@ export function saveRomToCache(base64: string, name: string, system: string, lab
   return RomLibrary.saveToCache(base64, name, system, label);
 }
 
+/** Path-based sibling of saveRomToCache for ROMs too large for base64/JS memory (NDS: 128-512MB) -- moves the file already at `path` into the cache and returns its new path. */
+export function saveRomToCachePath(path: string, name: string, system: string, label: string): Promise<CachedRom & {path: string}> {
+  return RomLibrary.saveToCachePath(path, name, system, label);
+}
+
 export function listCachedRoms(): Promise<CachedRom[]> {
   return RomLibrary.listCache();
 }
@@ -59,6 +66,11 @@ export function listCachedRoms(): Promise<CachedRom[]> {
 export async function loadCachedRom(id: string): Promise<string> {
   const {base64} = await RomLibrary.loadFromCache(id);
   return base64;
+}
+
+export async function loadCachedRomPath(id: string): Promise<string> {
+  const {path} = await RomLibrary.loadPathFromCache(id);
+  return path;
 }
 
 export function deleteCachedRom(id: string): Promise<void> {

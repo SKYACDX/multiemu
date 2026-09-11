@@ -23,6 +23,10 @@ private const val REQUEST_CODE_PICK_FOLDER = 9002
 private const val CACHE_INDEX_FILE = "rom_cache_index.json"
 private const val CACHE_DIR = "rom_cache"
 private const val MAX_CACHE_ENTRIES = 12
+// NDS ROMs run 128-512MB each -- capping them at the same 12 as tiny
+// GB/GBA entries could mean gigabytes of cached NDS ROMs. Trimmed
+// separately in saveToCachePath, on top of (not instead of) the general cap.
+private const val MAX_NDS_CACHE_ENTRIES = 2
 
 /**
  * Two related pieces of "make loading ROMs less painful" that don't fit
@@ -83,6 +87,87 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
             promise.resolve(entry.toWritableMap())
         } catch (e: Exception) {
             promise.reject("CACHE_WRITE_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Path-based sibling of [saveToCache] for ROMs too large to hold in JS
+     * memory as base64 (NDS runs 128-512MB) -- moves the file already sitting
+     * at [path] (e.g. from RomFilePickerModule.pickRomPath/downloadRom) into
+     * the cache dir instead of writing decoded bytes, and returns the moved
+     * file's new path so the caller can keep using it (the original path
+     * stops existing once this runs). Same index/eviction as [saveToCache],
+     * plus its own cap on NDS entries specifically -- see MAX_NDS_CACHE_ENTRIES.
+     */
+    @ReactMethod
+    fun saveToCachePath(path: String, name: String, system: String, label: String, promise: Promise) {
+        try {
+            val cacheDir = File(reactContext.filesDir, CACHE_DIR).apply { mkdirs() }
+            val id = "${System.currentTimeMillis()}_${name.hashCode()}"
+            val dest = File(cacheDir, id)
+            val source = File(path)
+            if (!source.renameTo(dest)) {
+                source.copyTo(dest, overwrite = true)
+                source.delete()
+            }
+
+            val index = readIndex()
+            for (i in index.length() - 1 downTo 0) {
+                if (index.getJSONObject(i).getString("name") == name) {
+                    File(cacheDir, index.getJSONObject(i).getString("id")).delete()
+                    index.remove(i)
+                }
+            }
+            val entry = JSONObject().apply {
+                put("id", id)
+                put("name", name)
+                put("system", system)
+                put("label", label)
+                put("size", dest.length())
+                put("savedAt", System.currentTimeMillis())
+            }
+            index.put(entry)
+            while (index.length() > MAX_CACHE_ENTRIES) {
+                File(cacheDir, index.getJSONObject(0).getString("id")).delete()
+                index.remove(0)
+            }
+            if (system == "nds") {
+                var ndsCount = (0 until index.length()).count { index.getJSONObject(it).getString("system") == "nds" }
+                var i = 0
+                while (ndsCount > MAX_NDS_CACHE_ENTRIES && i < index.length()) {
+                    if (index.getJSONObject(i).getString("system") == "nds") {
+                        File(cacheDir, index.getJSONObject(i).getString("id")).delete()
+                        index.remove(i)
+                        ndsCount--
+                    } else {
+                        i++
+                    }
+                }
+            }
+            writeIndex(index)
+
+            val result = entry.toWritableMap()
+            result.putString("path", dest.absolutePath)
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("CACHE_WRITE_ERROR", e.message, e)
+        }
+    }
+
+    /** Path-based sibling of [loadFromCache] -- resolves to the cached file's path instead of reading it into base64. */
+    @ReactMethod
+    fun loadPathFromCache(id: String, promise: Promise) {
+        try {
+            val file = File(File(reactContext.filesDir, CACHE_DIR), id)
+            if (!file.exists()) {
+                promise.reject("NOT_FOUND", "Esa ROM ya no está en la caché")
+                return
+            }
+            val result = Arguments.createMap()
+            result.putString("path", file.absolutePath)
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("CACHE_READ_ERROR", e.message, e)
         }
     }
 

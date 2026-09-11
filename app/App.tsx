@@ -75,11 +75,13 @@ import {
   listRomFolder,
   listStateSlots,
   loadCachedRom,
+  loadCachedRomPath,
   loadStateSlot,
   pickRomFolder,
   readRomFromFolder,
   saveAuthSession,
   saveRomToCache,
+  saveRomToCachePath,
   saveStateSlot,
   StateSlot,
   getPreference,
@@ -935,15 +937,25 @@ function App(): React.JSX.Element {
       hasUserRom.current = true;
 
       if (targetSystem === 'nds') {
-        // No Recientes cache entry, no CRC32 -- both currently assume the
-        // ROM's bytes are in JS memory, which is exactly what this path
-        // avoids for NDS. romId is just enough to give the save file a
-        // stable, per-ROM name. Cover art only needs the 12-byte title at
-        // the very start of the file, so it's cheap even without the rest.
+        // romId is a stable, deterministic identifier (name+size, not the
+        // cache entry's own id -- see saveRomToCachePath) so the save file
+        // and any Recientes reopen resolve to the same key every time.
+        // Cover art only needs the 12-byte title at the very start of the
+        // file, so it's cheap even without the rest.
         const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
         currentRomId.current = romId;
-        currentDsRomPath.current = picked.path;
         currentSaveSystem.current = 'nds';
+        // Cached the same way GB/GBA ROMs are (see saveRomToCache), just
+        // path-based instead of base64 -- the file stays on disk the whole
+        // time instead of round-tripping through JS memory. Not fatal if
+        // it fails: still playable, just won't show up in Recientes.
+        let dsPath = picked.path;
+        try {
+          const cached = await saveRomToCachePath(picked.path, picked.name, 'nds', picked.name);
+          dsPath = cached.path;
+          refreshRecentRoms();
+        } catch {}
+        currentDsRomPath.current = dsPath;
         setRomLabel(picked.name);
         setCoverImageUrl(null);
         setGbaCartLabel(null);
@@ -953,7 +965,7 @@ function App(): React.JSX.Element {
         lastSyncedSaveCrc.current = null;
         saveConflictChecked.current = false;
         const lookupId = ++coverLookupId.current;
-        readFileHeaderBase64(picked.path, 0x0c)
+        readFileHeaderBase64(dsPath, 0x0c)
           .then(base64 => {
             const romTitle = readRomTitle(base64ToBytes(base64), 'nds');
             return findCoverArt('nds', romTitle);
@@ -1053,6 +1065,40 @@ function App(): React.JSX.Element {
       setBusy(true);
       setRomLabel('Cargando ROM…');
       try {
+        if (rom.system === 'nds') {
+          // Same deterministic romId formula as handlePickRom/
+          // handleSelectHubFile (name+size, not rom.id -- that's just the
+          // cache entry's own key) so the save file resolves the same way
+          // regardless of how this ROM was opened.
+          const romId = `${rom.name}-${rom.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+          const dsPath = await loadCachedRomPath(rom.id);
+          currentRomId.current = romId;
+          currentSaveSystem.current = 'nds';
+          currentDsRomPath.current = dsPath;
+          hasUserRom.current = true;
+          setRomLabel(rom.label);
+          setCoverImageUrl(null);
+          setGbaCartLabel(null);
+          listStateSlots(romId)
+            .then(setStateSlots)
+            .catch(() => setStateSlots([]));
+          lastSyncedSaveCrc.current = null;
+          saveConflictChecked.current = false;
+          const lookupId = ++coverLookupId.current;
+          readFileHeaderBase64(dsPath, 0x0c)
+            .then(base64 => {
+              const romTitle = readRomTitle(base64ToBytes(base64), 'nds');
+              return findCoverArt('nds', romTitle);
+            })
+            .then(url => {
+              if (coverLookupId.current === lookupId) setCoverImageUrl(url);
+            })
+            .catch(() => {});
+          setTimeout(() => checkGameSaveConflict(romId), 500);
+          setSystem('nds');
+          setScreen('game');
+          return;
+        }
         const base64 = await loadCachedRom(rom.id);
         const targetSystem: EmulatedSystem = rom.system === 'gba' ? 'gba' : 'gb';
         loadIntoEmulator(base64ToBytes(base64), rom.label, targetSystem, base64);
@@ -1064,7 +1110,7 @@ function App(): React.JSX.Element {
         setBusy(false);
       }
     },
-    [loadIntoEmulator, refreshRecentRoms],
+    [checkGameSaveConflict, loadIntoEmulator, refreshRecentRoms],
   );
 
   const handleSelectHubFile = useCallback(
@@ -1084,8 +1130,14 @@ function App(): React.JSX.Element {
         if (targetSystem === 'nds') {
           const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
           currentRomId.current = romId;
-          currentDsRomPath.current = picked.path;
           currentSaveSystem.current = 'nds';
+          let dsPath = picked.path;
+          try {
+            const cached = await saveRomToCachePath(picked.path, picked.name, 'nds', file.title);
+            dsPath = cached.path;
+            refreshRecentRoms();
+          } catch {}
+          currentDsRomPath.current = dsPath;
           setRomLabel(file.title);
           setCoverImageUrl(null);
           setGbaCartLabel(null);
@@ -1095,7 +1147,7 @@ function App(): React.JSX.Element {
           lastSyncedSaveCrc.current = null;
           saveConflictChecked.current = false;
           const lookupId = ++coverLookupId.current;
-          readFileHeaderBase64(picked.path, 0x0c)
+          readFileHeaderBase64(dsPath, 0x0c)
             .then(base64 => {
               const romTitle = readRomTitle(base64ToBytes(base64), 'nds');
               return findCoverArt('nds', romTitle);

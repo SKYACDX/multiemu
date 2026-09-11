@@ -11,6 +11,8 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
+import android.os.HandlerThread
+import android.os.Process
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.View
@@ -28,19 +30,34 @@ import java.io.File
  */
 class DsView(context: Context) : View(context) {
 
-    private var ds: DsNative? = null
+    @Volatile private var ds: DsNative? = null
     private var topBitmap: Bitmap? = null
     private var bottomBitmap: Bitmap? = null
     private var audioTrack: AudioTrack? = null
     private var audioFocusRequest: AudioFocusRequest? = null
     private val audioBuffer = ShortArray(4096)
     private val paint = Paint().apply { isFilterBitmap = false }
-    private var running = false
+    @Volatile private var running = false
     // Used while the manual-save modal reads the cartridge save file --
     // see GbaView's identical pausedByModal, same reasoning: reading the
     // .sav while melonDS could be writing through to it risks catching a
     // torn write.
-    private var pausedByModal = false
+    @Volatile private var pausedByModal = false
+
+    // The emulation loop runs on its own thread (below), off the UI thread
+    // it used to share via Choreographer -- outdoor 3D-heavy NDS scenes can
+    // take longer than one vsync period to interpret, and running that
+    // directly on the UI thread meant it competed with (and got starved by)
+    // ordinary view traversal/input work, visible as extra slowdown on top
+    // of the interpreter's own cost. Every other method here still runs on
+    // whatever thread RN calls it from (the UI thread, for view commands) --
+    // dsLock guards every access to [ds] and the two bitmaps so the two
+    // threads never touch melonDS's native handle or read/write a bitmap
+    // at the same time. Sections under the lock are all short (no I/O), so
+    // the worst case is a touch/button event blocking for a fraction of a
+    // frame while the emu thread finishes the frame it's mid-way through.
+    private val dsLock = Any()
+    private var emuThread: HandlerThread? = null
 
     private val audioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_GAME)
@@ -49,17 +66,21 @@ class DsView(context: Context) : View(context) {
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            if (!pausedByModal) ds?.let { instance ->
-                instance.runFrame()
-                instance.readFramebuffers()
-                topBitmap?.setPixels(instance.topFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
-                bottomBitmap?.setPixels(instance.bottomFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
-                invalidate()
+            if (!pausedByModal) {
+                synchronized(dsLock) {
+                    ds?.let { instance ->
+                        instance.runFrame()
+                        instance.readFramebuffers()
+                        topBitmap?.setPixels(instance.topFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
+                        bottomBitmap?.setPixels(instance.bottomFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
 
-                val frames = instance.readAudioSamples(audioBuffer)
-                if (frames > 0) {
-                    audioTrack?.write(audioBuffer, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING)
+                        val frames = instance.readAudioSamples(audioBuffer)
+                        if (frames > 0) {
+                            audioTrack?.write(audioBuffer, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING)
+                        }
+                    }
                 }
+                post { invalidate() }
             }
             if (running) Choreographer.getInstance().postFrameCallback(this)
         }
@@ -131,20 +152,20 @@ class DsView(context: Context) : View(context) {
     }
 
     /** romId (e.g. the ROM's CRC32) keys its save file -- pass null to skip persistence. Only for small (e.g. homebrew) ROMs -- see loadRomFromPath. */
-    fun loadRom(rom: ByteArray, romId: String?) {
+    fun loadRom(rom: ByteArray, romId: String?) = synchronized(dsLock) {
         ds?.close()
         stopAudio()
         afterLoad(DsNative.load(rom, savePathFor(romId)))
     }
 
     /** Reads the ROM straight off disk -- see DsNative.loadFromPath. This is the path a real (128-512MB) NDS ROM should take. */
-    fun loadRomFromPath(romPath: String, romId: String?) {
+    fun loadRomFromPath(romPath: String, romId: String?) = synchronized(dsLock) {
         ds?.close()
         stopAudio()
         afterLoad(DsNative.loadFromPath(romPath, savePathFor(romId)))
     }
 
-    fun setButtonPressed(button: DsButton, pressed: Boolean) {
+    fun setButtonPressed(button: DsButton, pressed: Boolean) = synchronized(dsLock) {
         ds?.setButtonPressed(button, pressed)
     }
 
@@ -160,31 +181,42 @@ class DsView(context: Context) : View(context) {
      * regular GBA game. Returns false if nothing's loaded or the file
      * isn't a GBA ROM melonDS recognizes.
      */
-    fun insertGbaCart(gbaRomPath: String, gbaRomId: String?): Boolean {
-        return ds?.insertGbaCart(gbaRomPath, savePathFor(gbaRomId)) ?: false
+    fun insertGbaCart(gbaRomPath: String, gbaRomId: String?): Boolean = synchronized(dsLock) {
+        ds?.insertGbaCart(gbaRomPath, savePathFor(gbaRomId)) ?: false
     }
 
-    fun ejectGbaCart() {
+    fun ejectGbaCart() = synchronized(dsLock) {
         ds?.ejectGbaCart()
     }
 
     /** Full emulator state (not just cartridge save RAM) -- null if nothing's loaded or the save fails. */
-    fun saveState(): ByteArray? = ds?.saveState()
+    fun saveState(): ByteArray? = synchronized(dsLock) { ds?.saveState() }
 
-    fun loadState(data: ByteArray): Boolean = ds?.loadState(data) ?: false
+    fun loadState(data: ByteArray): Boolean = synchronized(dsLock) { ds?.loadState(data) ?: false }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         running = true
-        Choreographer.getInstance().postFrameCallback(frameCallback)
+        val thread = HandlerThread("DsEmuThread", Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        thread.start()
+        emuThread = thread
+        android.os.Handler(thread.looper).post { Choreographer.getInstance().postFrameCallback(frameCallback) }
         DsEmulatorControlModule.activeDs = this
     }
 
     override fun onDetachedFromWindow() {
         running = false
-        Choreographer.getInstance().removeFrameCallback(frameCallback)
-        ds?.close()
-        ds = null
+        // quit() (not quitSafely()) drops any not-yet-dispatched frame
+        // callback outright, then join() waits out whatever doFrame() call
+        // is already in flight -- only once that's guaranteed finished is
+        // it safe to close() the native handle below without racing it.
+        emuThread?.quit()
+        emuThread?.join()
+        emuThread = null
+        synchronized(dsLock) {
+            ds?.close()
+            ds = null
+        }
         stopAudio()
         if (DsEmulatorControlModule.activeDs === this) DsEmulatorControlModule.activeDs = null
         super.onDetachedFromWindow()
@@ -199,12 +231,14 @@ class DsView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val top = topBitmap
-        val bottom = bottomBitmap
-        if (top != null && bottom != null) {
-            val srcRect = Rect(0, 0, top.width, top.height)
-            canvas.drawBitmap(top, srcRect, topScreenRect(), paint)
-            canvas.drawBitmap(bottom, srcRect, bottomScreenRect(), paint)
+        synchronized(dsLock) {
+            val top = topBitmap
+            val bottom = bottomBitmap
+            if (top != null && bottom != null) {
+                val srcRect = Rect(0, 0, top.width, top.height)
+                canvas.drawBitmap(top, srcRect, topScreenRect(), paint)
+                canvas.drawBitmap(bottom, srcRect, bottomScreenRect(), paint)
+            }
         }
     }
 
@@ -234,7 +268,7 @@ class DsView(context: Context) : View(context) {
      * nearest edge instead of being dropped.
      */
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        val instance = ds ?: return false
+        if (ds == null) return false
         val rect = bottomScreenRect()
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
@@ -251,11 +285,11 @@ class DsView(context: Context) : View(context) {
                 val clampedY = event.y.coerceIn(rect.top.toFloat(), rect.bottom.toFloat() - 1)
                 val dsX = ((clampedX - rect.left) / rect.width() * DsNative.width).toInt().coerceIn(0, DsNative.width - 1)
                 val dsY = ((clampedY - rect.top) / rect.height() * DsNative.height).toInt().coerceIn(0, DsNative.height - 1)
-                instance.touchScreen(dsX, dsY)
+                synchronized(dsLock) { ds?.touchScreen(dsX, dsY) }
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                instance.releaseScreen()
+                synchronized(dsLock) { ds?.releaseScreen() }
                 return true
             }
         }

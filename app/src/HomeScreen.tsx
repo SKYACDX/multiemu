@@ -3,8 +3,8 @@ import {ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View} from 're
 import {CachedRom} from './RomLibraryNative';
 import {IconAccount, IconCartridge, IconClose, IconFile, IconFolder, IconGlobe, IconLink} from './icons';
 
-const SYSTEM_LABEL: Record<string, string> = {gb: 'GB', gbc: 'GBC', gba: 'GBA'};
-const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba: '#c2536a'};
+const SYSTEM_LABEL: Record<string, string> = {gb: 'GB', gbc: 'GBC', gba: 'GBA', nds: 'NDS'};
+const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba: '#c2536a', nds: '#8e5cd9'};
 
 interface Props {
   recentRoms: CachedRom[];
