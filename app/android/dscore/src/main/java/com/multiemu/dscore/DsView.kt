@@ -98,13 +98,6 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
         .build()
 
-    // Frame-timing diagnostic (logged once a second): tells CPU-bound
-    // (avgWork over budget) apart from pacing-bound (work fits, frames
-    // still late). Cheap enough to leave in.
-    private var statWorkNanos = 0L
-    private var statFrames = 0
-    private var statWindowStart = 0L
-
     // The DS runs at ~59.8237Hz, not the display's 60 -- this is that
     // period, which is what the emulation is paced against below.
     private val frameIntervalNanos = (1_000_000_000.0 / 59.8237).toLong()
@@ -122,7 +115,6 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
     private val frameRunnable = object : Runnable {
         override fun run() {
             if (!running) return
-            val workStart = System.nanoTime()
             if (!pausedByModal) {
                 synchronized(dsLock) {
                     ds?.let { instance ->
@@ -153,22 +145,6 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
                             audioTrack?.write(audioBuffer, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING)
                         }
                     }
-                }
-
-                statWorkNanos += System.nanoTime() - workStart
-                statFrames++
-                if (statWindowStart == 0L) statWindowStart = workStart
-                val elapsed = workStart - statWindowStart
-                if (elapsed >= 1_000_000_000L) {
-                    val avgMs = (statWorkNanos / statFrames) / 1_000_000.0
-                    val fps = statFrames * 1_000_000_000.0 / elapsed
-                    android.util.Log.i(
-                        "DsPerf",
-                        "fps=%.1f avgWork=%.2fms busy=%.0f%%".format(fps, avgMs, statWorkNanos * 100.0 / elapsed),
-                    )
-                    statWorkNanos = 0
-                    statFrames = 0
-                    statWindowStart = workStart
                 }
             }
 

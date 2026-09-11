@@ -394,18 +394,6 @@ JNIEXPORT jboolean JNICALL Java_com_multiemu_dscore_DsNative_nativePresentFrame(
     glViewport(0, 0, surfaceWidth, surfaceHeight);
     session->nds->GPU.GPU3D.GetCurrentRenderer().BlitToScreen(
         session->nds->GPU.FrontBuffer, topX, topY, topW, topH, botX, botY, botW, botH, surfaceHeight);
-    // A failed blit is invisible otherwise: the clear inside BlitToScreen
-    // still runs, so the symptom is a plain black screen with the
-    // emulator apparently running fine. Only the first few frames -- this
-    // is a bring-up check, not a per-frame cost.
-    static int errorChecksLeft = 3;
-    if (errorChecksLeft > 0) {
-        errorChecksLeft--;
-        GLenum err = glGetError();
-        __android_log_print(err == GL_NO_ERROR ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, "melonDS",
-                            "GL renderer: present glGetError=0x%x surface=%dx%d top=%d,%d %dx%d bot=%d,%d %dx%d",
-                            err, surfaceWidth, surfaceHeight, topX, topY, topW, topH, botX, botY, botW, botH);
-    }
     eglSwapBuffers(g_eglDisplay, g_windowSurface);
     return JNI_TRUE;
 }
