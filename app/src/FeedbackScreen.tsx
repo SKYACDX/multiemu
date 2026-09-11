@@ -1,7 +1,9 @@
 import React, {useState} from 'react';
-import {ActivityIndicator, Platform, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Image, Platform, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
 import {IconChevronLeft} from './icons';
-import {sendFeedback} from './api/romHackHubAccount';
+import {sendFeedback, uploadFeedbackScreenshot} from './api/romHackHubAccount';
+import {ImagePickerCancelledError, ImageTooLargeError, PickedImage, pickImage} from './ImagePicker';
+import {base64ToBytes} from './base64';
 
 interface Props {
   authToken: string | null;
@@ -9,18 +11,28 @@ interface Props {
   onClose: () => void;
 }
 
-/**
- * See docs/feedback-api.md. Screenshot attachment (POST
- * /api/app/feedback/upload-url) is skipped for now -- it's optional
- * server-side and would need an image-picker dependency this project
- * doesn't have yet; add it if users actually ask for it.
- */
+/** See docs/feedback-api.md -- same form/endpoints the web uses, screenshot attachment included. */
 export default function FeedbackScreen({authToken, appVersion, onClose}: Props) {
   const [body, setBody] = useState('');
   const [guestName, setGuestName] = useState('');
+  const [image, setImage] = useState<PickedImage | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+
+  const handlePickImage = async () => {
+    setError(null);
+    try {
+      setImage(await pickImage());
+    } catch (e) {
+      if (e instanceof ImagePickerCancelledError) return;
+      if (e instanceof ImageTooLargeError) {
+        setError('La imagen pesa más de 8MB, elige una más ligera.');
+        return;
+      }
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   // Android-only app (see App.tsx's own Platform.OS check) -- these two
   // fields exist on Android's PlatformConstants but aren't in RN's
@@ -33,11 +45,16 @@ export default function FeedbackScreen({authToken, appVersion, onClose}: Props) 
     setSending(true);
     setError(null);
     try {
+      let imageKey: string | undefined;
+      if (image) {
+        imageKey = await uploadFeedbackScreenshot(base64ToBytes(image.base64), image.name, image.mimeType, authToken ?? undefined);
+      }
       await sendFeedback(
         {
           body: body.trim(),
           deviceInfo,
           appVersion,
+          imageKey,
           guestName: authToken ? undefined : guestName.trim() || undefined,
         },
         authToken ?? undefined,
@@ -103,6 +120,23 @@ export default function FeedbackScreen({authToken, appVersion, onClose}: Props) 
             <Text style={styles.hint}>Inicia sesión en Cuenta para que le demos seguimiento a tu reporte.</Text>
           </>
         )}
+
+        {image ? (
+          <View style={styles.imagePreviewRow}>
+            <Image source={{uri: `data:${image.mimeType};base64,${image.base64}`}} style={styles.imagePreview} />
+            <Text style={styles.imageName} numberOfLines={1}>
+              {image.name}
+            </Text>
+            <Pressable onPress={() => setImage(null)} hitSlop={8}>
+              <Text style={styles.link}>Quitar</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable style={styles.attachButton} onPress={handlePickImage}>
+            <Text style={styles.attachLabel}>Adjuntar captura de pantalla (opcional)</Text>
+          </Pressable>
+        )}
+
         {error && <Text style={styles.errorText}>{error}</Text>}
         <Pressable style={[styles.submitButton, !body.trim() && styles.submitButtonDisabled]} disabled={sending || !body.trim()} onPress={handleSend}>
           {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitLabel}>Enviar</Text>}
@@ -145,6 +179,17 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   errorText: {color: '#ff6b6b', fontSize: 12, marginBottom: 10},
+  attachButton: {
+    backgroundColor: '#2a2a2a',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  attachLabel: {color: '#7ab8ff', fontSize: 13, fontWeight: '600'},
+  imagePreviewRow: {flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10},
+  imagePreview: {width: 44, height: 44, borderRadius: 6, backgroundColor: '#2a2a2a'},
+  imageName: {color: '#ccc', fontSize: 12, flex: 1},
   submitButton: {
     backgroundColor: '#2f5f8f',
     borderRadius: 10,

@@ -110,8 +110,12 @@ export async function deleteCloudSave(token: string, id: string): Promise<void> 
  * optional and mutually exclusive in practice (guestName is ignored if
  * a token is sent).
  */
-export async function uploadFeedbackScreenshot(bytes: Uint8Array, filename: string, token?: string): Promise<string> {
-  const contentType = 'image/png';
+export async function uploadFeedbackScreenshot(
+  bytes: Uint8Array,
+  filename: string,
+  contentType: string,
+  token?: string,
+): Promise<string> {
   const {uploadUrl, storedName} = await accountFetch<{uploadUrl: string; storedName: string}>(
     '/api/app/feedback/upload-url',
     {method: 'POST', body: JSON.stringify({filename, contentType})},

@@ -16,6 +16,7 @@
 #include <android/log.h>
 #include <cstdarg>
 #include <cstdio>
+#include <dlfcn.h>
 #include <mutex>
 #include <semaphore.h>
 #include <string>
@@ -294,10 +295,21 @@ void Addon_RumbleStart(u32 len, void* userdata) {}
 void Addon_RumbleStop(void* userdata) {}
 float Addon_MotionQuery(MotionQueryType type, void* userdata) { return 0.0f; }
 
-// ---- Dynamic library loading -- not needed (no plugin system here). ----
+// ---- Dynamic library loading. ----
+//
+// Not there for a plugin system -- ARMJIT_Memory.cpp uses this to look up
+// ASharedMemory_create from libandroid.so at runtime (it's only available
+// from API 26+, so melonDS probes for it instead of linking it directly),
+// falling back to opening /dev/ashmem by hand if the lookup fails. That
+// fallback is blocked by SELinux for regular apps on modern Android (the
+// open() is denied, but the code presses on with the resulting bad fd and
+// segfaults on the following ftruncate/mmap) -- this stub returning
+// nullptr unconditionally forced every build onto that broken fallback
+// path, which is what made enabling the JIT crash instantly on ROM load.
+// A plain dlopen/dlsym/dlclose is all melonDS actually asks of this API.
 
-DynamicLibrary* DynamicLibrary_Load(const char* lib) { return nullptr; }
-void DynamicLibrary_Unload(DynamicLibrary* lib) {}
-void* DynamicLibrary_LoadFunction(DynamicLibrary* lib, const char* name) { return nullptr; }
+DynamicLibrary* DynamicLibrary_Load(const char* lib) { return reinterpret_cast<DynamicLibrary*>(dlopen(lib, RTLD_LAZY)); }
+void DynamicLibrary_Unload(DynamicLibrary* lib) { dlclose(reinterpret_cast<void*>(lib)); }
+void* DynamicLibrary_LoadFunction(DynamicLibrary* lib, const char* name) { return dlsym(reinterpret_cast<void*>(lib), name); }
 
 }  // namespace melonDS::Platform

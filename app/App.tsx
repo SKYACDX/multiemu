@@ -313,25 +313,36 @@ function App(): React.JSX.Element {
     null,
   );
   const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6h, not on every launch
-  useEffect(() => {
-    (async () => {
-      try {
-        const lastCheckedAt = Number((await getPreference('lastUpdateCheckAt')) ?? 0);
-        if (Date.now() - lastCheckedAt < UPDATE_CHECK_INTERVAL_MS) return;
-        const [{latestRelease}, installedVersionCode, dismissed] = await Promise.all([
-          getAppInfo(),
-          getAppVersionCode(),
-          getPreference('dismissedUpdateVersionCode'),
-        ]);
-        setPreference('lastUpdateCheckAt', String(Date.now())).catch(() => {});
-        if (latestRelease.versionCode <= installedVersionCode) return;
-        if (Number(dismissed) === latestRelease.versionCode) return;
-        setAvailableUpdate({version: latestRelease.version, changelog: latestRelease.changelog, versionCode: latestRelease.versionCode});
-      } catch {
-        // No connection, or the endpoint is briefly down -- just try again next check window.
-      }
-    })();
+  const checkForUpdate = useCallback(async () => {
+    try {
+      const lastCheckedAt = Number((await getPreference('lastUpdateCheckAt')) ?? 0);
+      if (Date.now() - lastCheckedAt < UPDATE_CHECK_INTERVAL_MS) return;
+      const [{latestRelease}, installedVersionCode, dismissed] = await Promise.all([
+        getAppInfo(),
+        getAppVersionCode(),
+        getPreference('dismissedUpdateVersionCode'),
+      ]);
+      setPreference('lastUpdateCheckAt', String(Date.now())).catch(() => {});
+      if (latestRelease.versionCode <= installedVersionCode) return;
+      if (Number(dismissed) === latestRelease.versionCode) return;
+      setAvailableUpdate({version: latestRelease.version, changelog: latestRelease.changelog, versionCode: latestRelease.versionCode});
+    } catch {
+      // No connection, or the endpoint is briefly down -- just try again next check window.
+    }
   }, []);
+
+  useEffect(() => {
+    checkForUpdate();
+    // Most phone usage is "resume from background", not a cold start --
+    // a mounted App() never re-runs a []-deps effect on its own, so
+    // without this the check could go days without firing for someone
+    // who rarely fully closes the app. Same 6h throttle applies either
+    // way, this just gives it more chances to actually run.
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active') checkForUpdate();
+    });
+    return () => sub.remove();
+  }, [checkForUpdate]);
 
   const dismissUpdateBanner = useCallback(() => {
     if (availableUpdate) setPreference('dismissedUpdateVersionCode', String(availableUpdate.versionCode)).catch(() => {});
@@ -1989,18 +2000,33 @@ function GameControls({
     [],
   );
 
-  const updateFromTouches = useCallback(
-    (evt: GestureResponderEvent) => {
-      const touches = evt.nativeEvent.touches.length ? evt.nativeEvent.touches : [evt.nativeEvent];
-      const next = new Set<PadButtonId>();
-      for (const touch of touches) {
-        for (const id of Object.keys(rects.current) as PadButtonId[]) {
-          const r = rects.current[id];
-          if (r && touch.pageX >= r.x && touch.pageX <= r.x + r.w && touch.pageY >= r.y && touch.pageY <= r.y + r.h) {
-            next.add(id);
-          }
+  const buttonsUnderTouches = useCallback((evt: GestureResponderEvent) => {
+    const touches = evt.nativeEvent.touches.length ? evt.nativeEvent.touches : [evt.nativeEvent];
+    const next = new Set<PadButtonId>();
+    for (const touch of touches) {
+      for (const id of Object.keys(rects.current) as PadButtonId[]) {
+        const r = rects.current[id];
+        if (r && touch.pageX >= r.x && touch.pageX <= r.x + r.w && touch.pageY >= r.y && touch.pageY <= r.y + r.h) {
+          next.add(id);
         }
       }
+    }
+    return next;
+  }, []);
+
+  // gameControlsRoot/landscapeControlsRoot are one shared touch surface
+  // spanning every cluster's bounding box, including the empty space a
+  // flex row like shoulderRow leaves between L (left edge) and R (right
+  // edge) -- that gap sits right over the screen once it's big enough,
+  // and used to swallow every tap there before it could reach the DS
+  // touchscreen underneath. Only claiming the responder when a touch
+  // actually lands on a tracked button (not just inside the root's
+  // rectangle) lets anything else fall through to whatever is behind it.
+  const isTouchOnButton = useCallback((evt: GestureResponderEvent) => buttonsUnderTouches(evt).size > 0, [buttonsUnderTouches]);
+
+  const updateFromTouches = useCallback(
+    (evt: GestureResponderEvent) => {
+      const next = buttonsUnderTouches(evt);
       setPressed(prev => {
         prev.forEach(id => {
           if (!next.has(id)) dispatch(id, false);
@@ -2011,7 +2037,7 @@ function GameControls({
         return next;
       });
     },
-    [dispatch],
+    [dispatch, buttonsUnderTouches],
   );
 
   const releaseAll = useCallback(() => {
@@ -2035,8 +2061,8 @@ function GameControls({
       <View
         style={styles.landscapeControlsRoot}
         onLayout={measureAll}
-        onStartShouldSetResponder={() => !editing}
-        onMoveShouldSetResponder={() => !editing}
+        onStartShouldSetResponder={evt => !editing && isTouchOnButton(evt)}
+        onMoveShouldSetResponder={evt => !editing && isTouchOnButton(evt)}
         onResponderTerminationRequest={() => false}
         onResponderGrant={updateFromTouches}
         onResponderMove={updateFromTouches}
@@ -2559,9 +2585,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     borderRadius: 4,
   },
-  // Two 256x192 screens stacked (2:3 combined) -- narrower than GB/GBA's
-  // width so the total height stays close to theirs instead of pushing
-  // the controls below off-screen.
+  // Two 256x192 screens stacked (2:3 combined). Sized to use a good
+  // amount of the device without being oversized -- what used to make
+  // it look like it "covered" the A button (and blocked the DS
+  // touchscreen under L/R) was GameControls' shared touch surface
+  // claiming the whole gap between L and R even where nothing was
+  // drawn (see isTouchOnButton), not the screen's size, so this no
+  // longer needs to be shrunk to fix that.
   screenDs: {
     width: 220,
     height: 330,
