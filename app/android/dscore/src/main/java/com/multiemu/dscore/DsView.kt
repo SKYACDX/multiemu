@@ -129,24 +129,32 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
                         } else {
                             DsNative.PRESENT_NO_SURFACE
                         }
-                        if (presented != DsNative.PRESENT_OK) {
-                            // Only the software renderer is a permanent
-                            // reason to give up on the GL path -- and only
-                            // then does the Surface have to go back, since
-                            // EGL and lockCanvas cannot both own one.
-                            // PRESENT_NO_SURFACE just means the handover
-                            // is still queued on this thread (it lands
-                            // behind a multi-second ROM load), so fall
-                            // back for this frame only. Latching it off
-                            // there stranded the whole session on the CPU
-                            // path: surfaceCreated re-checks useGlPresent
-                            // before posting, so once off it never got
-                            // another chance -- the "first launch is slow,
-                            // reopen the ROM and it's fine" bug.
-                            if (presented == DsNative.PRESENT_NOT_ACCELERATED) {
-                                useGlPresent = false
-                                DsNative.setSurface(null)
-                            }
+                        // Only the software renderer is a permanent
+                        // reason to give up on the GL path -- and only
+                        // then does the Surface have to go back, since
+                        // EGL and lockCanvas cannot both own one.
+                        // PRESENT_NO_SURFACE just means the handover is
+                        // still queued on this thread (it lands behind a
+                        // multi-second ROM load). Latching *that* off
+                        // stranded the whole session on the CPU path:
+                        // surfaceCreated re-checks useGlPresent before
+                        // posting, so once off it never got another
+                        // chance -- the "first launch is slow, reopen the
+                        // ROM and it's fine" bug.
+                        if (presented == DsNative.PRESENT_NOT_ACCELERATED) {
+                            useGlPresent = false
+                            DsNative.setSurface(null)
+                        }
+                        // ...and while that handover is merely pending,
+                        // display nothing rather than reaching for
+                        // lockCanvas. Locking the Surface's Canvas
+                        // connects it to the CPU rendering API, after
+                        // which eglCreateWindowSurface on the same
+                        // Surface fails with EGL_BAD_ALLOC (0x3003) for
+                        // good -- so a few undisplayed frames here is the
+                        // cheap outcome, and drawing them is the one that
+                        // costs the GL path entirely.
+                        if (presented != DsNative.PRESENT_OK && !useGlPresent) {
                             instance.readFramebuffers()
                             topBitmap?.setPixels(instance.topFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
                             bottomBitmap?.setPixels(instance.bottomFramebuffer, 0, DsNative.width, 0, 0, DsNative.width, DsNative.height)
