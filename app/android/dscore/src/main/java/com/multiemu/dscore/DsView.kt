@@ -124,13 +124,26 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
                         // surface and a GL compositor behind it: no
                         // readback, no int[] copy across JNI, no Bitmap,
                         // no Canvas, and no work handed to the UI thread.
-                        val presented = hasSurface && useGlPresent &&
+                        val presented = if (hasSurface && useGlPresent) {
                             instance.presentFrame(topScreenRect(), bottomScreenRect(), surfaceWidth, surfaceHeight)
-                        if (!presented) {
-                            if (hasSurface && useGlPresent) {
-                                // Software renderer (no compositor to read
-                                // from) -- hand the Surface back so
-                                // lockCanvas can have it instead.
+                        } else {
+                            DsNative.PRESENT_NO_SURFACE
+                        }
+                        if (presented != DsNative.PRESENT_OK) {
+                            // Only the software renderer is a permanent
+                            // reason to give up on the GL path -- and only
+                            // then does the Surface have to go back, since
+                            // EGL and lockCanvas cannot both own one.
+                            // PRESENT_NO_SURFACE just means the handover
+                            // is still queued on this thread (it lands
+                            // behind a multi-second ROM load), so fall
+                            // back for this frame only. Latching it off
+                            // there stranded the whole session on the CPU
+                            // path: surfaceCreated re-checks useGlPresent
+                            // before posting, so once off it never got
+                            // another chance -- the "first launch is slow,
+                            // reopen the ROM and it's fine" bug.
+                            if (presented == DsNative.PRESENT_NOT_ACCELERATED) {
                                 useGlPresent = false
                                 DsNative.setSurface(null)
                             }

@@ -380,22 +380,28 @@ JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeSetSurface(
 // Draws the frame straight from the GL compositor's output to the window
 // surface. Rects are top-left-origin pixels in surface space (DsView
 // computes the same letterboxed rects it used to pass to Canvas).
-// Returns false if there's no window surface, in which case the caller
-// should fall back to the Bitmap/Canvas path.
-JNIEXPORT jboolean JNICALL Java_com_multiemu_dscore_DsNative_nativePresentFrame(
+// Returns one of DsNative's PRESENT_* codes. NO_SURFACE and
+// NOT_ACCELERATED both mean "caller must use the Bitmap/Canvas path this
+// frame", but they are very different in kind and the caller has to tell
+// them apart: NO_SURFACE is transient (the Surface handover is posted to
+// this same thread and can still be queued behind a multi-second ROM
+// load), while NOT_ACCELERATED is a property of the session that won't
+// change. Treating the transient one as permanent stranded the whole
+// session on the CPU path -- see DsView's frameRunnable.
+JNIEXPORT jint JNICALL Java_com_multiemu_dscore_DsNative_nativePresentFrame(
     JNIEnv*, jclass, jlong handle,
     jint topX, jint topY, jint topW, jint topH,
     jint botX, jint botY, jint botW, jint botH,
     jint surfaceWidth, jint surfaceHeight) {
-    if (g_windowSurface == EGL_NO_SURFACE) return JNI_FALSE;
+    if (g_windowSurface == EGL_NO_SURFACE) return 1;  // PRESENT_NO_SURFACE
     auto* session = handleToSession(handle);
-    if (!session->nds->GPU.GPU3D.IsRendererAccelerated()) return JNI_FALSE;
+    if (!session->nds->GPU.GPU3D.IsRendererAccelerated()) return 2;  // PRESENT_NOT_ACCELERATED
 
     glViewport(0, 0, surfaceWidth, surfaceHeight);
     session->nds->GPU.GPU3D.GetCurrentRenderer().BlitToScreen(
         session->nds->GPU.FrontBuffer, topX, topY, topW, topH, botX, botY, botW, botH, surfaceHeight);
     eglSwapBuffers(g_eglDisplay, g_windowSurface);
-    return JNI_TRUE;
+    return 0;  // PRESENT_OK
 }
 
 JNIEXPORT jint JNICALL Java_com_multiemu_dscore_DsNative_nativeGetWidth(JNIEnv*, jclass) { return 256; }

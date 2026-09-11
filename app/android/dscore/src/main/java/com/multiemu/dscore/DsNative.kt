@@ -64,7 +64,26 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
             topX: Int, topY: Int, topW: Int, topH: Int,
             botX: Int, botY: Int, botW: Int, botH: Int,
             surfaceWidth: Int, surfaceHeight: Int,
-        ): Boolean
+        ): Int
+
+        /** [presentFrame] drew the frame; nothing else to do. */
+        const val PRESENT_OK = 0
+
+        /**
+         * No EGL window surface (yet). Transient: [setSurface] is posted
+         * to the emulation thread and can still be sitting behind a
+         * multi-second ROM load. Use the Bitmap/Canvas path for this
+         * frame and try again on the next one -- do NOT latch it off.
+         */
+        const val PRESENT_NO_SURFACE = 1
+
+        /**
+         * melonDS fell back to its software 3D renderer, so there's no
+         * compositor output to blit. Permanent for the session, and
+         * unlike [PRESENT_NO_SURFACE] the Surface has to be handed back
+         * (EGL and lockCanvas cannot both own one).
+         */
+        const val PRESENT_NOT_ACCELERATED = 2
         @JvmStatic private external fun nativeSetButtonPressed(handle: Long, buttonId: Int, pressed: Boolean)
         @JvmStatic private external fun nativeTouchScreen(handle: Long, x: Int, y: Int)
         @JvmStatic private external fun nativeReleaseScreen(handle: Long)
@@ -96,16 +115,16 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
      * Draws the frame straight from the GL compositor to the window
      * surface handed over by [setSurface], skipping the whole
      * GPU->CPU->Bitmap->Canvas path [readFramebuffers] feeds. Rects are
-     * top-left-origin pixels in surface space. Returns false when there's
-     * no window surface (or the software renderer is active), in which
-     * case the caller has to fall back to that CPU path.
+     * top-left-origin pixels in surface space. Returns one of the
+     * PRESENT_* codes -- anything but [PRESENT_OK] means the caller has
+     * to fall back to that CPU path for this frame.
      */
     fun presentFrame(
         top: android.graphics.Rect,
         bottom: android.graphics.Rect,
         surfaceWidth: Int,
         surfaceHeight: Int,
-    ): Boolean {
+    ): Int {
         check(handle != 0L) { "DsNative used after close()" }
         return nativePresentFrame(
             handle,

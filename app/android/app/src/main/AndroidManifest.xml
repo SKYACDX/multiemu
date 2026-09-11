@@ -12,6 +12,12 @@
       android:theme="@style/AppTheme"
       android:usesCleartextTraffic="${usesCleartextTraffic}"
       android:supportsRtl="true">
+      <!-- Lets `adb shell` attach simpleperf to a release build. Debug
+           builds are profileable by being debuggable; release ones need
+           this, and profiling a debug build measures React Native's dev
+           mode (Metro, LogBox, dev instrumentation) rather than what
+           ships. Grants profiling only, not debugging. -->
+      <profileable android:shell="true" />
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
