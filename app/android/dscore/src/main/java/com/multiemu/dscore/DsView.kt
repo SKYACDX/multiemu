@@ -71,6 +71,16 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
     // torn write.
     @Volatile private var pausedByModal = false
 
+    /**
+     * Set while the app isn't on screen. The other cores are driven by
+     * [android.view.Choreographer], which simply stops delivering frames
+     * to an invisible window, so they pause for free -- this one paces
+     * itself on its own thread and would otherwise keep emulating (and
+     * draining the battery) in the background, with the game advancing
+     * while nobody is watching it.
+     */
+    @Volatile private var pausedByBackground = false
+
     // The emulation loop runs on its own thread (below), off the UI thread
     // it used to share via Choreographer -- outdoor 3D-heavy NDS scenes can
     // take longer than one vsync period to interpret, and running that
@@ -88,6 +98,11 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
     private var emuHandler: Handler? = null
 
     init {
+        // Emulators are held like a game, not read like a page: without
+        // this the screen dims and locks mid-play whenever the user goes
+        // a while without touching the controls. Scoped to this view, so
+        // it stops applying the moment it goes away.
+        keepScreenOn = true
         holder.addCallback(this)
         // The on-screen controls (and the title bar) are React Native
         // views laid out *over* this one, and a z-ordered-on-top surface
@@ -123,7 +138,7 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
     private val frameRunnable = object : Runnable {
         override fun run() {
             if (!running) return
-            if (!pausedByModal) {
+            if (!pausedByModal && !pausedByBackground) {
                 synchronized(dsLock) {
                     ds?.let { instance ->
                         instance.runFrame()
@@ -178,6 +193,16 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
             }
 
             val now = System.nanoTime()
+            // Paused: idle properly instead of pacing. The catch-up
+            // branch below would otherwise re-anchor to now and repost
+            // immediately every time, spinning the thread through
+            // do-nothing frames -- ~2% of a core for a game nobody is
+            // looking at.
+            if (pausedByModal || pausedByBackground) {
+                nextFrameTargetNanos = now
+                emuHandler?.postDelayed(this, 100L)
+                return
+            }
             nextFrameTargetNanos += frameIntervalNanos
             // Running behind (the normal case on a 3D-heavy scene): give
             // up on catching up -- re-anchoring to now instead of letting
@@ -372,6 +397,15 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
         }
         handler.post(frameRunnable)
         DsEmulatorControlModule.activeDs = this
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        val background = visibility != VISIBLE
+        pausedByBackground = background
+        // Also stop the AudioTrack rather than just starving it: a track
+        // left playing with nothing to play underruns in a loop.
+        if (background) audioTrack?.pause() else audioTrack?.play()
     }
 
     override fun onDetachedFromWindow() {

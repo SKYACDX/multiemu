@@ -30,6 +30,14 @@ import java.io.File
  */
 class GbaLinkView(context: Context) : View(context) {
 
+    init {
+        // Emulators are held like a game, not read like a page: without
+        // this the screen dims and locks mid-play whenever the user goes a
+        // while without touching the controls. Scoped to this view, so it
+        // stops applying the moment it goes away.
+        keepScreenOn = true
+    }
+
     private var session: GbaLinkNative? = null
     private var bitmapA: Bitmap? = null
     private var bitmapB: Bitmap? = null

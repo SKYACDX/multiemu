@@ -27,6 +27,14 @@ private const val TAG = "GbaView"
  */
 class GbaView(context: Context) : View(context) {
 
+    init {
+        // Emulators are held like a game, not read like a page: without
+        // this the screen dims and locks mid-play whenever the user goes a
+        // while without touching the controls. Scoped to this view, so it
+        // stops applying the moment it goes away.
+        keepScreenOn = true
+    }
+
     private var gba: GbaNative? = null
     private var bitmap: Bitmap? = null
     private var audioTrack: AudioTrack? = null
