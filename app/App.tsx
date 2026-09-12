@@ -2509,7 +2509,11 @@ const styles = StyleSheet.create({
   // uses elevation:10, which without this would render it on top of the
   // buttons regardless of paint order, covering them once the screen is
   // scaled up enough to reach them.
-  gameControlsRoot: {elevation: 15},
+  // width:'100%' so this matches the full-width bottomGroup it sits in.
+  // Without it this box sized itself to its widest child and got centred,
+  // which offset every '100%' row inside it by a few px against the real
+  // screen -- enough to clip L off the left edge while R kept a margin.
+  gameControlsRoot: {elevation: 15, width: '100%'},
   updateBanner: {
     position: 'absolute',
     left: 12,
@@ -2764,7 +2768,12 @@ const styles = StyleSheet.create({
   shoulderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    width: 331 + 12,
+    // Full width, not a fixed 343: that width was centred in whatever the
+    // controls column happened to be, so the two ends landed at arbitrary
+    // points -- L flush against the left edge (and clipped by it) while R
+    // kept a margin on the right. '100%' with space-between puts each one
+    // on its own real edge, symmetrically, on any screen width.
+    width: '100%',
     marginTop: 6,
   },
   speedRow: {
