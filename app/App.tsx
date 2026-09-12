@@ -180,6 +180,10 @@ const DEFAULT_CONTROL_LAYOUT_NDS: ControlLayout = {offsets: {}, scales: {screen:
 const LANDSCAPE_EDGE_MARGIN = 20;
 const LANDSCAPE_DPAD_HEIGHT = 144;
 const LANDSCAPE_ACTIONS_HEIGHT = 110;
+// Side of the DS face-button diamond (styles.actionClusterDs). Taller
+// than the GBA's two-button cluster, so landscape's bottom-anchored top:
+// has to account for it or the diamond hangs off the edge.
+const DS_DIAMOND_SIZE = 160;
 const LANDSCAPE_SYSTEM_ROW_HEIGHT = 40;
 const MIN_SCALE = 0.7;
 // The screen is now decoupled from every cluster's layout (see
@@ -1332,11 +1336,19 @@ function App(): React.JSX.Element {
     [controlLayoutKey],
   );
 
+  // Reads the live layout out of a ref rather than the render that built
+  // this callback: a drag is a long-lived gesture and the layout can have
+  // changed (another cluster moved, a rescale, a rotation reloading it)
+  // since. Merging into a stale copy is how one cluster's move erased
+  // another's.
+  const controlLayoutRef = useRef(controlLayout);
+  controlLayoutRef.current = controlLayout;
   const handleDragCluster = useCallback(
     (id: ClusterId, dx: number, dy: number) => {
-      persistControlLayout({...controlLayout, offsets: {...controlLayout.offsets, [id]: {dx, dy}}});
+      const current = controlLayoutRef.current;
+      persistControlLayout({...current, offsets: {...current.offsets, [id]: {dx, dy}}});
     },
-    [controlLayout, persistControlLayout],
+    [persistControlLayout],
   );
 
   // The value shown/adjusted for whichever component is selected --
@@ -1618,7 +1630,7 @@ function App(): React.JSX.Element {
     system === 'nds' ? SCALE_TARGETS.map(t => (t.id === 'actions' ? {...t, label: 'A/B/X/Y'} : t)) : SCALE_TARGETS;
   const editToolbar = editingControls && (
     <View style={styles.editToolbar}>
-      {!isLandscape && <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>}
+      <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>
       <View style={[styles.editToolbarRow, styles.scaleTargetRow]}>
         {scaleTargets.map(t => (
           <Pressable
@@ -1886,7 +1898,6 @@ function App(): React.JSX.Element {
               </Pressable>
             </View>
 
-            {editToolbar}
           </View>
 
           <View style={[styles.landscapeStage, {maxHeight: landscapeStageHeight}]}>
@@ -1903,6 +1914,14 @@ function App(): React.JSX.Element {
               stageHeight={landscapeStageHeight}
             />
           </View>
+          {/* Floated over the stage rather than stacked above it: in
+              landscape there isn't the vertical room to give this a row of
+              its own, and competing for it left the toolbar's lower half
+              underneath the screen -- which, the screen being a
+              SurfaceView, punches a hole straight through whatever shares
+              its rect (see DsView.kt's z-order note). On top it is always
+              reachable, and it only exists while editing anyway. */}
+          {editingControls && <View style={styles.landscapeEditOverlay}>{editToolbar}</View>}
         </View>
 
         <Modal visible={saveModalOpen} transparent animationType="fade" onRequestClose={closeSaveModal}>
@@ -2172,6 +2191,7 @@ function GameControls({
         onResponderRelease={releaseAll}
         onResponderTerminate={releaseAll}>
         <View style={styles.landscapeShoulderLeft}>
+          <DraggableCluster id="shoulderL" editing={editing} offset={offsets.shoulderL} onDrag={onDrag}>
           <View
             ref={setRef('L')}
             style={[
@@ -2183,8 +2203,10 @@ function GameControls({
             ]}>
             <Text style={styles.shoulderLabel}>L</Text>
           </View>
+          </DraggableCluster>
         </View>
         <View style={styles.landscapeShoulderRight}>
+          <DraggableCluster id="shoulderR" editing={editing} offset={offsets.shoulderR} onDrag={onDrag}>
           <View
             ref={setRef('R')}
             style={[
@@ -2196,26 +2218,11 @@ function GameControls({
             ]}>
             <Text style={styles.shoulderLabel}>R</Text>
           </View>
+          </DraggableCluster>
         </View>
 
-        {/* Sits just above the actions cluster (10dp gap) -- 44 is landscapeXY's own height. */}
-        {system === 'nds' && (
-          <View
-            style={[
-              styles.landscapeXY,
-              {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_ACTIONS_HEIGHT - 10 - 44},
-              clusterScale('xy'),
-            ]}>
-            <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
-              <Text style={styles.pillLabel}>Y</Text>
-            </View>
-            <View ref={setRef('X')} style={[styles.pillButton, styles.pillButtonStart, isPressed('X') && styles.pillButtonPressed]}>
-              <Text style={styles.pillLabel}>X</Text>
-            </View>
-          </View>
-        )}
-
         <View style={[styles.landscapeDpadWrap, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_DPAD_HEIGHT}]}>
+          <DraggableCluster id="dpad" editing={editing} offset={offsets.dpad} onDrag={onDrag}>
           <View style={[styles.dpad, clusterScale('dpad')]}>
             <View style={[styles.dpadBarHorizontal, {backgroundColor: withAlpha(cs.dpadColor, 0.75), borderRadius: cs.dpadRadius}]} />
             <View style={[styles.dpadBarVertical, {backgroundColor: withAlpha(cs.dpadColor, 0.75), borderRadius: cs.dpadRadius}]} />
@@ -2241,16 +2248,22 @@ function GameControls({
               <IconTriangle rotation={90} />
             </View>
           </View>
+          </DraggableCluster>
         </View>
 
-        <View style={[styles.landscapeActionsWrap, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_ACTIONS_HEIGHT}]}>
-          <View style={[styles.actionCluster, clusterScale('actions')]}>
+        <View
+          style={[
+            styles.landscapeActionsWrap,
+            {top: stageHeight - LANDSCAPE_EDGE_MARGIN - (isDs ? DS_DIAMOND_SIZE : LANDSCAPE_ACTIONS_HEIGHT)},
+          ]}>
+          <DraggableCluster id="actions" editing={editing} offset={offsets.actions} onDrag={onDrag}>
+          <View style={[isDs ? styles.actionClusterDs : styles.actionCluster, clusterScale('actions')]}>
             <View
               ref={setRef('B')}
               style={[
                 styles.actionButton,
                 {backgroundColor: withAlpha(cs.actionColorB, 0.8), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
-                styles.buttonBPosition,
+                isDs ? styles.buttonBPositionDs : styles.buttonBPosition,
                 isPressed('B') && styles.actionButtonPressed,
               ]}>
               <Text style={styles.actionLabel}>B</Text>
@@ -2260,21 +2273,50 @@ function GameControls({
               style={[
                 styles.actionButton,
                 {backgroundColor: withAlpha(cs.actionColorA, 0.8), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
-                styles.buttonAPosition,
+                isDs ? styles.buttonAPositionDs : styles.buttonAPosition,
                 isPressed('A') && styles.actionButtonPressed,
               ]}>
               <Text style={styles.actionLabel}>A</Text>
             </View>
+            {isDs && (
+              <>
+                <View
+                  ref={setRef('X')}
+                  style={[
+                    styles.actionButton,
+                    {backgroundColor: withAlpha(cs.actionColorA, 0.8), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                    styles.buttonXPositionDs,
+                    isPressed('X') && styles.actionButtonPressed,
+                  ]}>
+                  <Text style={styles.actionLabel}>X</Text>
+                </View>
+                <View
+                  ref={setRef('Y')}
+                  style={[
+                    styles.actionButton,
+                    {backgroundColor: withAlpha(cs.actionColorB, 0.8), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                    styles.buttonYPositionDs,
+                    isPressed('Y') && styles.actionButtonPressed,
+                  ]}>
+                  <Text style={styles.actionLabel}>Y</Text>
+                </View>
+              </>
+            )}
           </View>
+          </DraggableCluster>
         </View>
 
-        <View style={[styles.landscapeSystemRow, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_SYSTEM_ROW_HEIGHT}, clusterScale('system')]}>
+        <View style={[styles.landscapeSystemRow, {top: stageHeight - LANDSCAPE_EDGE_MARGIN - LANDSCAPE_SYSTEM_ROW_HEIGHT}]}>
+          <DraggableCluster id="system" editing={editing} offset={offsets.system} onDrag={onDrag}>
+          <View style={[styles.landscapeSystemInner, clusterScale('system')]}>
           <View ref={setRef('SELECT')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('SELECT') && styles.pillButtonPressed]}>
             <Text style={styles.pillLabel}>SELECT</Text>
           </View>
           <View ref={setRef('START')} style={[styles.pillButton, styles.pillButtonStart, isPressed('START') && styles.pillButtonPressed]}>
             <Text style={styles.pillLabel}>START</Text>
           </View>
+          </View>
+          </DraggableCluster>
         </View>
       </View>
     );
@@ -2470,8 +2512,14 @@ function DraggableCluster({
   // when PanResponder.create ran (once, via the useRef initializer) --
   // this ref is how they see up-to-date editing/offset values instead
   // of a stale first-render snapshot.
-  const latest = useRef({editing, offset: resolvedOffset});
-  latest.current = {editing, offset: resolvedOffset};
+  // onDrag belongs in here too, not just editing/offset: PanResponder is
+  // built once (useRef initializer), so calling the prop directly meant
+  // every drag for the life of the view ran the callback from the *first*
+  // render -- which closes over the layout as it was then. Dragging a
+  // second cluster therefore saved the first one's position back to its
+  // pre-drag value, silently undoing it.
+  const latest = useRef({editing, offset: resolvedOffset, onDrag});
+  latest.current = {editing, offset: resolvedOffset, onDrag};
   const dragStart = useRef({dx: 0, dy: 0});
 
   const panResponder = useRef(
@@ -2482,7 +2530,7 @@ function DraggableCluster({
         dragStart.current = latest.current.offset;
       },
       onPanResponderMove: (_evt, gesture) => {
-        onDrag(id, dragStart.current.dx + gesture.dx, dragStart.current.dy + gesture.dy);
+        latest.current.onDrag(id, dragStart.current.dx + gesture.dx, dragStart.current.dy + gesture.dy);
       },
     }),
   ).current;
@@ -2569,6 +2617,7 @@ const styles = StyleSheet.create({
   },
   landscapeRomLabel: {flex: 1, color: '#ccc', fontSize: 12},
   landscapeStage: {flex: 1, alignItems: 'center', justifyContent: 'center'},
+  landscapeEditOverlay: {position: 'absolute', left: 12, right: 12, top: 0, alignItems: 'center'},
   coverOverlay: {
     position: 'absolute',
     top: 0,
@@ -2940,7 +2989,7 @@ const styles = StyleSheet.create({
   // DS diamond: 60px buttons at the four points of a 160x160 box, so
   // their centres sit ~71px apart -- about 10px of gap, the snug
   // arrangement a real DS has, rather than four buttons floating apart.
-  actionClusterDs: {width: 160, height: 160, marginRight: 8},
+  actionClusterDs: {width: DS_DIAMOND_SIZE, height: DS_DIAMOND_SIZE, marginRight: 8},
   actionButton: {
     position: 'absolute',
     width: 60,
@@ -2986,7 +3035,7 @@ const styles = StyleSheet.create({
   landscapeControlsRoot: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0},
   landscapeShoulderLeft: {position: 'absolute', top: 8, left: 12},
   landscapeShoulderRight: {position: 'absolute', top: 8, right: 12},
-  landscapeXY: {position: 'absolute', right: 40, width: 120, height: 44, flexDirection: 'row', gap: 10},
+  landscapeSystemInner: {flexDirection: 'row', gap: 10},
   landscapeDpadWrap: {position: 'absolute', left: 20, width: 144, height: LANDSCAPE_DPAD_HEIGHT},
   landscapeActionsWrap: {position: 'absolute', right: 20, width: 140, height: LANDSCAPE_ACTIONS_HEIGHT},
   landscapeSystemRow: {
