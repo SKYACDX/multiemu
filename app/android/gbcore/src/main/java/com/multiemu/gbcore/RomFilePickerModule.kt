@@ -132,32 +132,28 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
                 promise.reject("DOWNLOAD_ERROR", "HTTP ${connection.responseCode}")
                 return
             }
-            val rawBytes = connection.inputStream.use { it.readBytes() }
+            // Streams download -> (unzip) -> cache file, same as the
+            // picker: this result is a path, so there was never a reason
+            // to stage the ROM in the heap on the way there. A DS ROM off
+            // the hub is 128-256MB, and a zipped one needed a second
+            // buffer twice that size again.
+            val cacheFile = File(reactApplicationContext.cacheDir, "hub_rom_${System.currentTimeMillis()}")
+            val romName = connection.inputStream.use {
+                extractToFile(it, fileName, allowedExtensions, cacheFile)
+            }
             connection.disconnect()
-
-            val extracted = extractFromZipIfNeeded(rawBytes, fileName, allowedExtensions)
-            if (extracted == null) {
-                val isZip = fileName.substringAfterLast('.', "").lowercase() == "zip"
-                promise.reject(
-                    if (isZip) "NO_MATCH_IN_ZIP" else "INVALID_EXTENSION",
-                    if (isZip) {
-                        "El .zip no contiene ningún archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}"
-                    } else {
-                        "\"$fileName\" no es un archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}"
-                    },
-                )
+            if (romName == null) {
+                rejectUnusableFile(promise, fileName, allowedExtensions)
                 return
             }
-            val (bytes, name) = extracted
-            val cacheFile = File(reactApplicationContext.cacheDir, "hub_rom_${System.currentTimeMillis()}_$name")
-            FileOutputStream(cacheFile).use { it.write(bytes) }
 
-            val result = Arguments.createMap().apply {
-                putString("path", cacheFile.absolutePath)
-                putString("name", name)
-                putInt("size", bytes.size)
-            }
-            promise.resolve(result)
+            promise.resolve(
+                Arguments.createMap().apply {
+                    putString("path", cacheFile.absolutePath)
+                    putString("name", romName)
+                    putInt("size", cacheFile.length().toInt())
+                },
+            )
         } catch (e: IOException) {
             promise.reject("DOWNLOAD_ERROR", e.message, e)
         } catch (e: Exception) {
@@ -205,43 +201,67 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
         val fileName = queryDisplayName(uri) ?: "rom"
 
         try {
+            // Load-by-path (every DS ROM) streams straight to the cache
+            // file it was always going to end up in. Reading it into a
+            // byte[] first -- and, for a .zip, decompressing into a second
+            // buffer that doubles as it grows -- needed three copies of
+            // the ROM in the heap and killed the app on a 233MB one.
+            if (pendingWantsPath) {
+                val cacheFile = File(reactApplicationContext.cacheDir, "picked_rom_${System.currentTimeMillis()}")
+                val romName = reactApplicationContext.contentResolver.openInputStream(uri)?.use {
+                    extractToFile(it, fileName, allowedExtensions, cacheFile)
+                } ?: throw IllegalStateException("No se pudo abrir el archivo")
+                if (romName == null) {
+                    rejectUnusableFile(promise, fileName, allowedExtensions)
+                    return
+                }
+                promise.resolve(
+                    Arguments.createMap().apply {
+                        putString("path", cacheFile.absolutePath)
+                        putString("name", romName)
+                        putInt("size", cacheFile.length().toInt())
+                    },
+                )
+                return
+            }
+
             val rawBytes = reactApplicationContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: throw IllegalStateException("No se pudo abrir el archivo")
 
             val extracted = extractFromZipIfNeeded(rawBytes, fileName, allowedExtensions)
             if (extracted == null) {
-                val isZip = fileName.substringAfterLast('.', "").lowercase() == "zip"
-                promise.reject(
-                    if (isZip) "NO_MATCH_IN_ZIP" else "INVALID_EXTENSION",
-                    if (isZip) {
-                        "El .zip no contiene ningún archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}"
-                    } else {
-                        "\"$fileName\" no es un archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}" +
-                            " (también se aceptan .zip que los contengan)"
-                    },
-                )
+                rejectUnusableFile(promise, fileName, allowedExtensions)
                 return
             }
             val (bytes, name) = extracted
 
-            val result = Arguments.createMap().apply {
-                if (pendingWantsPath) {
-                    val cacheFile = File(reactApplicationContext.cacheDir, "picked_rom_${System.currentTimeMillis()}_$name")
-                    FileOutputStream(cacheFile).use { it.write(bytes) }
-                    putString("path", cacheFile.absolutePath)
-                } else {
+            promise.resolve(
+                Arguments.createMap().apply {
                     putString("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
-                }
-                putString("name", name)
-                putInt("size", bytes.size)
-            }
-            promise.resolve(result)
+                    putString("name", name)
+                    putInt("size", bytes.size)
+                },
+            )
         } catch (e: Exception) {
             promise.reject("READ_ERROR", e.message, e)
         }
     }
 
     override fun onNewIntent(intent: Intent) {}
+
+    /** Shared by both load paths -- the message depends only on whether the pick was a .zip. */
+    private fun rejectUnusableFile(promise: Promise, fileName: String, allowedExtensions: List<String>) {
+        val isZip = fileName.substringAfterLast('.', "").lowercase() == "zip"
+        promise.reject(
+            if (isZip) "NO_MATCH_IN_ZIP" else "INVALID_EXTENSION",
+            if (isZip) {
+                "El .zip no contiene ningún archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}"
+            } else {
+                "\"$fileName\" no es un archivo ${allowedExtensions.joinToString(" o ") { ".$it" }}" +
+                    " (también se aceptan .zip que los contengan)"
+            },
+        )
+    }
 
     private fun queryDisplayName(uri: Uri): String? {
         reactApplicationContext.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
