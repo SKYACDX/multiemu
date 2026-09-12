@@ -46,13 +46,22 @@ concreta, con su propio APK).
   "version": "1.0.0",       // versionName
   "versionCode": 1,
   "changelog": "Primera versión pública.",
-  "minAndroidSdk": 24,
-  "apkUrl": null,            // ver assets abajo
+  "platform": "ANDROID",    // "ANDROID" | "WINDOWS" -- nuevo campo (2026-09-12)
+  "minAndroidSdk": 24,       // null en releases WINDOWS
+  "apkUrl": null,            // ver assets abajo -- es el .apk o el .exe según platform
   "apkSize": 0,
   "downloads": 0,
   "publishedAt": "2026-09-07T00:00:00Z"
 }
 ```
+
+**Nota para multiemu (Android): no cambia nada de este lado.** `platform`
+es un campo nuevo y aditivo -- si no lo mandás en `POST /api/app/releases`
+se asume `"android"` automáticamente, y `GET /api/v1/app` (el endpoint que
+la app usa para chequear actualizaciones) sigue devolviendo únicamente la
+última release **ANDROID** como `latestRelease`, aunque exista una release
+`WINDOWS` más nueva. El build de escritorio (.exe) se publica por otra vía
+y nunca aparece ahí.
 
 ## Endpoints
 
@@ -68,10 +77,12 @@ GET /api/v1/app
 
 ### Historial de versiones (sin auth)
 ```
-GET /api/v1/app/releases?limit=20&offset=0
+GET /api/v1/app/releases?limit=20&offset=0&platform=android
 ```
 → `{"releases": AppRelease[], "pagination": {...}}` (mismo shape de
-paginación que `/api/v1/files` y `/api/v1/themes`).
+paginación que `/api/v1/files` y `/api/v1/themes`). `platform` es
+opcional (`android` | `windows`); sin él devuelve ambas mezcladas
+ordenadas por `versionCode`.
 
 ### Actualizar la ficha (auth, solo cuentas con permiso de equipo)
 ```
@@ -89,7 +100,17 @@ POST /api/app/releases
 { "version": "1.0.0", "versionCode": 1, "changelog": "...", "minAndroidSdk": 24 }
 ```
 → `{"release": AppRelease}` con `apkUrl: null` hasta que se suba el
-APK (paso siguiente).
+APK (paso siguiente). `platform` es opcional, default `"android"` --
+para publicar el build de escritorio se manda `"platform": "windows"`
+y se omite `minAndroidSdk` (se rechaza con 400 si falta en un release
+android, pero no se pide en uno windows):
+```
+POST /api/app/releases
+{ "version": "1.0.0", "versionCode": 2, "changelog": "...", "platform": "windows" }
+```
+`versionCode` es una secuencia única global (compartida entre
+android y windows) -- simplemente hay que seguir incrementándola,
+no reiniciarla por plataforma.
 
 ### Contador de descargas del APK (sin auth, solo telemetría)
 ```
@@ -116,7 +137,9 @@ POST /api/app/assets
 ```
 registra esa pieza. `slot` es uno de: `icon`, `screenshot` (puede
 repetirse, se acumulan en `screenshots[]`), o `apk:<releaseId>` (para
-adjuntar el binario a una versión concreta vía `AppRelease.apkUrl`).
+adjuntar el binario a una versión concreta vía `AppRelease.apkUrl` --
+el mismo slot sirve para el `.exe` de un release `platform: "windows"`,
+el nombre del slot no cambia aunque el archivo no sea un APK).
 
 Límites sugeridos: ícono ≤2MB (PNG, idealmente 1024x1024 ya
 recortado con esquinas/círculo como los mipmaps de Android), captura
