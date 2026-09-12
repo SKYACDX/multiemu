@@ -19,9 +19,14 @@ namespace gb {
 //  - Output is resampled by picking the channels' current level at each
 //    output sample instead of averaging everything in between, so very
 //    high-frequency content aliases rather than filtering away.
+//  - Enabling a length counter part-way through a frame-sequencer step does
+//    not get hardware's extra length clock, and a sweep in negate mode whose
+//    result would go below zero disables the channel here where hardware
+//    would keep going with a wrapped value.
 //
-// Both are audible only in material written to exploit them. Revisit if a
-// specific game needs it -- the same call Ppu's scanline renderer makes.
+// All of them are audible only in material written to exploit them. Revisit
+// if a specific game needs it -- the same call Ppu's scanline renderer
+// makes.
 class Apu {
    public:
     // Output is produced at this rate, in interleaved stereo, which is what
@@ -156,9 +161,8 @@ class Apu {
     long long sampleAccumulator_ = 0;
 
     // Big enough for well over a frame's worth of audio, so a caller that
-    // drains once per frame never loses any. Older samples are dropped if
-    // nobody reads (a headless run, say), which is better than growing
-    // without bound.
+    // drains once per frame never loses any. Once it is full, new samples
+    // are dropped rather than the queue growing without bound.
     static constexpr int kQueueFrames = 4096;
     std::array<i16, kQueueFrames * 2> queue_{};
     int queueSize_ = 0;

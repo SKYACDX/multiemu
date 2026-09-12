@@ -265,11 +265,12 @@ void Apu::pushSample() {
     // rather than clipping on a loud chord.
     constexpr int kScale = 32767 / (4 * 15 * 8);
 
-    if (queueSize_ >= kQueueFrames) {
-        // Nobody is draining. Drop the oldest frame rather than grow.
-        std::memmove(queue_.data(), queue_.data() + 2, (kQueueFrames - 1) * 2 * sizeof(i16));
-        queueSize_--;
-    }
+    // Full means nobody is draining -- a headless run, or a test that only
+    // cares about video. Dropping the new frame is O(1); shuffling the queue
+    // down to drop the oldest instead would memmove 16KB per sample, 48000
+    // times a second, for audio no one is going to hear.
+    if (queueSize_ >= kQueueFrames) return;
+
     queue_[queueSize_ * 2] = static_cast<i16>(left * kScale);
     queue_[queueSize_ * 2 + 1] = static_cast<i16>(right * kScale);
     queueSize_++;

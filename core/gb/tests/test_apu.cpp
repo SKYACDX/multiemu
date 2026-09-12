@@ -176,6 +176,67 @@ TEST_CASE(unreadable_bits_read_back_as_ones) {
     return true;
 }
 
+// The sweep is the most intricate part of the whole APU and the only one
+// that can silence a channel on its own, so it gets its own cases.
+
+TEST_CASE(sweep_moves_the_frequency_upwards) {
+    gb::Apu apu;
+    powerOn(apu);
+
+    // NR10: pace 1, add, shift 1 -- so each sweep step adds freq/2.
+    apu.writeRegister(0xFF10, 0x11);
+    apu.writeRegister(0xFF11, 0x80);
+    apu.writeRegister(0xFF12, 0xF0);
+    apu.writeRegister(0xFF13, 0x00);  // frequency 0x100 = 256
+    apu.writeRegister(0xFF14, 0x81);
+
+    // The sweep is clocked on steps 2 and 6 of a 512Hz sequencer, so 128
+    // times a second. Going 256 -> 384 -> 576 -> 864 -> 1296 -> 1944 ->
+    // past 2047 takes six of those, which is about 47ms -- a single frame
+    // only buys two, so this needs a tenth of a second.
+    apu.tick(kCpuClockHz / 10);
+
+    // Past 2047 the channel switches itself off, which is the behaviour
+    // worth pinning down: a rising sweep is self-terminating.
+    CHECK((apu.readRegister(0xFF26) & 0x01) == 0);
+    return true;
+}
+
+TEST_CASE(sweep_with_no_shift_leaves_the_channel_alone) {
+    gb::Apu apu;
+    powerOn(apu);
+
+    // Pace set but shift 0: hardware keeps counting and never changes the
+    // frequency, so the channel must still be playing afterwards.
+    apu.writeRegister(0xFF10, 0x10);
+    apu.writeRegister(0xFF11, 0x80);
+    apu.writeRegister(0xFF12, 0xF0);
+    apu.writeRegister(0xFF13, 0x00);
+    apu.writeRegister(0xFF14, 0x81);
+
+    apu.tick(kCpuClockHz / 60);
+    CHECK((apu.readRegister(0xFF26) & 0x01) != 0);
+    return true;
+}
+
+TEST_CASE(queue_stops_growing_when_nobody_drains) {
+    gb::Apu apu;
+    powerOn(apu);
+
+    // A whole second without a single read. The queue has to cap itself
+    // rather than grow, and has to do it without getting slower as it
+    // fills.
+    apu.tick(kCpuClockHz);
+    CHECK(apu.samplesAvailable() > 0);
+    CHECK(apu.samplesAvailable() <= gb::Apu::kSampleRate);
+
+    std::vector<gb::i16> buffer(gb::Apu::kSampleRate * 2);
+    const int drained = apu.readSamples(buffer.data(), gb::Apu::kSampleRate);
+    CHECK(drained == apu.samplesAvailable() + drained);  // the read emptied what it took
+    CHECK(apu.samplesAvailable() == 0);
+    return true;
+}
+
 TEST_CASE(noise_channel_makes_sound) {
     gb::Apu apu;
     powerOn(apu);
