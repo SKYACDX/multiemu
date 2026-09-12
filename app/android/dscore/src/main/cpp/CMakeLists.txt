@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(dsjni CXX)
+project(dsjni C CXX)  # C for libslirp (see the net sources below)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,10 +26,29 @@ target_include_directories(melonds_core INTERFACE
 add_library(teakra STATIC IMPORTED)
 set_target_properties(teakra PROPERTIES IMPORTED_LOCATION ${MELONDS_BUILD_DIR}/src/teakra/src/libteakra.a)
 
+# Internet play. melonDS keeps its networking in src/net/, which is part
+# of its Qt frontend rather than the core .a we import -- and its own
+# net-utils target also pulls in Net_PCap (libpcap, needs raw adapter
+# access, so not Android) and LAN/Netplay/LocalMP (ENet, a dependency we
+# don't have and don't need for internet play). So take only the three
+# translation units that matter plus the bundled libslirp, which ships a
+# glib shim and therefore has no external dependencies of its own.
+#
+# Slirp is the "indirect" mode: melonDS acts as a virtual router doing NAT
+# over ordinary host sockets. That's the only option here -- the direct
+# mode is Net_PCap.
+set(MELONDS_NET_DIR ${MELONDS_ROOT}/src/net)
+add_subdirectory(${MELONDS_NET_DIR}/libslirp ${CMAKE_CURRENT_BINARY_DIR}/libslirp EXCLUDE_FROM_ALL)
+
 add_library(dsjni SHARED
     ds_jni.cpp
     ds_platform.cpp
+    ${MELONDS_NET_DIR}/Net.cpp
+    ${MELONDS_NET_DIR}/Net_Slirp.cpp
+    ${MELONDS_NET_DIR}/PacketDispatcher.cpp
 )
+
+target_include_directories(dsjni PRIVATE ${MELONDS_NET_DIR})
 
 # melonds_core is an IMPORTED target (a prebuilt .a, not a real CMake
 # subproject) -- its own target_compile_definitions(core PUBLIC
@@ -68,4 +87,4 @@ find_library(gles-lib GLESv3)
 # nativeSetSurface).
 find_library(android-lib android)
 
-target_link_libraries(dsjni PRIVATE melonds_core teakra ${log-lib} ${egl-lib} ${gles-lib} ${android-lib})
+target_link_libraries(dsjni PRIVATE melonds_core teakra slirp ${log-lib} ${egl-lib} ${gles-lib} ${android-lib})

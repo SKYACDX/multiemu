@@ -6,20 +6,27 @@
 // layer, kept separate from ds_jni.cpp (the actual JNI entry points)
 // the same way gba_link.cpp is kept separate from gba_link_jni.cpp.
 //
-// Scope for now: local single-cart play only. Local wireless multiplayer
-// (MP_*), internet play (Net_*), and DSi-only peripherals (camera, mic,
-// AAC/DSP audio, rumble/motion addons) are stubbed out -- safe no-ops,
-// not crashes, but those features won't work until someone implements
-// them for real.
+// Scope for now: local single-cart play, plus internet play through
+// libslirp (Net_*, see below). Local wireless multiplayer (MP_*) and
+// DSi-only peripherals (camera, mic, AAC/DSP audio, rumble/motion
+// addons) are stubbed out -- safe no-ops, not crashes, but those
+// features won't work until someone implements them for real.
 #include "Platform.h"
+#include "SPI_Firmware.h"
+
+#include "Net.h"
+#include "Net_Slirp.h"
 
 #include <android/log.h>
+#include <memory>
 #include <cstdarg>
 #include <cstdio>
 #include <dlfcn.h>
 #include <mutex>
 #include <semaphore.h>
+#include <cstring>
 #include <string>
+#include <vector>
 #include <thread>
 
 #define TAG "melonDS"
@@ -32,6 +39,12 @@ namespace melonDS::Platform {
 static std::string g_localDir;
 
 void SetLocalDir(const std::string& dir) { g_localDir = dir; }
+
+// Shared with ds_jni.cpp, which reads this image back when it creates a
+// session -- see WriteFirmware below.
+// extern, because a namespace-scope `const` has internal linkage by
+// default and ds_jni.cpp links against this.
+extern const char* const kFirmwareFileName = "firmware.bin";
 
 std::string GetLocalFilePath(const std::string& filename) { return g_localDir + "/" + filename; }
 
@@ -253,12 +266,43 @@ void WriteGBASave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen
 // TODO: persist firmware changes (e.g. the user's DS settings) back to
 // disk -- for now firmware edits made in a session don't survive a
 // restart. Not needed for a game to boot and play.
-void WriteFirmware(const Firmware& firmware, u32 writeoffset, u32 writelen, void* userdata) {}
+// Called whenever the emulated console writes to its own firmware --
+// which is exactly what a game's "Nintendo WFC settings" screen does.
+// Those settings (access point, WEP key, DNS) live in the firmware, not
+// in any cartridge, so persisting the image here is what makes the setup
+// a once-per-device job instead of a once-per-ROM one: every game reads
+// the same firmware back (see ds_jni.cpp, which loads this file when it
+// builds a session).
+//
+// Writes the whole image rather than just [writeoffset, writelen): it's
+// a couple of hundred KB, this happens only when a game deliberately
+// saves settings, and a partial write that lands wrong would leave an
+// image no game can read.
+void WriteFirmware(const Firmware& firmware, u32 writeoffset, u32 writelen, void* userdata) {
+    // melonDS calls this on every firmware SPI write, which comes in
+    // bursts -- six identical ones during a single boot, measured. Only
+    // the changes are worth a 128K file write, so compare first.
+    static std::vector<u8> lastWritten;
+    const u8* buffer = firmware.Buffer();
+    const u32 length = firmware.Length();
+    if (lastWritten.size() == length && memcmp(lastWritten.data(), buffer, length) == 0) return;
+    lastWritten.assign(buffer, buffer + length);
+
+    const std::string path = GetLocalFilePath(kFirmwareFileName);
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "firmware: could not open %s for writing", path.c_str());
+        return;
+    }
+    const size_t written = fwrite(buffer, 1, length, f);
+    fclose(f);
+    __android_log_print(ANDROID_LOG_INFO, TAG, "firmware: saved %zu/%u bytes", written, length);
+}
 
 // TODO: persist the emulated RTC's date/time if a game changes it.
 void WriteDateTime(int year, int month, int day, int hour, int minute, int second, void* userdata) {}
 
-// ---- Local multiplayer / network -- not implemented yet. ----
+// ---- Local multiplayer -- not implemented yet. ----
 
 void MP_Begin(void* userdata) {}
 void MP_End(void* userdata) {}
@@ -270,8 +314,46 @@ int MP_SendAck(u8* data, int len, u64 timestamp, void* userdata) { return 0; }
 int MP_RecvHostPacket(u8* data, u64* timestamp, void* userdata) { return 0; }
 u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata) { return 0; }
 
-int Net_SendPacket(u8* data, int len, void* userdata) { return 0; }
-int Net_RecvPacket(u8* data, void* userdata) { return 0; }
+// ---- Internet play ----
+//
+// Slirp ("indirect" mode): melonDS is a virtual router doing NAT over
+// ordinary host sockets, which is the only workable option on Android --
+// the alternative, Net_PCap, needs raw access to a network adapter.
+//
+// The DS itself doesn't need a real access point either: melonDS
+// emulates one (WifiAP.cpp, "melonAP"), and it is that AP which calls
+// these two functions to push packets out and pull them back in. So a
+// game's Nintendo WFC connection setup talks to an access point that
+// exists only inside the emulator.
+//
+// Built lazily, on the first packet a game actually sends: most sessions
+// never touch wifi, and there's no reason to stand up a network stack
+// for them. Only ever called from the emulation thread.
+static Net g_net;
+static bool g_netStarted = false;
+
+static Net& EnsureNet() {
+    if (!g_netStarted) {
+        g_netStarted = true;
+        g_net.SetDriver(std::make_unique<Net_Slirp>([](const u8* data, int len) { g_net.RXEnqueue(data, len); }));
+        // One emulated console, so one instance, id 0 -- melonDS's Net
+        // supports several for its multi-window builds.
+        g_net.RegisterInstance(0);
+        __android_log_print(ANDROID_LOG_INFO, TAG, "Net: slirp driver up");
+    }
+    return g_net;
+}
+
+int Net_SendPacket(u8* data, int len, void* userdata) {
+    EnsureNet().SendPacket(data, len, 0);
+    return 0;
+}
+
+int Net_RecvPacket(u8* data, void* userdata) {
+    // Net::RecvPacket pumps the driver itself (Driver->RecvCheck), so
+    // there's nothing else to tick on a timer.
+    return EnsureNet().RecvPacket(data, 0);
+}
 
 // ---- DSi-only peripherals -- not implemented yet. ----
 

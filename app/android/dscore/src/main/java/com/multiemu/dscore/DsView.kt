@@ -287,6 +287,9 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
      * own bitmaps and AudioTrack.
      */
     private fun adoptOrLoad(key: String, create: () -> DsNative?) {
+        // Before any session exists: the firmware image loaded here is
+        // what carries Nintendo WFC settings from one game to the next.
+        DsNative.setLocalDir(context.filesDir.absolutePath)
         synchronized(dsLock) {
             stopAudio()
             val existing = if (sharedKey == key) sharedDs else null

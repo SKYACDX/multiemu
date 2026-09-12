@@ -16,6 +16,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <optional>
 #include <vector>
 
 #include <android/log.h>
@@ -33,6 +34,13 @@
 #include "Savestate.h"
 
 using namespace melonDS;
+
+// Defined in ds_platform.cpp (our half of melonDS's Platform:: layer),
+// declared here rather than added to the vendored Platform.h.
+namespace melonDS::Platform {
+extern const char* const kFirmwareFileName;
+void SetLocalDir(const std::string& dir);
+}
 
 namespace {
 
@@ -137,6 +145,32 @@ struct DsSession {
 
 DsSession* handleToSession(jlong handle) { return reinterpret_cast<DsSession*>(handle); }
 
+// Reads back whatever Platform::WriteFirmware last saved. Returns
+// nullopt when there's nothing saved (first run) or the file is the
+// wrong size for a firmware image, in which case NDSArgs' generated
+// default stands.
+std::optional<Firmware> LoadSavedFirmware() {
+    const std::string path = Platform::GetLocalFilePath(Platform::kFirmwareFileName);
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return std::nullopt;
+    fseek(f, 0, SEEK_END);
+    const long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    // DS firmware images are 128K/256K/512K; anything else is a truncated
+    // or corrupt file and is better ignored than handed to the emulator.
+    if (len != 128 * 1024 && len != 256 * 1024 && len != 512 * 1024) {
+        fclose(f);
+        __android_log_print(ANDROID_LOG_WARN, "melonDS", "firmware: ignoring %s, unexpected size %ld", path.c_str(), len);
+        return std::nullopt;
+    }
+    std::vector<u8> buffer(static_cast<size_t>(len));
+    const size_t read = fread(buffer.data(), 1, buffer.size(), f);
+    fclose(f);
+    if (read != buffer.size()) return std::nullopt;
+    __android_log_print(ANDROID_LOG_INFO, "melonDS", "firmware: reusing saved image (%ld bytes)", len);
+    return Firmware(buffer.data(), static_cast<u32>(buffer.size()));
+}
+
 // Swaps in the OpenGL 3D renderer if a GLES context could be set up --
 // falls back to melonDS's default software renderer (already active,
 // nothing to undo) on any failure. See docs/melonds-setup.md.
@@ -226,6 +260,16 @@ jlong CreateFromRomData(std::unique_ptr<u8[]> romData, u32 romLen, const char* s
     // Defaults to FreeBIOS + generated firmware + software 3D renderer
     // -- see this file's header comment.
     NDSArgs args;
+    // ...except the firmware, which is reused across sessions when one
+    // has been saved before. Nintendo WFC settings live in the firmware
+    // rather than in any cartridge, so carrying one image from session to
+    // session is what makes "set the connection up once, and every game
+    // has it" work -- the same way it does on a real console. Platform's
+    // WriteFirmware wrote this file, when a game's own WFC settings
+    // screen last saved anything.
+    if (auto firmware = LoadSavedFirmware()) {
+        args.Firmware = std::move(*firmware);
+    }
     session->nds = std::make_unique<NDS>(std::move(args), session.get());
     session->nds->SetNDSCart(std::move(cart));
     session->nds->Reset();
@@ -334,6 +378,15 @@ JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeRunFrame(JNIEnv*,
 // context stays current on the thread that last bound it -- so the old
 // thread has to let go before the new one can take it, or the handover
 // fails and every GL call from the new thread silently does nothing.
+// Where Platform:: keeps anything that has to outlive a session -- the
+// firmware image, for now. Never set until this existed, which is why
+// WriteFirmware was trying to write to "/firmware.bin".
+JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeSetLocalDir(JNIEnv* env, jclass, jstring dir) {
+    const char* chars = env->GetStringUTFChars(dir, nullptr);
+    Platform::SetLocalDir(chars);
+    env->ReleaseStringUTFChars(dir, chars);
+}
+
 JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeReleaseContext(JNIEnv*, jclass) {
     if (g_eglDisplay == EGL_NO_DISPLAY) return;
     eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

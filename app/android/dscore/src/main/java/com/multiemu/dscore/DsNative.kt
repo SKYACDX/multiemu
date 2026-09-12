@@ -56,6 +56,15 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
         fun releaseContext() = nativeReleaseContext()
         fun bindContext() = nativeBindContext()
 
+        /**
+         * Directory for state that outlives a session -- currently the DS
+         * firmware image, which is where Nintendo WFC settings live (see
+         * ds_platform.cpp's WriteFirmware). Must be set before a session
+         * is created.
+         */
+        fun setLocalDir(path: String) = nativeSetLocalDir(path)
+
+        @JvmStatic private external fun nativeSetLocalDir(path: String)
         @JvmStatic private external fun nativeReleaseContext()
         @JvmStatic private external fun nativeBindContext()
 
