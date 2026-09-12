@@ -125,7 +125,10 @@ type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'X
 // Draggable clusters a user can reposition in "Personalizar controles"
 // mode -- grouped (whole D-pad, whole A/B) rather than per-button, which
 // covers "mover los botones" without needing a drag handle for all 12.
-type ClusterId = 'dpad' | 'actions' | 'shoulders' | 'xy' | 'system' | 'screen';
+// 'shoulderL'/'shoulderR' position L and R *separately*; 'shoulders'
+// survives only as their shared scale target (they are meant to stay
+// the same size) and as the key older saved layouts used for both.
+type ClusterId = 'dpad' | 'actions' | 'shoulders' | 'shoulderL' | 'shoulderR' | 'xy' | 'system' | 'screen';
 type ClusterOffset = {dx: number; dy: number};
 // Everything the user can resize independently in "editar interfaz" --
 // the emulator screen plus each draggable cluster. Each keeps its own
@@ -138,6 +141,19 @@ interface ControlLayout {
   scales: Partial<Record<ScalableId, number>>;
 }
 const DEFAULT_CONTROL_LAYOUT: ControlLayout = {offsets: {}, scales: {}};
+/**
+ * L and R used to be one draggable cluster keyed 'shoulders'; they are
+ * two now (see ClusterId). A layout saved before that split carries the
+ * user's positioning under the old key, so hand it to both halves --
+ * they were moved together, so together is where they belong. Without
+ * this they'd silently snap back to the default and the user would just
+ * see their arrangement undone by an update.
+ */
+function migrateControlLayout(layout: ControlLayout): ControlLayout {
+  const shared = layout.offsets?.shoulders;
+  if (!shared || layout.offsets.shoulderL || layout.offsets.shoulderR) return layout;
+  return {...layout, offsets: {...layout.offsets, shoulderL: shared, shoulderR: shared}};
+}
 // Landscape has no drag-to-reposition (controls sit at fixed corners,
 // see GameControls' landscape branch) -- the screen defaults bigger
 // since landscape has a lot more room to give it once it's not stacked
@@ -1277,7 +1293,7 @@ function App(): React.JSX.Element {
         if (cancelled) return;
         if (json) {
           try {
-            setControlLayout(JSON.parse(json));
+            setControlLayout(migrateControlLayout(JSON.parse(json)));
             return;
           } catch {
             // Fall through to the default below.
@@ -2251,32 +2267,47 @@ function GameControls({
       onResponderMove={updateFromTouches}
       onResponderRelease={releaseAll}
       onResponderTerminate={releaseAll}>
-      <DraggableCluster id="shoulders" editing={editing} offset={offsets.shoulders} onDrag={onDrag}>
-        <View style={[styles.shoulderRow, clusterScale('shoulders')]}>
+      {/* L and R are dragged independently. As one cluster they shared a
+          343px-wide box with the buttons pinned to its far edges, so the
+          only thing a user could do was slide both at once -- and with a
+          large default screen that box straddles the DS touch screen,
+          which reads as "the buttons are in the way" with no obvious fix.
+          The row below is still their default layout (same size, same
+          height, at the edges); it just isn't what moves anymore.
+          clusterScale also moves from the row to each button: on the row
+          it scaled the 343px gap too, pushing L and R further apart
+          instead of just making them bigger (landscape already scales
+          per-button, see landscapeShoulderLeft/Right). */}
+      <View style={styles.shoulderRow}>
+        <DraggableCluster id="shoulderL" editing={editing} offset={offsets.shoulderL} onDrag={onDrag}>
           <View
             ref={setRef('L')}
             style={[
               styles.shoulderButton,
               {backgroundColor: withAlpha(cs.shoulderColor, 0.85), borderRadius: cs.shoulderRadius},
+              clusterScale('shoulders'),
               system === 'gb' && styles.shoulderButtonInactive,
               isPressed('L') && styles.shoulderButtonPressed,
             ]}>
             <View style={styles.shoulderHighlight} />
             <Text style={styles.shoulderLabel}>L</Text>
           </View>
+        </DraggableCluster>
+        <DraggableCluster id="shoulderR" editing={editing} offset={offsets.shoulderR} onDrag={onDrag}>
           <View
             ref={setRef('R')}
             style={[
               styles.shoulderButton,
               {backgroundColor: withAlpha(cs.shoulderColor, 0.85), borderRadius: cs.shoulderRadius},
+              clusterScale('shoulders'),
               system === 'gb' && styles.shoulderButtonInactive,
               isPressed('R') && styles.shoulderButtonPressed,
             ]}>
             <View style={styles.shoulderHighlight} />
             <Text style={styles.shoulderLabel}>R</Text>
           </View>
-        </View>
-      </DraggableCluster>
+        </DraggableCluster>
+      </View>
 
       {/* X/Y only exist on the DS -- shown just for that system, above
           the D-pad/A-B row rather than reshuffling its fixed layout. */}
