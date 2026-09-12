@@ -161,14 +161,17 @@ function migrateControlLayout(layout: ControlLayout): ControlLayout {
 const DEFAULT_CONTROL_LAYOUT_LANDSCAPE: ControlLayout = {offsets: {}, scales: {screen: 2}};
 // The DS stacks two screens in the same box one GB/GBA screen gets, so at
 // scale 1 each half comes out noticeably smaller than a GBA screen does.
-// 1.2 is the largest step that still clears the controls: with the stage
-// top-anchored (see portraitStage) it renders taller than 1.4 used to
-// when the screen was centred, and 1.4 now runs the d-pad and the face
-// buttons back onto the lower screen. Kept as
+// 1.4 is a deliberate choice of size over clearance: it fills the width,
+// and the cost is that the d-pad and the X button sit over the last ~70px
+// of the lower (touch) screen. That only blocks touches that land on a
+// button -- the shared touch surface hit-tests the real button rects, so
+// the rest of the lower screen still reaches the DS -- and both are
+// draggable if a particular game needs that strip. 1.2 is the largest
+// step that clears them completely. Kept as
 // a module constant (like the two above) because defaultControlLayout is
 // a useEffect dependency: building the object inline would make it a new
 // reference every render and reload the layout on each one.
-const DEFAULT_CONTROL_LAYOUT_NDS: ControlLayout = {offsets: {}, scales: {screen: 1.2}};
+const DEFAULT_CONTROL_LAYOUT_NDS: ControlLayout = {offsets: {}, scales: {screen: 1.4}};
 // Landscape cluster anchors are positioned `top: stageHeight - MARGIN -
 // <cluster height>` (see GameControls' landscape branch) -- these mirror
 // the matching styles.landscape*Wrap heights below so the two can't drift
