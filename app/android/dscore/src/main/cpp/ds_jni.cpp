@@ -329,6 +329,25 @@ JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeRunFrame(JNIEnv*,
     }
 }
 
+// Unbinds the GL context from the calling thread. The emulation thread
+// is recreated whenever DsView remounts (every rotation), and an EGL
+// context stays current on the thread that last bound it -- so the old
+// thread has to let go before the new one can take it, or the handover
+// fails and every GL call from the new thread silently does nothing.
+JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeReleaseContext(JNIEnv*, jclass) {
+    if (g_eglDisplay == EGL_NO_DISPLAY) return;
+    eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+}
+
+// Re-binds an already-created context to the calling thread, parked on
+// the pbuffer until nativeSetSurface swaps in the real window surface.
+// Needed on a remount: the context outlives the thread that made it.
+JNIEXPORT void JNICALL Java_com_multiemu_dscore_DsNative_nativeBindContext(JNIEnv*, jclass) {
+    if (g_eglContext == EGL_NO_CONTEXT) return;
+    EGLSurface surface = g_windowSurface != EGL_NO_SURFACE ? g_windowSurface : g_pbufferSurface;
+    eglMakeCurrent(g_eglDisplay, surface, surface, g_eglContext);
+}
+
 // Hands over (or takes away, with surface == null) the SurfaceView's
 // Surface. MUST run on the emu thread, same as every other GL call here
 // -- DsView posts it there rather than calling it from the UI thread.

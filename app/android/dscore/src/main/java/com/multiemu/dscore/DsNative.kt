@@ -52,6 +52,13 @@ class DsNative private constructor(private var handle: Long) : AutoCloseable {
 
         @JvmStatic private external fun nativeSetSurface(surface: Surface?)
 
+        /** See ds_jni.cpp -- both are about moving the GL context between emulation threads across a remount. */
+        fun releaseContext() = nativeReleaseContext()
+        fun bindContext() = nativeBindContext()
+
+        @JvmStatic private external fun nativeReleaseContext()
+        @JvmStatic private external fun nativeBindContext()
+
         @JvmStatic private external fun nativeCreate(rom: ByteArray, savePath: String?): Long
         @JvmStatic private external fun nativeCreateFromPath(romPath: String, savePath: String?): Long
         @JvmStatic private external fun nativeDestroy(handle: Long)

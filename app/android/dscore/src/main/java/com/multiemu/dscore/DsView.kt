@@ -50,6 +50,14 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
     @Volatile private var useGlPresent = true
 
     @Volatile private var ds: DsNative? = null
+
+    companion object {
+        // The emulated console, kept at process level rather than per
+        // view -- see adoptOrLoad for why. Only ever touched under
+        // dsLock, and only from the emu thread.
+        private var sharedDs: DsNative? = null
+        private var sharedKey: String? = null
+    }
     private var topBitmap: Bitmap? = null
     private var bottomBitmap: Bitmap? = null
     private var audioTrack: AudioTrack? = null
@@ -265,22 +273,45 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
         if (handler == null || Looper.myLooper() === handler.looper) block() else handler.post(block)
     }
 
+    /**
+     * Adopts the session already running for [key], or builds a new one
+     * with [create] if that's a different ROM.
+     *
+     * React Native unmounts and remounts this view on every rotation, and
+     * App.tsx re-pushes the current ROM whenever it remounts. Tying the
+     * emulator to the view's lifetime therefore meant rotating the phone
+     * rebooted the game and threw away everything since the last in-game
+     * save. A DS session is an emulated console, so it outlives any one
+     * View: the re-push becomes "make sure this ROM is loaded" instead of
+     * "load it again", and the only thing the new view rebuilds is its
+     * own bitmaps and AudioTrack.
+     */
+    private fun adoptOrLoad(key: String, create: () -> DsNative?) {
+        synchronized(dsLock) {
+            stopAudio()
+            val existing = if (sharedKey == key) sharedDs else null
+            if (existing == null) {
+                sharedDs?.close()
+                sharedDs = null
+                sharedKey = null
+                val created = create() ?: return afterLoad(null)
+                sharedDs = created
+                sharedKey = key
+                afterLoad(created)
+            } else {
+                afterLoad(existing)
+            }
+        }
+    }
+
     /** romId (e.g. the ROM's CRC32) keys its save file -- pass null to skip persistence. Only for small (e.g. homebrew) ROMs -- see loadRomFromPath. */
     fun loadRom(rom: ByteArray, romId: String?) = onEmuThread {
-        synchronized(dsLock) {
-            ds?.close()
-            stopAudio()
-            afterLoad(DsNative.load(rom, savePathFor(romId)))
-        }
+        adoptOrLoad("bytes:${rom.size}:$romId") { DsNative.load(rom, savePathFor(romId)) }
     }
 
     /** Reads the ROM straight off disk -- see DsNative.loadFromPath. This is the path a real (128-512MB) NDS ROM should take. */
     fun loadRomFromPath(romPath: String, romId: String?) = onEmuThread {
-        synchronized(dsLock) {
-            ds?.close()
-            stopAudio()
-            afterLoad(DsNative.loadFromPath(romPath, savePathFor(romId)))
-        }
+        adoptOrLoad("path:$romPath:$romId") { DsNative.loadFromPath(romPath, savePathFor(romId)) }
     }
 
     fun setButtonPressed(button: DsButton, pressed: Boolean) = synchronized(dsLock) {
@@ -320,6 +351,14 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
         emuThread = thread
         val handler = Handler(thread.looper)
         emuHandler = handler
+        // First thing this thread does: take the GL context the previous
+        // emulation thread released on its way out (see
+        // onDetachedFromWindow). A remounted view adopts a session whose
+        // renderer already exists, so the context has to be current here
+        // before any frame runs -- nativeSetSurface would otherwise be
+        // the first to bind it, and the frames before it would render
+        // into nothing.
+        handler.post { DsNative.bindContext() }
         nextFrameTargetNanos = System.nanoTime()
         // The Surface can already exist by the time the emu thread does
         // (surfaceCreated fires on attach, and it had no handler to post
@@ -342,10 +381,15 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
         // returns immediately.
         emuHandler?.post {
             synchronized(dsLock) {
-                ds?.close()
+                // Deliberately NOT ds.close(): the session is shared and
+                // survives this view (see adoptOrLoad). Releasing the EGL
+                // context here is what lets the *next* view's emu thread
+                // bind it -- a context stays current on whichever thread
+                // last bound it, and this one is about to exit.
                 ds = null
             }
             stopAudio()
+            DsNative.releaseContext()
         }
         emuThread?.quitSafely()
         emuThread?.join()
