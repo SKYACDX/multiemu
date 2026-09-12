@@ -2341,9 +2341,19 @@ function GameControls({
   return (
     <View
       style={styles.gameControlsRoot}
+      // Same two guards landscape already had, and for the same reason:
+      // this root spans every cluster's bounding box, including the wide
+      // empty gap shoulderRow leaves between L and R. With the screen
+      // top-anchored and large, that gap sits over the bottom strip of
+      // the DS touch screen -- and claiming every touch inside the root
+      // swallowed taps there, which is exactly where a game's "save
+      // settings" style buttons live. Only claim a touch that lands on a
+      // real button, and stop being a touch target otherwise so the ones
+      // that miss fall through to DsView underneath.
+      pointerEvents="box-none"
       onLayout={measureAll}
-      onStartShouldSetResponder={() => !editing}
-      onMoveShouldSetResponder={() => !editing}
+      onStartShouldSetResponder={evt => !editing && isTouchOnButton(evt)}
+      onMoveShouldSetResponder={evt => !editing && isTouchOnButton(evt)}
       onResponderTerminationRequest={() => false}
       onResponderGrant={updateFromTouches}
       onResponderMove={updateFromTouches}
