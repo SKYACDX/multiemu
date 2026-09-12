@@ -41,6 +41,11 @@ class GameBoy {
     // step() calls at any time.
     void setButtonPressed(Button button, bool pressed) { bus_.setButtonPressed(button, pressed); }
 
+    // Platform layer entry point for sound: drains whatever the APU has
+    // produced since the last call, as interleaved stereo at
+    // Apu::kSampleRate.
+    int readAudio(i16* out, int maxFrames) { return bus_.apu().readSamples(out, maxFrames); }
+
     const Cpu& cpu() const { return cpu_; }
     SystemBus& bus() { return bus_; }
 
