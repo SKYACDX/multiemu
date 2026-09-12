@@ -11,6 +11,7 @@ add_library(gbcore STATIC
     src/timer.cpp
     src/ppu.cpp
     src/joypad.cpp
+    src/apu.cpp
 )
 target_include_directories(gbcore PUBLIC include)
 

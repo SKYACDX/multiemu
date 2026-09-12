@@ -25,3 +25,7 @@ add_test(NAME test_ppu COMMAND test_ppu)
 add_executable(test_joypad test_joypad.cpp)
 target_link_libraries(test_joypad PRIVATE gbcore)
 add_test(NAME test_joypad COMMAND test_joypad)
+
+add_executable(test_apu test_apu.cpp)
+target_link_libraries(test_apu PRIVATE gbcore)
+add_test(NAME test_apu COMMAND test_apu)

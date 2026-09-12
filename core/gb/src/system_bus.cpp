@@ -16,8 +16,9 @@ u8 SystemBus::read(u16 address) {
     if (address == 0xFF06) return timer_.tma;
     if (address == 0xFF07) return timer_.tac;
     if (address == 0xFF0F) return if_;
+    if (address >= 0xFF10 && address <= 0xFF3F) return apu_.readRegister(address);
     if (address >= 0xFF40 && address <= 0xFF4B) return ppu_.readRegister(address);
-    if (address < 0xFF80) return 0xFF;  // TODO: APU/serial registers
+    if (address < 0xFF80) return 0xFF;  // TODO: serial registers
     if (address < 0xFFFF) return hram_[address - 0xFF80];
     return ie_;  // 0xFFFF
 }
@@ -49,12 +50,14 @@ void SystemBus::write(u16 address, u8 value) {
         timer_.tac = value & 0x07;
     } else if (address == 0xFF0F) {
         if_ = value & 0x1F;
+    } else if (address >= 0xFF10 && address <= 0xFF3F) {
+        apu_.writeRegister(address, value);
     } else if (address == 0xFF46) {
         dmaTransfer(value);
     } else if (address >= 0xFF40 && address <= 0xFF4B) {
         ppu_.writeRegister(address, value);
     } else if (address < 0xFF80) {
-        // TODO: APU/serial registers
+        // TODO: serial registers
     } else if (address < 0xFFFF) {
         hram_[address - 0xFF80] = value;
     } else {
