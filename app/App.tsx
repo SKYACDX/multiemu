@@ -2187,6 +2187,17 @@ function GameControls({
     return (
       <View
         style={styles.landscapeControlsRoot}
+        // box-none: this root covers the whole stage, and in landscape the
+        // stage *is* the two DS screens -- so as a touch target it ate
+        // every tap meant for the touch screen, including taps nowhere
+        // near a button (confirmed: DsView's onTouchEvent never fired in
+        // landscape, while it fires normally in portrait, where the
+        // controls sit below the screen instead of over it). Declining
+        // the RN responder wasn't enough; the view has to stop being a
+        // target at all. Its children still are, and the responder
+        // negotiation still bubbles up here from them, so the shared
+        // multi-touch surface keeps working for the buttons themselves.
+        pointerEvents="box-none"
         onLayout={measureAll}
         onStartShouldSetResponder={evt => !editing && isTouchOnButton(evt)}
         onMoveShouldSetResponder={evt => !editing && isTouchOnButton(evt)}
@@ -2649,7 +2660,10 @@ const styles = StyleSheet.create({
   editToolbar: {
     width: '100%',
     marginTop: 8,
-    backgroundColor: '#1e2027',
+    // Translucent: this panel is how you arrange the controls, so it has
+    // to let you see what you're arranging. It matters most in landscape,
+    // where it floats over the screen rather than sitting above it.
+    backgroundColor: 'rgba(30, 32, 39, 0.82)',
     borderRadius: 12,
     padding: 10,
   },
