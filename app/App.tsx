@@ -1921,7 +1921,12 @@ function App(): React.JSX.Element {
               SurfaceView, punches a hole straight through whatever shares
               its rect (see DsView.kt's z-order note). On top it is always
               reachable, and it only exists while editing anyway. */}
-          {editingControls && <View style={styles.landscapeEditOverlay}>{editToolbar}</View>}
+          {editingControls && (
+            // Offset by the header's height: this overlay is a child of
+            // the landscape root, so top:0 would start it above the title
+            // bar and bury the button that leaves edit mode.
+            <View style={[styles.landscapeEditOverlay, {top: landscapeHeaderHeight}]}>{editToolbar}</View>
+          )}
         </View>
 
         <Modal visible={saveModalOpen} transparent animationType="fade" onRequestClose={closeSaveModal}>
@@ -2617,7 +2622,7 @@ const styles = StyleSheet.create({
   },
   landscapeRomLabel: {flex: 1, color: '#ccc', fontSize: 12},
   landscapeStage: {flex: 1, alignItems: 'center', justifyContent: 'center'},
-  landscapeEditOverlay: {position: 'absolute', left: 12, right: 12, top: 0, alignItems: 'center'},
+  landscapeEditOverlay: {position: 'absolute', left: 12, right: 12, alignItems: 'center'},
   coverOverlay: {
     position: 'absolute',
     top: 0,
