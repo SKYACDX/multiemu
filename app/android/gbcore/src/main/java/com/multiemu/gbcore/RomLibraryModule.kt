@@ -21,12 +21,20 @@ import java.io.File
 
 private const val REQUEST_CODE_PICK_FOLDER = 9002
 private const val CACHE_INDEX_FILE = "rom_cache_index.json"
+// Where ROMs actually live now: getExternalFilesDir, not the internal
+// dir they used to sit in. It's browsable
+// (Android/data/<pkg>/files/roms, so the user can see and manage what
+// the app is holding) and it isn't a cache Android may clear out from
+// under a Recientes entry.
+private const val ROMS_DIR = "roms"
+// Previous location, still read so entries saved before the move work.
 private const val CACHE_DIR = "rom_cache"
-private const val MAX_CACHE_ENTRIES = 12
-// NDS ROMs run 128-512MB each -- capping them at the same 12 as tiny
-// GB/GBA entries could mean gigabytes of cached NDS ROMs. Trimmed
-// separately in saveToCachePath, on top of (not instead of) the general cap.
-private const val MAX_NDS_CACHE_ENTRIES = 2
+// A ROM the user opened is a ROM they want to keep. The old 12, plus a
+// separate cap of 2 for NDS, silently deleted their games -- opening a
+// third DS ROM dropped the first, which is why "the ones I open from
+// Files don't stay in Recientes": they did stay, until the next one
+// evicted them.
+private const val MAX_CACHE_ENTRIES = 40
 
 /**
  * Two related pieces of "make loading ROMs less painful" that don't fit
@@ -57,7 +65,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     fun saveToCache(base64: String, name: String, system: String, label: String, promise: Promise) {
         try {
             val bytes = Base64.decode(base64, Base64.DEFAULT)
-            val cacheDir = File(reactContext.filesDir, CACHE_DIR).apply { mkdirs() }
+            val cacheDir = romsDir()
             val id = "${System.currentTimeMillis()}_${name.hashCode()}"
             File(cacheDir, id).writeBytes(bytes)
 
@@ -65,7 +73,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
             // Replace an existing entry for the same file name instead of duplicating it.
             for (i in index.length() - 1 downTo 0) {
                 if (index.getJSONObject(i).getString("name") == name) {
-                    File(cacheDir, index.getJSONObject(i).getString("id")).delete()
+                    romFile(index.getJSONObject(i).getString("id")).delete()
                     index.remove(i)
                 }
             }
@@ -79,7 +87,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
             }
             index.put(entry)
             while (index.length() > MAX_CACHE_ENTRIES) {
-                File(cacheDir, index.getJSONObject(0).getString("id")).delete()
+                romFile(index.getJSONObject(0).getString("id")).delete()
                 index.remove(0)
             }
             writeIndex(index)
@@ -96,13 +104,12 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
      * at [path] (e.g. from RomFilePickerModule.pickRomPath/downloadRom) into
      * the cache dir instead of writing decoded bytes, and returns the moved
      * file's new path so the caller can keep using it (the original path
-     * stops existing once this runs). Same index/eviction as [saveToCache],
-     * plus its own cap on NDS entries specifically -- see MAX_NDS_CACHE_ENTRIES.
+     * stops existing once this runs). Same index/eviction as [saveToCache].
      */
     @ReactMethod
     fun saveToCachePath(path: String, name: String, system: String, label: String, promise: Promise) {
         try {
-            val cacheDir = File(reactContext.filesDir, CACHE_DIR).apply { mkdirs() }
+            val cacheDir = romsDir()
             val id = "${System.currentTimeMillis()}_${name.hashCode()}"
             val dest = File(cacheDir, id)
             val source = File(path)
@@ -114,7 +121,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
             val index = readIndex()
             for (i in index.length() - 1 downTo 0) {
                 if (index.getJSONObject(i).getString("name") == name) {
-                    File(cacheDir, index.getJSONObject(i).getString("id")).delete()
+                    romFile(index.getJSONObject(i).getString("id")).delete()
                     index.remove(i)
                 }
             }
@@ -128,21 +135,8 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
             }
             index.put(entry)
             while (index.length() > MAX_CACHE_ENTRIES) {
-                File(cacheDir, index.getJSONObject(0).getString("id")).delete()
+                romFile(index.getJSONObject(0).getString("id")).delete()
                 index.remove(0)
-            }
-            if (system == "nds") {
-                var ndsCount = (0 until index.length()).count { index.getJSONObject(it).getString("system") == "nds" }
-                var i = 0
-                while (ndsCount > MAX_NDS_CACHE_ENTRIES && i < index.length()) {
-                    if (index.getJSONObject(i).getString("system") == "nds") {
-                        File(cacheDir, index.getJSONObject(i).getString("id")).delete()
-                        index.remove(i)
-                        ndsCount--
-                    } else {
-                        i++
-                    }
-                }
             }
             writeIndex(index)
 
@@ -158,7 +152,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun loadPathFromCache(id: String, promise: Promise) {
         try {
-            val file = File(File(reactContext.filesDir, CACHE_DIR), id)
+            val file = romFile(id)
             if (!file.exists()) {
                 promise.reject("NOT_FOUND", "Esa ROM ya no está en la caché")
                 return
@@ -188,7 +182,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun loadFromCache(id: String, promise: Promise) {
         try {
-            val file = File(File(reactContext.filesDir, CACHE_DIR), id)
+            val file = romFile(id)
             if (!file.exists()) {
                 promise.reject("NOT_FOUND", "Esa ROM ya no está en la caché")
                 return
@@ -204,7 +198,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun deleteFromCache(id: String, promise: Promise) {
         try {
-            File(File(reactContext.filesDir, CACHE_DIR), id).delete()
+            romFile(id).delete()
             val index = readIndex()
             for (i in index.length() - 1 downTo 0) {
                 if (index.getJSONObject(i).getString("id") == id) index.remove(i)
@@ -214,6 +208,19 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         } catch (e: Exception) {
             promise.reject("CACHE_WRITE_ERROR", e.message, e)
         }
+    }
+
+    /** Permanent, user-visible ROM directory -- falls back to internal storage if there is no external one. */
+    private fun romsDir(): File =
+        (reactContext.getExternalFilesDir(null)?.let { File(it, ROMS_DIR) }
+            ?: File(reactContext.filesDir, CACHE_DIR)).apply { mkdirs() }
+
+    /** Resolves a stored ROM, preferring the new location but still finding entries saved in the old one. */
+    private fun romFile(id: String): File {
+        val current = File(romsDir(), id)
+        if (current.exists()) return current
+        val legacy = File(File(reactContext.filesDir, CACHE_DIR), id)
+        return if (legacy.exists()) legacy else current
     }
 
     private fun readIndex(): JSONArray {

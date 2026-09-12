@@ -1,8 +1,8 @@
 From b3fbab006cbd2cfca4cdc229dc14540a4cd86b17 Mon Sep 17 00:00:00 2001
 From: WilbertACDX <115293547+WilbertACDX@users.noreply.github.com>
 Date: Fri, 11 Sep 2026 16:39:47 -0600
-Subject: [PATCH] Android/GLES port: window-surface display path, colour order,
- VRAM dirty uploads
+Subject: [PATCH 1/2] Android/GLES port: window-surface display path, colour
+ order, VRAM dirty uploads
 
 Patches the vendored core for multiemu's Android frontend (arm64, GLES
 3.2 on an Adreno 610). Grouped by what they fix:
@@ -1509,6 +1509,92 @@ index 3c4aca7..f85c37e 100644
  
      Platform::Mutex_Lock(AudioLock);
      for (int i = 0; i < avail * 2; i += 2)
+-- 
+2.44.0.windows.1
+
+
+From 6b9f0b294e5effa6329c359fa6ce6954c944d237 Mon Sep 17 00:00:00 2001
+From: WilbertACDX <115293547+WilbertACDX@users.noreply.github.com>
+Date: Sat, 12 Sep 2026 01:43:29 -0600
+Subject: [PATCH 2/2] WifiAP: follow the DS's channel instead of sitting on
+ channel 6
+
+The emulated access point pinned itself to channel 6 and dropped every
+frame the DS sent from any other one, faithfully imitating a radio it
+doesn't have. The DS's receive path drops frames tagged with a channel
+it isn't tuned to, so to any game whose site survey doesn't happen to
+visit 6, melonAP simply does not exist.
+
+Pokemon Black scans channels 1, 7 and 13 -- measured on device: 532/532/531
+visits, zero to channel 6, and 611 consecutive frames rejected as "bad
+channel 6". The DS never associated and Mystery Gift hung on "searching
+for gift" indefinitely. Pokemon SoulSilver worked only because its scan
+does reach 6.
+
+There is no radio here, so follow the DS: every frame it sends carries
+the channel it sent it on, and replies (and the next beacon) go back out
+tagged to match. A game that does tune to 6 behaves exactly as before.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/WifiAP.cpp | 19 ++++++++++++++++---
+ src/WifiAP.h   |  6 +++++-
+ 2 files changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/src/WifiAP.cpp b/src/WifiAP.cpp
+index 6001da1..b208a0e 100644
+--- a/src/WifiAP.cpp
++++ b/src/WifiAP.cpp
+@@ -35,7 +35,6 @@ using Platform::LogLevel;
+ 
+ const char* WifiAP::APName = "melonAP";
+ const u8 WifiAP::APMac[6] = {0x00, 0xF0, 0x77, 0x77, 0x77, 0x77};
+-const u8 WifiAP::APChannel = 6;
+ 
+ #define PWRITE_8(p, v)      *p++ = v;
+ #define PWRITE_16(p, v)     *(u16*)p = v; p += 2;
+@@ -261,8 +260,22 @@ int WifiAP::HandleManagementFrame(const u8* data, int len)
+ 
+ int WifiAP::SendPacket(const u8* data, int len)
+ {
+-    if (data[9] != APChannel)
+-        return 0;
++    // Upstream pinned the AP to channel 6 and dropped anything the DS
++    // sent from another one -- faithful to a real access point, and fatal
++    // to any game whose site survey doesn't happen to visit 6. Pokemon
++    // Black scans 1, 7 and 13 only: measured on device, 611 frames in a
++    // row rejected as "bad channel 6", the DS never associating and the
++    // game hanging on "searching for gift" forever. The DS's own receive
++    // path drops frames tagged with a channel it isn't tuned to
++    // (Wifi.cpp), so a fixed-channel AP is simply invisible to those
++    // games.
++    //
++    // There's no radio here to be on a channel, so follow the DS instead:
++    // every frame it sends carries the channel it sent it on, and replies
++    // (and the next beacon) go back out tagged the same way. A game that
++    // does tune to 6 behaves exactly as before.
++    if (data[9] != 0)
++        APChannel = data[9];
+ 
+     data += 12;
+ 
+diff --git a/src/WifiAP.h b/src/WifiAP.h
+index cc826f5..454db5f 100644
+--- a/src/WifiAP.h
++++ b/src/WifiAP.h
+@@ -34,7 +34,11 @@ public:
+ 
+     static const char* APName;
+     static const u8 APMac[6];
+-    static const u8 APChannel;
++    // NOT a constant, and not static: melonAP is software, not a radio,
++    // so it has no business being reachable on one channel only. It
++    // follows whatever channel the DS is currently tuned to -- see
++    // WifiAP::SendPacket.
++    u8 APChannel = 6;
+ 
+     void MSTimer();
+ 
 -- 
 2.44.0.windows.1
 
