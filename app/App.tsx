@@ -159,6 +159,16 @@ function migrateControlLayout(layout: ControlLayout): ControlLayout {
 // since landscape has a lot more room to give it once it's not stacked
 // above a column of controls.
 const DEFAULT_CONTROL_LAYOUT_LANDSCAPE: ControlLayout = {offsets: {}, scales: {screen: 2}};
+// The DS stacks two screens in the same box one GB/GBA screen gets, so at
+// scale 1 each half comes out noticeably smaller than a GBA screen does.
+// 1.2 is the largest step that still clears the controls: with the stage
+// top-anchored (see portraitStage) it renders taller than 1.4 used to
+// when the screen was centred, and 1.4 now runs the d-pad and the face
+// buttons back onto the lower screen. Kept as
+// a module constant (like the two above) because defaultControlLayout is
+// a useEffect dependency: building the object inline would make it a new
+// reference every render and reload the layout on each one.
+const DEFAULT_CONTROL_LAYOUT_NDS: ControlLayout = {offsets: {}, scales: {screen: 1.2}};
 // Landscape cluster anchors are positioned `top: stageHeight - MARGIN -
 // <cluster height>` (see GameControls' landscape branch) -- these mirror
 // the matching styles.landscape*Wrap heights below so the two can't drift
@@ -1285,7 +1295,11 @@ function App(): React.JSX.Element {
   // layout, and landscape's fixed-corner controls need a different
   // default scale than portrait's stacked-below-the-screen ones.
   const controlLayoutKey = `controlLayout_${system}_${isLandscape ? 'landscape' : 'portrait'}`;
-  const defaultControlLayout = isLandscape ? DEFAULT_CONTROL_LAYOUT_LANDSCAPE : DEFAULT_CONTROL_LAYOUT;
+  const defaultControlLayout = isLandscape
+    ? DEFAULT_CONTROL_LAYOUT_LANDSCAPE
+    : system === 'nds'
+      ? DEFAULT_CONTROL_LAYOUT_NDS
+      : DEFAULT_CONTROL_LAYOUT;
   useEffect(() => {
     let cancelled = false;
     getPreference(controlLayoutKey)
@@ -1594,7 +1608,11 @@ function App(): React.JSX.Element {
   // hint differs, since landscape's controls sit at fixed corners
   // instead (see GameControls' landscape branch).
   // X/Y only exist on the DS, so only offer to resize them there.
-  const scaleTargets = system === 'nds' ? [...SCALE_TARGETS, {id: 'xy' as const, label: 'X/Y'}] : SCALE_TARGETS;
+  // On the DS, X/Y sit inside the A/B diamond (see GameControls), so they
+  // move and scale with it -- there's nothing left for a separate 'xy'
+  // target to act on, only a label to widen.
+  const scaleTargets =
+    system === 'nds' ? SCALE_TARGETS.map(t => (t.id === 'actions' ? {...t, label: 'A/B/X/Y'} : t)) : SCALE_TARGETS;
   const editToolbar = editingControls && (
     <View style={styles.editToolbar}>
       {!isLandscape && <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>}
@@ -2048,6 +2066,9 @@ function GameControls({
 }) {
   const cs = resolveControlStyle(theme);
   const clusterScale = (id: ClusterId): {transform: [{scale: number}]} => ({transform: [{scale: scales[id] ?? 1}]});
+  // Portrait only -- landscape pins the controls to fixed corners and
+  // keeps its own X/Y pill row, so it doesn't take the diamond.
+  const isDs = system === 'nds';
   type ViewRef = React.ElementRef<typeof View>;
   const refs = useRef<Partial<Record<PadButtonId, ViewRef | null>>>({});
   const rects = useRef<Partial<Record<PadButtonId, {x: number; y: number; w: number; h: number}>>>({});
@@ -2309,23 +2330,6 @@ function GameControls({
         </DraggableCluster>
       </View>
 
-      {/* X/Y only exist on the DS -- shown just for that system, above
-          the D-pad/A-B row rather than reshuffling its fixed layout. */}
-      {system === 'nds' && (
-        <DraggableCluster id="xy" editing={editing} offset={offsets.xy} onDrag={onDrag}>
-          <View style={[styles.systemRow, clusterScale('xy')]}>
-            <View ref={setRef('Y')} style={[styles.pillButton, styles.pillButtonSelect, isPressed('Y') && styles.pillButtonPressed]}>
-              <View style={styles.pillHighlight} />
-              <Text style={styles.pillLabel}>Y</Text>
-            </View>
-            <View ref={setRef('X')} style={[styles.pillButton, styles.pillButtonStart, isPressed('X') && styles.pillButtonPressed]}>
-              <View style={styles.pillHighlight} />
-              <Text style={styles.pillLabel}>X</Text>
-            </View>
-          </View>
-        </DraggableCluster>
-      )}
-
       <View style={styles.padRow}>
         <DraggableCluster id="dpad" editing={editing} offset={offsets.dpad} onDrag={onDrag}>
           <View style={[styles.dpad, clusterScale('dpad')]}>
@@ -2357,13 +2361,13 @@ function GameControls({
 
         {/* B/A staggered diagonally (B lower-left, A upper-right), matching the real hardware layout. */}
         <DraggableCluster id="actions" editing={editing} offset={offsets.actions} onDrag={onDrag}>
-          <View style={[styles.actionCluster, clusterScale('actions')]}>
+          <View style={[isDs ? styles.actionClusterDs : styles.actionCluster, clusterScale('actions')]}>
             <View
               ref={setRef('B')}
               style={[
                 styles.actionButton,
                 {backgroundColor: withAlpha(cs.actionColorB, 0.85), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
-                styles.buttonBPosition,
+                isDs ? styles.buttonBPositionDs : styles.buttonBPosition,
                 isPressed('B') && styles.actionButtonPressed,
               ]}>
               <View style={styles.actionHighlight} />
@@ -2374,12 +2378,44 @@ function GameControls({
               style={[
                 styles.actionButton,
                 {backgroundColor: withAlpha(cs.actionColorA, 0.85), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
-                styles.buttonAPosition,
+                isDs ? styles.buttonAPositionDs : styles.buttonAPosition,
                 isPressed('A') && styles.actionButtonPressed,
               ]}>
               <View style={styles.actionHighlight} />
               <Text style={styles.actionLabel}>A</Text>
             </View>
+            {/* On a DS the four face buttons are one diamond -- X top, Y
+                left, A right, B bottom -- so on that system X/Y join this
+                cluster as round buttons instead of living in their own
+                pill row. They pair colours diagonally with the button
+                they sit opposite, which keeps them themeable without
+                inventing two more theme fields. */}
+            {isDs && (
+              <>
+                <View
+                  ref={setRef('X')}
+                  style={[
+                    styles.actionButton,
+                    {backgroundColor: withAlpha(cs.actionColorA, 0.85), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                    styles.buttonXPositionDs,
+                    isPressed('X') && styles.actionButtonPressed,
+                  ]}>
+                  <View style={styles.actionHighlight} />
+                  <Text style={styles.actionLabel}>X</Text>
+                </View>
+                <View
+                  ref={setRef('Y')}
+                  style={[
+                    styles.actionButton,
+                    {backgroundColor: withAlpha(cs.actionColorB, 0.85), borderRadius: cs.actionRadius, transform: [{scale: cs.actionScale}]},
+                    styles.buttonYPositionDs,
+                    isPressed('Y') && styles.actionButtonPressed,
+                  ]}>
+                  <View style={styles.actionHighlight} />
+                  <Text style={styles.actionLabel}>Y</Text>
+                </View>
+              </>
+            )}
           </View>
         </DraggableCluster>
       </View>
@@ -2503,7 +2539,14 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
   },
   topGroup: {alignItems: 'center', width: '100%'},
-  portraitStage: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center'},
+  // Top-anchored, not centred. GameControls overlays the lower part of
+  // this same stage, so centring the screen across the full height left
+  // dead space above it and grew it *into* the buttons below -- on the DS,
+  // where one box holds two stacked screens, that meant the d-pad and the
+  // face buttons sat on top of the lower (touch) screen at any useful
+  // size. Anchoring to the top spends that dead space on the screen
+  // instead, which is the room the controls were competing for.
+  portraitStage: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'flex-start', paddingTop: 8},
   bottomGroup: {alignItems: 'center', width: '100%'},
   // Landscape: a slim top bar (not the portrait topGroup's console+title
   // block) plus a "stage" that fills the rest -- the screen centered in
@@ -2882,6 +2925,10 @@ const styles = StyleSheet.create({
   dpadHitLeft: {top: 48, left: 0},
   dpadHitRight: {top: 48, left: 96},
   actionCluster: {width: 140, height: 110, marginRight: 8},
+  // DS diamond: 60px buttons at the four points of a 160x160 box, so
+  // their centres sit ~71px apart -- about 10px of gap, the snug
+  // arrangement a real DS has, rather than four buttons floating apart.
+  actionClusterDs: {width: 160, height: 160, marginRight: 8},
   actionButton: {
     position: 'absolute',
     width: 60,
@@ -2908,6 +2955,10 @@ const styles = StyleSheet.create({
   },
   buttonAPosition: {top: 0, right: 0},
   buttonBPosition: {bottom: 0, left: 0},
+  buttonAPositionDs: {top: 50, right: 0},
+  buttonBPositionDs: {bottom: 0, left: 50},
+  buttonXPositionDs: {top: 0, left: 50},
+  buttonYPositionDs: {top: 50, left: 0},
   actionButtonPressed: {opacity: 0.7},
   actionLabel: {color: '#fff', fontSize: 20, fontWeight: '700'},
   systemRow: {
