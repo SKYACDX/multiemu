@@ -26,3 +26,10 @@ node_modules/
 
 # RomHack Hub admin bearer token for publishing the app listing -- never commit.
 /.secrets/
+
+# Release signing key. NEVER commit either of these: the keystore is the
+# only thing that can sign an update Android will accept as this app, and
+# the properties file holds its password. Losing them means the app can
+# never be updated again -- back both up somewhere off this machine.
+/app/android/app/multiemu-release.keystore
+/app/android/keystore.properties

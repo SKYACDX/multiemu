@@ -59,6 +59,15 @@ react {
  */
 def enableProguardInReleaseBuilds = false
 
+// Release signing material, kept out of the repo -- see .gitignore and
+// docs/publishing.md. Null when absent (fresh clone / CI without the key).
+def releaseKeystoreProps = null
+def releaseKeystoreFile = rootProject.file("keystore.properties")
+if (releaseKeystoreFile.exists()) {
+    releaseKeystoreProps = new Properties()
+    releaseKeystoreFile.withInputStream { releaseKeystoreProps.load(it) }
+}
+
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
  *
@@ -92,15 +101,32 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // Real release key, loaded from ../keystore.properties (gitignored,
+        // along with the .keystore itself). Absent on a fresh clone, which
+        // is why buildTypes.release falls back below instead of failing:
+        // anyone can build and run the app, only whoever holds the key can
+        // build one the installed app will accept as an update.
+        if (releaseKeystoreProps != null) {
+            release {
+                storeFile file(releaseKeystoreProps['MULTIEMU_STORE_FILE'])
+                storePassword releaseKeystoreProps['MULTIEMU_STORE_PASSWORD']
+                keyAlias releaseKeystoreProps['MULTIEMU_KEY_ALIAS']
+                keyPassword releaseKeystoreProps['MULTIEMU_KEY_PASSWORD']
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // The debug key here is the one from the React Native template
+            // -- the standard Android debug key, whose private half ships
+            // with every SDK install. Anything signed with it can be
+            // replaced in place by anyone, so a published build must use
+            // signingConfigs.release; this fallback exists only so a clone
+            // without the key can still produce a runnable APK.
+            signingConfig releaseKeystoreProps != null ? signingConfigs.release : signingConfigs.debug
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
