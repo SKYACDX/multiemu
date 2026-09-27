@@ -7,14 +7,13 @@
 #include "gb/cartridge.h"
 #include "gb/joypad.h"
 #include "gb/ppu.h"
+#include "gb/serial.h"
 #include "gb/timer.h"
 
 namespace gb {
 
 // The real memory bus: routes each address range to the component that
-// owns it (see docs/memory_map.md). Serial I/O is not implemented yet, so
-// that range is stubbed -- reads return 0xFF and writes are dropped --
-// until that component exists.
+// owns it (see docs/memory_map.md).
 class SystemBus : public Bus {
    public:
     explicit SystemBus(std::unique_ptr<Cartridge> cartridge) : cartridge_(std::move(cartridge)) {}
@@ -29,6 +28,7 @@ class SystemBus : public Bus {
     bool tick(int tCycles) {
         bool frameReady = ppu_.tick(tCycles, if_);
         timer_.tick(tCycles, if_);
+        serial_.tick(tCycles, if_);
         apu_.tick(tCycles);
         return frameReady;
     }
@@ -39,6 +39,8 @@ class SystemBus : public Bus {
 
     const Ppu& ppu() const { return ppu_; }
     Apu& apu() { return apu_; }
+    // The link cable port. Two consoles are linked by connecting theirs.
+    Serial& serial() { return serial_; }
     u8 interruptEnable() const { return ie_; }
     u8 interruptFlag() const { return if_; }
     Cartridge& cartridge() { return *cartridge_; }
@@ -50,6 +52,7 @@ class SystemBus : public Bus {
     std::array<u8, 0x2000> wram_{};  // 0xC000-0xDFFF (DMG: no bank switching)
     std::array<u8, 0x7F> hram_{};    // 0xFF80-0xFFFE
     Ppu ppu_;                        // 0x8000-0x9FFF, 0xFE00-0xFE9F, 0xFF40-0xFF4B
+    Serial serial_;                  // 0xFF01-0xFF02
     Timer timer_;                    // 0xFF04-0xFF07
     Apu apu_;                        // 0xFF10-0xFF3F
     Joypad joypad_;                  // 0xFF00

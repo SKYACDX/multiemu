@@ -29,3 +29,7 @@ add_test(NAME test_joypad COMMAND test_joypad)
 add_executable(test_apu test_apu.cpp)
 target_link_libraries(test_apu PRIVATE gbcore)
 add_test(NAME test_apu COMMAND test_apu)
+
+add_executable(test_serial test_serial.cpp)
+target_link_libraries(test_serial PRIVATE gbcore)
+add_test(NAME test_serial COMMAND test_serial)
