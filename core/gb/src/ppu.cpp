@@ -73,8 +73,21 @@ bool Ppu::tick(int tCycles, u8& ifReg) {
         windowLine_ = 0;
         mode_ = 0;
         stat_ &= 0xFC;
-        return false;
+
+        // Time still passes with the screen off, and frontends count frames
+        // to know how much of it has: runUntilFrame returns on one, and the
+        // desktop link cable waits for one from each console. So a frame
+        // still comes out every 154 lines' worth of cycles -- blank, which is
+        // what a DMG shows with the LCD off. Without it, a game that keeps
+        // the screen off for a while stalls the frontend for that long, and
+        // one that never turns it back on hangs it.
+        offClock_ += tCycles;
+        if (offClock_ < kLineCycles * 154) return false;
+        offClock_ -= kLineCycles * 154;
+        framebuffer_.fill(0);
+        return true;
     }
+    offClock_ = 0;
 
     bool frameReady = false;
     modeClock_ += tCycles;
