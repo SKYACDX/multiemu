@@ -212,6 +212,25 @@ int Cpu::execute(u8 opcode) {
             setFlag(kFlagH, false);
             setFlag(kFlagC, !flagC());
             return 1;
+        case 0x27: {  // DAA
+            // Brings A back to binary-coded decimal after an ADD/ADC or
+            // SUB/SBC of two BCD values, from the flags that operation left:
+            // N says which way it went, H and C which digits overflowed. After
+            // an addition a digit past 9 also needs fixing; after a
+            // subtraction only the flags say so.
+            u8 correction = 0;
+            bool carry = flagC();
+            if (flagH() || (!flagN() && (a_ & 0x0F) > 0x09)) correction |= 0x06;
+            if (carry || (!flagN() && a_ > 0x99)) {
+                correction |= 0x60;
+                carry = true;
+            }
+            a_ = flagN() ? u8(a_ - correction) : u8(a_ + correction);
+            setFlag(kFlagZ, a_ == 0);
+            setFlag(kFlagH, false);
+            setFlag(kFlagC, carry);
+            return 1;
+        }
         case 0x07: {  // RLCA
             u8 carry = a_ >> 7;
             a_ = u8((a_ << 1) | carry);
@@ -339,12 +358,76 @@ int Cpu::execute(u8 opcode) {
             setHl(u16(result));
             return 3;
         }
-        case 0xCB:
-            // TODO: bit-rotate/shift/BIT/SET/RES table (0xCB-prefixed
-            // opcodes). Not implemented yet -- consume the second byte so
-            // decoding doesn't desync, but this does not do anything else.
-            fetch8();
-            return 2;
+        case 0xCB: {
+            // The 0xCB-prefixed page: rotates and shifts, then BIT, RES and
+            // SET. Same operand encoding as the main table (low three bits:
+            // B C D E H L (HL) A); the top two bits pick the group, and bits
+            // 3-5 the shift or the bit number. Two cycles on a register. On
+            // (HL) the memory access costs more: BIT only reads it (3), the
+            // rest read, modify and write it back (4).
+            const u8 cb = fetch8();
+            const int idx = cb & 7;
+            const int n = (cb >> 3) & 7;
+            const bool memory = idx == kRegHlIndirect;
+            u8 value = getReg8(idx);
+            switch (cb >> 6) {
+                case 0: {
+                    bool carry;
+                    switch (n) {
+                        case 0:  // RLC
+                            carry = value & 0x80;
+                            value = u8((value << 1) | (value >> 7));
+                            break;
+                        case 1:  // RRC
+                            carry = value & 0x01;
+                            value = u8((value >> 1) | (value << 7));
+                            break;
+                        case 2:  // RL, through the carry
+                            carry = value & 0x80;
+                            value = u8((value << 1) | (flagC() ? 0x01 : 0));
+                            break;
+                        case 3:  // RR, through the carry
+                            carry = value & 0x01;
+                            value = u8((value >> 1) | (flagC() ? 0x80 : 0));
+                            break;
+                        case 4:  // SLA
+                            carry = value & 0x80;
+                            value = u8(value << 1);
+                            break;
+                        case 5:  // SRA: the sign bit stays
+                            carry = value & 0x01;
+                            value = u8((value >> 1) | (value & 0x80));
+                            break;
+                        case 6:  // SWAP the two nibbles
+                            carry = false;
+                            value = u8((value << 4) | (value >> 4));
+                            break;
+                        default:  // SRL
+                            carry = value & 0x01;
+                            value = u8(value >> 1);
+                            break;
+                    }
+                    // Unlike RLCA and friends in the main table, Z follows
+                    // the result here.
+                    f_ = 0;
+                    setFlag(kFlagZ, value == 0);
+                    setFlag(kFlagC, carry);
+                    setReg8(idx, value);
+                    return memory ? 4 : 2;
+                }
+                case 1:  // BIT n: Z is the bit, inverted; C untouched
+                    setFlag(kFlagZ, !(value & (1 << n)));
+                    setFlag(kFlagN, false);
+                    setFlag(kFlagH, true);
+                    return memory ? 3 : 2;
+                case 2:  // RES n: no flags
+                    setReg8(idx, u8(value & ~(1 << n)));
+                    return memory ? 4 : 2;
+                default:  // SET n: no flags
+                    setReg8(idx, u8(value | (1 << n)));
+                    return memory ? 4 : 2;
+            }
+        }
         default:
             break;
     }
@@ -516,9 +599,9 @@ int Cpu::execute(u8 opcode) {
         return 4;
     }
 
-    // Unimplemented / unassigned opcode. TODO: DAA and anything else still
-    // missing from the table above. Treated as a 1-cycle no-op for now so
-    // the fetch/decode loop doesn't get stuck.
+    // Only the eleven unassigned opcodes get here (0xD3, 0xDB, 0xDD, 0xE3,
+    // 0xE4, 0xEB, 0xEC, 0xED, 0xF4, 0xFC, 0xFD). Real hardware locks up on
+    // them; a 1-cycle no-op keeps the fetch/decode loop going instead.
     return 1;
 }
 
