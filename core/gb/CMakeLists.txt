@@ -12,6 +12,7 @@ add_library(gbcore STATIC
     src/ppu.cpp
     src/joypad.cpp
     src/apu.cpp
+    src/serial.cpp
 )
 target_include_directories(gbcore PUBLIC include)
 

@@ -138,6 +138,19 @@ TEST_CASE(sprite_pixel_overrides_background_except_where_transparent) {
     return true;
 }
 
+TEST_CASE(lcd_off_still_reports_a_blank_frame_every_70224_cycles) {
+    gb::Ppu ppu;
+    gb::u8 ifReg = 0;
+    ppu.writeRegister(0xFF40, 0x11);  // LCD off, BG on
+    int frames = 0;
+    for (int cycles = 0; cycles < 70224 * 3; cycles += 4) {
+        if (ppu.tick(4, ifReg)) frames++;
+    }
+    CHECK(frames == 3);
+    for (gb::u8 shade : ppu.framebuffer()) CHECK(shade == 0);
+    return true;
+}
+
 }  // namespace
 
 int main() {

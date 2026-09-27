@@ -136,6 +136,180 @@ TEST_CASE(sub_below_zero_sets_carry_and_wraps) {
     return true;
 }
 
+TEST_CASE(cb_bit_sets_zero_only_when_the_bit_is_clear) {
+    FlatBus bus;
+    bus.load(0x0100, {0x3E, 0x80,   // LD A,0x80
+                       0x37,         // SCF -- BIT must leave C alone
+                       0xCB, 0x7F,   // BIT 7,A -> set, so Z clear
+                       0xCB, 0x77}); // BIT 6,A -> clear, so Z set
+    gb::Cpu cpu(bus);
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.step() == 2);
+    CHECK(!cpu.flagZ());
+    CHECK(cpu.flagH());
+    CHECK(!cpu.flagN());
+    CHECK(cpu.flagC());
+    cpu.step();
+    CHECK(cpu.flagZ());
+    return true;
+}
+
+TEST_CASE(cb_swap_and_srl) {
+    FlatBus bus;
+    bus.load(0x0100, {0x06, 0xF1,   // LD B,0xF1
+                       0xCB, 0x30,   // SWAP B -> 0x1F
+                       0xCB, 0x38}); // SRL B -> 0x0F, C from bit 0
+    gb::Cpu cpu(bus);
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.b() == 0x1F);
+    CHECK(!cpu.flagC());
+    CHECK(!cpu.flagZ());
+    cpu.step();
+    CHECK(cpu.b() == 0x0F);
+    CHECK(cpu.flagC());
+    return true;
+}
+
+TEST_CASE(cb_rl_and_rr_go_through_the_carry) {
+    FlatBus bus;
+    bus.load(0x0100, {0x0E, 0x80,   // LD C,0x80
+                       0x37,         // SCF
+                       0xCB, 0x11,   // RL C: 0x80 -> 0x01 (old carry in), C=1
+                       0xCB, 0x19}); // RR C: 0x01 -> 0x80 (carry in), C=1
+    gb::Cpu cpu(bus);
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.c() == 0x01);
+    CHECK(cpu.flagC());
+    cpu.step();
+    CHECK(cpu.c() == 0x80);
+    CHECK(cpu.flagC());
+    return true;
+}
+
+TEST_CASE(cb_rlc_rrc_sla_sra) {
+    FlatBus bus;
+    bus.load(0x0100, {0x16, 0x81,   // LD D,0x81
+                       0xCB, 0x02,   // RLC D -> 0x03, C=1
+                       0xCB, 0x0A,   // RRC D -> 0x81, C=1
+                       0xCB, 0x22,   // SLA D -> 0x02, C=1
+                       0x1E, 0x82,   // LD E,0x82
+                       0xCB, 0x2B}); // SRA E -> 0xC1, C=0
+    gb::Cpu cpu(bus);
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.d() == 0x03);
+    CHECK(cpu.flagC());
+    cpu.step();
+    CHECK(cpu.d() == 0x81);
+    CHECK(cpu.flagC());
+    cpu.step();
+    CHECK(cpu.d() == 0x02);
+    CHECK(cpu.flagC());
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.e() == 0xC1);
+    CHECK(!cpu.flagC());
+    return true;
+}
+
+TEST_CASE(cb_zero_result_sets_z_unlike_rlca) {
+    FlatBus bus;
+    bus.load(0x0100, {0x3E, 0x80,   // LD A,0x80
+                       0xCB, 0x27}); // SLA A -> 0x00: Z and C
+    gb::Cpu cpu(bus);
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.a() == 0x00);
+    CHECK(cpu.flagZ());
+    CHECK(cpu.flagC());
+    return true;
+}
+
+TEST_CASE(cb_on_hl_memory_and_its_timing) {
+    FlatBus bus;
+    bus.load(0xC000, {0x10});
+    bus.load(0x0100, {0x21, 0x00, 0xC0,  // LD HL,0xC000
+                       0xCB, 0xC6,        // SET 0,(HL) -> 0x11
+                       0xCB, 0x96,        // RES 2,(HL) -> no change (bit clear)
+                       0xCB, 0xA6,        // RES 4,(HL) -> 0x01
+                       0xCB, 0x46});      // BIT 0,(HL)
+    gb::Cpu cpu(bus);
+    cpu.step();
+    CHECK(cpu.step() == 4);
+    CHECK(bus.read(0xC000) == 0x11);
+    cpu.step();
+    CHECK(bus.read(0xC000) == 0x11);
+    cpu.step();
+    CHECK(bus.read(0xC000) == 0x01);
+    CHECK(cpu.step() == 3);
+    CHECK(!cpu.flagZ());
+    return true;
+}
+
+TEST_CASE(cb_res_and_set_leave_flags_alone) {
+    FlatBus bus;
+    bus.load(0x0100, {0x37,         // SCF: N=0 H=0 C=1, Z kept from boot
+                       0xCB, 0xFF,   // SET 7,A
+                       0xCB, 0x87}); // RES 0,A
+    gb::Cpu cpu(bus);
+    cpu.step();
+    const gb::u8 flags = cpu.f();
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.f() == flags);
+    return true;
+}
+
+TEST_CASE(daa_after_addition) {
+    FlatBus bus;
+    bus.load(0x0100, {0x3E, 0x45,   // LD A,0x45
+                       0xC6, 0x38,   // ADD A,0x38 -> 0x7D
+                       0x27,         // DAA -> 0x83 (45 + 38 = 83)
+                       0x3E, 0x99,   // LD A,0x99
+                       0xC6, 0x01,   // ADD A,0x01 -> 0x9A
+                       0x27});       // DAA -> 0x00, carry out (99 + 1 = 100)
+    gb::Cpu cpu(bus);
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.a() == 0x83);
+    CHECK(!cpu.flagC());
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.a() == 0x00);
+    CHECK(cpu.flagZ());
+    CHECK(cpu.flagC());
+    CHECK(!cpu.flagH());
+    return true;
+}
+
+TEST_CASE(daa_after_subtraction) {
+    FlatBus bus;
+    bus.load(0x0100, {0x3E, 0x10,   // LD A,0x10
+                       0xD6, 0x01,   // SUB 0x01 -> 0x0F, H set
+                       0x27,         // DAA -> 0x09 (10 - 1 = 9)
+                       0x3E, 0x00,   // LD A,0x00
+                       0xD6, 0x01,   // SUB 0x01 -> 0xFF, H and C set
+                       0x27});       // DAA -> 0x99, borrow kept (0 - 1 = 99)
+    gb::Cpu cpu(bus);
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.a() == 0x09);
+    CHECK(cpu.flagN());
+    cpu.step();
+    cpu.step();
+    cpu.step();
+    CHECK(cpu.a() == 0x99);
+    CHECK(cpu.flagC());
+    return true;
+}
+
 TEST_CASE(conditional_jump_taken_and_not_taken) {
     FlatBus bus;
     // XOR A -> A=0, Z set. JR Z,+2 should jump; JR NZ,+2 should not.

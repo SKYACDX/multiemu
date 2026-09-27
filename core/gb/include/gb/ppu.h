@@ -57,6 +57,8 @@ class Ppu {
     Framebuffer framebuffer_{};
 
     int modeClock_ = 0;
+    // Cycles run with the LCD off, towards the next blank frame.
+    int offClock_ = 0;
     int mode_ = 2;
     int windowLine_ = 0;  // internal line counter for the window layer
 
