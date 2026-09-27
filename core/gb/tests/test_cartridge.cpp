@@ -102,9 +102,172 @@ TEST_CASE(mbc1_ram_requires_enable_write) {
 }
 
 TEST_CASE(unsupported_mapper_type_returns_null) {
-    auto rom = makeRom(2, 0x1B, 0x00);  // MBC5+RAM+BATTERY -- not implemented yet
+    auto rom = makeRom(2, 0x05, 0x00);  // MBC2 -- not implemented yet
     auto cart = gb::loadCartridge(rom);
     CHECK(cart == nullptr);
+    return true;
+}
+
+// ---- MBC5 ----
+
+TEST_CASE(mbc5_nine_bit_rom_bank_and_bank_zero_is_allowed) {
+    auto rom = makeRom(0x102, 0x19, 0x00);  // 258 banks: needs the ninth bit
+    // makeRom stamps banks with a single byte, so 0x101 would read like
+    // bank 1; give it a mark of its own.
+    rom[0x101 * 0x4000 + 1] = 0xAB;
+    auto cart = gb::loadCartridge(rom);
+    CHECK(cart != nullptr);
+    CHECK(cart->readRom(0x4000) == 1);  // bank 1 at power-on
+    cart->writeRom(0x2000, 0x00);
+    CHECK(cart->readRom(0x4000) == 0);  // unlike MBC1/3, 0 means 0
+    cart->writeRom(0x2000, 0x01);
+    cart->writeRom(0x3000, 0x01);       // bank 0x101
+    CHECK(cart->readRom(0x4001) == 0xAB);
+    CHECK(cart->readRom(0x0000) == 0);  // bank 0 stays fixed below
+    return true;
+}
+
+TEST_CASE(mbc5_ram_banks_and_battery) {
+    auto rom = makeRom(2, 0x1B, 0x03);  // MBC5+RAM+BATTERY, 32KiB = 4 banks
+    auto cart = gb::loadCartridge(rom);
+    CHECK(cart->hasBattery());
+    CHECK(cart->readRam(0xA000) == 0xFF);  // disabled
+    cart->writeRom(0x0000, 0x0A);
+    cart->writeRom(0x4000, 0x02);
+    cart->writeRam(0xA000, 0x42);
+    cart->writeRom(0x4000, 0x00);
+    CHECK(cart->readRam(0xA000) != 0x42);
+    cart->writeRom(0x4000, 0x02);
+    CHECK(cart->readRam(0xA000) == 0x42);
+    CHECK(cart->ram()[2 * 0x2000] == 0x42);
+    return true;
+}
+
+// ---- MBC3 ----
+
+TEST_CASE(mbc3_rom_bank_zero_reads_as_one_and_ram_banks) {
+    auto rom = makeRom(8, 0x13, 0x03);  // MBC3+RAM+BATTERY
+    auto cart = gb::loadCartridge(rom);
+    CHECK(cart != nullptr);
+    CHECK(cart->hasBattery());
+    cart->writeRom(0x2000, 0x00);
+    CHECK(cart->readRom(0x4000) == 1);
+    cart->writeRom(0x2000, 0x05);
+    CHECK(cart->readRom(0x4000) == 5);
+    cart->writeRom(0x0000, 0x0A);
+    cart->writeRom(0x4000, 0x01);
+    cart->writeRam(0xA001, 0x77);
+    CHECK(cart->ram()[0x2000 + 1] == 0x77);
+    CHECK(cart->ram().size() == 32 * 1024);  // no clock, nothing appended
+    return true;
+}
+
+std::int64_t g_fakeNow = 1000000;
+std::int64_t fakeClock() { return g_fakeNow; }
+
+// Latches, then reads the five clock registers S M H DL DH.
+void readClock(gb::Cartridge& cart, gb::u8 out[5]) {
+    cart.writeRom(0x6000, 0x00);
+    cart.writeRom(0x6000, 0x01);
+    for (int i = 0; i < 5; i++) {
+        cart.writeRom(0x4000, gb::u8(0x08 + i));
+        out[i] = cart.readRam(0xA000);
+    }
+}
+
+TEST_CASE(mbc3_clock_runs_on_real_time_and_latches) {
+    gb::setClockSource(fakeClock);
+    g_fakeNow = 1000000;
+    auto cart = gb::loadCartridge(makeRom(2, 0x10, 0x03));  // MBC3+TIMER+RAM+BATTERY
+    cart->writeRom(0x0000, 0x0A);
+    g_fakeNow += 2 * 86400 + 3 * 3600 + 4 * 60 + 5;
+    gb::u8 regs[5];
+    readClock(*cart, regs);
+    CHECK(regs[0] == 5);
+    CHECK(regs[1] == 4);
+    CHECK(regs[2] == 3);
+    CHECK(regs[3] == 2);
+    CHECK(regs[4] == 0);
+    // Latched: time moving on changes nothing until the next latch.
+    g_fakeNow += 10;
+    cart->writeRom(0x4000, 0x08);
+    CHECK(cart->readRam(0xA000) == 5);
+    gb::setClockSource(nullptr);
+    return true;
+}
+
+TEST_CASE(mbc3_clock_halts_and_can_be_set) {
+    gb::setClockSource(fakeClock);
+    g_fakeNow = 5000;
+    auto cart = gb::loadCartridge(makeRom(2, 0x10, 0x03));
+    cart->writeRom(0x0000, 0x0A);
+    // Halt, set 23:59:50 on day 300, resume -- what a game's clock setup does.
+    cart->writeRom(0x4000, 0x0C);
+    cart->writeRam(0xA000, 0x40);
+    cart->writeRom(0x4000, 0x08);
+    cart->writeRam(0xA000, 50);
+    cart->writeRom(0x4000, 0x09);
+    cart->writeRam(0xA000, 59);
+    cart->writeRom(0x4000, 0x0A);
+    cart->writeRam(0xA000, 23);
+    cart->writeRom(0x4000, 0x0B);
+    cart->writeRam(0xA000, 300 & 0xFF);
+    cart->writeRom(0x4000, 0x0C);
+    cart->writeRam(0xA000, 0x40 | (300 >> 8));
+    g_fakeNow += 1000;  // halted: none of this counts
+    cart->writeRom(0x4000, 0x0C);
+    cart->writeRam(0xA000, 300 >> 8);  // resume
+    g_fakeNow += 15;
+    gb::u8 regs[5];
+    readClock(*cart, regs);
+    CHECK(regs[0] == 5);
+    CHECK(regs[1] == 0);
+    CHECK(regs[2] == 0);
+    CHECK((regs[3] | ((regs[4] & 1) << 8)) == 301);
+    CHECK(!(regs[4] & 0x40));
+    gb::setClockSource(nullptr);
+    return true;
+}
+
+TEST_CASE(mbc3_day_counter_overflow_sets_the_carry) {
+    gb::setClockSource(fakeClock);
+    g_fakeNow = 0;
+    auto cart = gb::loadCartridge(makeRom(2, 0x0F, 0x00));  // MBC3+TIMER+BATTERY
+    cart->writeRom(0x0000, 0x0A);
+    g_fakeNow += 513LL * 86400;
+    gb::u8 regs[5];
+    readClock(*cart, regs);
+    CHECK(regs[4] & 0x80);
+    CHECK(regs[3] == 1);  // day 513 wraps to 1
+    gb::setClockSource(nullptr);
+    return true;
+}
+
+TEST_CASE(mbc3_save_carries_the_clock_across_sessions) {
+    gb::setClockSource(fakeClock);
+    g_fakeNow = 100000;
+    auto cart = gb::loadCartridge(makeRom(2, 0x10, 0x02));  // 8KiB RAM + clock
+    cart->writeRom(0x0000, 0x0A);
+    cart->writeRam(0xA000, 0x99);
+    g_fakeNow += 3600;  // one hour played
+    const std::vector<gb::u8> save = cart->ram();
+    CHECK(save.size() == 8 * 1024 + 48);
+    // The same bytes again a second later: nothing to write back.
+    g_fakeNow += 1;
+    CHECK(cart->ram() == save);
+
+    // A day later, a fresh session loads it: 1 hour + 1 day + 1 second.
+    g_fakeNow += 86400;
+    auto again = gb::loadCartridge(makeRom(2, 0x10, 0x02));
+    again->loadRam(save);
+    again->writeRom(0x0000, 0x0A);
+    CHECK(again->readRam(0xA000) == 0x99);
+    gb::u8 regs[5];
+    readClock(*again, regs);
+    CHECK(regs[2] == 1);
+    CHECK(regs[3] == 1);
+    CHECK(regs[0] == 1);
+    gb::setClockSource(nullptr);
     return true;
 }
 
