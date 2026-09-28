@@ -8,7 +8,7 @@ namespace {
 constexpr int kRegHlIndirect = 6;
 }  // namespace
 
-void Cpu::reset() {
+void Cpu::reset(bool cgb) {
     // Post-bootrom (DMG) power-up state. We don't emulate the bootrom
     // itself yet, so execution starts directly at the cartridge entry
     // point with the registers already in the state the bootrom would
@@ -17,6 +17,12 @@ void Cpu::reset() {
     setBc(0x0013);
     setDe(0x00D8);
     setHl(0x014D);
+    if (cgb) {
+        setAf(0x1180);
+        setBc(0x0000);
+        setDe(0xFF56);
+        setHl(0x000D);
+    }
     sp_ = 0xFFFE;
     pc_ = 0x0100;
     ime_ = false;
@@ -188,6 +194,7 @@ int Cpu::execute(u8 opcode) {
             return 1;
         case 0x10:  // STOP -- has a padding byte on real hardware
             fetch8();
+            bus_.stop();
             return 1;
         case 0xF3:  // DI
             ime_ = false;

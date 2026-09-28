@@ -28,6 +28,15 @@ u8 Ppu::readRegister(u16 address) const {
         case 0xFF49: return obp1_;
         case 0xFF4A: return wy_;
         case 0xFF4B: return wx_;
+        default: break;
+    }
+    if (!cgb_) return 0xFF;
+    switch (address) {
+        case 0xFF4F: return 0xFE | u8(vramBank_);
+        case 0xFF68: return 0x40 | bcps_;
+        case 0xFF69: return bgPaletteRam_[bcps_ & 0x3F];
+        case 0xFF6A: return 0x40 | ocps_;
+        case 0xFF6B: return objPaletteRam_[ocps_ & 0x3F];
         default: return 0xFF;
     }
 }
@@ -45,6 +54,21 @@ void Ppu::writeRegister(u16 address, u8 value) {
         case 0xFF49: obp1_ = value; break;
         case 0xFF4A: wy_ = value; break;
         case 0xFF4B: wx_ = value; break;
+        default: break;
+    }
+    if (!cgb_) return;
+    // Writing the data register advances the index when bit 7 of the
+    // index register asks for it, so a game can stream a whole palette.
+    auto writePalette = [](std::array<u8, 64>& ram, u8& index, u8 v) {
+        ram[index & 0x3F] = v;
+        if (index & 0x80) index = 0x80 | ((index + 1) & 0x3F);
+    };
+    switch (address) {
+        case 0xFF4F: vramBank_ = value & 0x01; break;
+        case 0xFF68: bcps_ = value & 0xBF; break;
+        case 0xFF69: writePalette(bgPaletteRam_, bcps_, value); break;
+        case 0xFF6A: ocps_ = value & 0xBF; break;
+        case 0xFF6B: writePalette(objPaletteRam_, ocps_, value); break;
         default: break;
     }
 }
@@ -85,6 +109,7 @@ bool Ppu::tick(int tCycles, u8& ifReg) {
         if (offClock_ < kLineCycles * 154) return false;
         offClock_ -= kLineCycles * 154;
         framebuffer_.fill(0);
+        colorFramebuffer_.fill(0x7FFF);
         return true;
     }
     offClock_ = 0;
@@ -104,6 +129,7 @@ bool Ppu::tick(int tCycles, u8& ifReg) {
                 modeClock_ -= kPixelTransferCycles;
                 renderScanline();
                 setMode(0, ifReg);
+                hblankStarted_ = true;
             }
             break;
         case 0:  // HBlank
@@ -138,30 +164,46 @@ bool Ppu::tick(int tCycles, u8& ifReg) {
 
 void Ppu::renderScanline() {
     std::array<u8, kScreenWidth> bgColorId{};
-    renderBackgroundAndWindow(bgColorId);
-    renderSprites(bgColorId);
+    std::array<bool, kScreenWidth> bgPriority{};
+    renderBackgroundAndWindow(bgColorId, bgPriority);
+    renderSprites(bgColorId, bgPriority);
 }
 
-void Ppu::renderBackgroundAndWindow(std::array<u8, kScreenWidth>& bgColorId) {
+// Writes one CGB pixel on the current line: the real colour, plus a shade
+// by brightness into the DMG framebuffer for frontends that only read that.
+void Ppu::putColor(int x, const std::array<u8, 64>& paletteRam, int palette, u8 colorId) {
+    int offset = palette * 8 + colorId * 2;
+    u16 color = u16(paletteRam[offset] | (paletteRam[offset + 1] << 8)) & 0x7FFF;
+    std::size_t i = std::size_t(ly_) * kScreenWidth + x;
+    colorFramebuffer_[i] = color;
+    int luma = ((color & 0x1F) * 3 + ((color >> 5) & 0x1F) * 6 + ((color >> 10) & 0x1F)) / 10;  // 0-31
+    framebuffer_[i] = u8(3 - luma / 8);
+}
+
+void Ppu::renderBackgroundAndWindow(std::array<u8, kScreenWidth>& bgColorId, std::array<bool, kScreenWidth>& bgPriority) {
     int y = ly_;
-    bool bgAndWindowEnabled = lcdc_ & 0x01;
+    // On a CGB in colour mode, LCDC bit 0 no longer blanks the background:
+    // it only takes away the background's priority over sprites.
+    bool bgAndWindowEnabled = cgb_ || (lcdc_ & 0x01);
     bool windowEnabled = bgAndWindowEnabled && (lcdc_ & 0x20) && wy_ <= y;
     u16 bgTileMapBase = (lcdc_ & 0x08) ? 0x9C00 : 0x9800;
     u16 winTileMapBase = (lcdc_ & 0x40) ? 0x9C00 : 0x9800;
     bool unsignedTileData = lcdc_ & 0x10;
     bool usedWindowThisLine = false;
 
-    auto tileColorAt = [&](u16 tileMapBase, int x, int py) -> u8 {
-        int tileCol = x / 8;
-        int tileRow = py / 8;
-        u16 mapAddr = tileMapBase + u16(tileRow) * 32 + u16(tileCol);
-        u8 tileIndex = vram_[mapAddr - 0x8000];
-        u16 tileDataAddr = unsignedTileData ? u16(0x8000 + u16(tileIndex) * 16)
-                                             : u16(0x9000 + i8(tileIndex) * 16);
-        int rowInTile = py % 8;
-        u8 byte1 = vram_[tileDataAddr + rowInTile * 2 - 0x8000];
-        u8 byte2 = vram_[tileDataAddr + rowInTile * 2 + 1 - 0x8000];
-        int bit = 7 - (x % 8);
+    // CGB attributes live in VRAM bank 1 at the same address as the tile
+    // index: bits 0-2 palette, 3 tile bank, 5 x-flip, 6 y-flip, 7 priority.
+    // Always 0 in DMG mode, where bank 1 doesn't exist.
+    auto tileColorAt = [&](u16 tileMapBase, int x, int py, u8& attr) -> u8 {
+        int mapOffset = tileMapBase - 0x8000 + (py / 8) * 32 + (x / 8);
+        u8 tileIndex = vram_[mapOffset];
+        attr = cgb_ ? vram_[0x2000 + mapOffset] : 0;
+        int tileData = unsignedTileData ? tileIndex * 16 : 0x1000 + i8(tileIndex) * 16;
+        if (attr & 0x08) tileData += 0x2000;
+        int rowInTile = (attr & 0x40) ? 7 - py % 8 : py % 8;
+        u8 byte1 = vram_[tileData + rowInTile * 2];
+        u8 byte2 = vram_[tileData + rowInTile * 2 + 1];
+        int bit = (attr & 0x20) ? x % 8 : 7 - x % 8;
         u8 lo = (byte1 >> bit) & 1;
         u8 hi = (byte2 >> bit) & 1;
         return u8((hi << 1) | lo);
@@ -169,22 +211,27 @@ void Ppu::renderBackgroundAndWindow(std::array<u8, kScreenWidth>& bgColorId) {
 
     for (int x = 0; x < kScreenWidth; x++) {
         u8 colorId = 0;
+        u8 attr = 0;
         if (bgAndWindowEnabled) {
             if (windowEnabled && x + 7 >= wx_) {
                 usedWindowThisLine = true;
-                colorId = tileColorAt(winTileMapBase, x - (int(wx_) - 7), windowLine_);
+                colorId = tileColorAt(winTileMapBase, x - (int(wx_) - 7), windowLine_, attr);
             } else {
-                colorId = tileColorAt(bgTileMapBase, (scx_ + x) & 0xFF, (scy_ + y) & 0xFF);
+                colorId = tileColorAt(bgTileMapBase, (scx_ + x) & 0xFF, (scy_ + y) & 0xFF, attr);
             }
         }
         bgColorId[x] = colorId;
-        framebuffer_[std::size_t(y) * kScreenWidth + x] = applyPalette(bgp_, colorId);
+        bgPriority[x] = attr & 0x80;
+        if (cgb_)
+            putColor(x, bgPaletteRam_, attr & 0x07, colorId);
+        else
+            framebuffer_[std::size_t(y) * kScreenWidth + x] = applyPalette(bgp_, colorId);
     }
 
     if (usedWindowThisLine) windowLine_++;
 }
 
-void Ppu::renderSprites(std::array<u8, kScreenWidth>& bgColorId) {
+void Ppu::renderSprites(const std::array<u8, kScreenWidth>& bgColorId, const std::array<bool, kScreenWidth>& bgPriority) {
     if (!(lcdc_ & 0x02)) return;
 
     struct Candidate {
@@ -204,12 +251,17 @@ void Ppu::renderSprites(std::array<u8, kScreenWidth>& bgColorId) {
         candidates[count++] = {i, spriteX, spriteY, oam_[base + 2], oam_[base + 3]};
     }
 
-    // DMG priority: lower X wins; ties broken by lower OAM index. Sort so
-    // the highest-priority sprite is drawn LAST (overwriting the rest).
-    std::sort(candidates.begin(), candidates.begin() + count, [](const Candidate& a, const Candidate& b) {
-        if (a.x != b.x) return a.x > b.x;
+    // DMG priority: lower X wins; ties broken by lower OAM index. CGB:
+    // OAM index alone. Sort so the highest-priority sprite is drawn LAST
+    // (overwriting the rest).
+    bool cgb = cgb_;
+    std::sort(candidates.begin(), candidates.begin() + count, [cgb](const Candidate& a, const Candidate& b) {
+        if (!cgb && a.x != b.x) return a.x > b.x;
         return a.oamIndex > b.oamIndex;
     });
+
+    // CGB: with LCDC bit 0 clear, sprites always win over the background.
+    bool bgCanWin = !cgb_ || (lcdc_ & 0x01);
 
     for (int c = 0; c < count; c++) {
         const Candidate& sprite = candidates[c];
@@ -222,9 +274,10 @@ void Ppu::renderSprites(std::array<u8, kScreenWidth>& bgColorId) {
         if (yFlip) rowInSprite = spriteHeight - 1 - rowInSprite;
         u8 tileIndex = sprite.tile;
         if (spriteHeight == 16) tileIndex &= 0xFE;
-        u16 tileDataAddr = u16(0x8000 + u16(tileIndex) * 16 + u16(rowInSprite) * 2);
-        u8 byte1 = vram_[tileDataAddr - 0x8000];
-        u8 byte2 = vram_[tileDataAddr + 1 - 0x8000];
+        int tileData = tileIndex * 16 + rowInSprite * 2;
+        if (cgb_ && (sprite.attr & 0x08)) tileData += 0x2000;  // CGB: tile from VRAM bank 1
+        u8 byte1 = vram_[tileData];
+        u8 byte2 = vram_[tileData + 1];
 
         for (int px = 0; px < 8; px++) {
             int bit = xFlip ? px : (7 - px);
@@ -235,9 +288,12 @@ void Ppu::renderSprites(std::array<u8, kScreenWidth>& bgColorId) {
 
             int screenX = sprite.x + px;
             if (screenX < 0 || screenX >= kScreenWidth) continue;
-            if (behindBg && bgColorId[screenX] != 0) continue;
+            if (bgCanWin && bgColorId[screenX] != 0 && (behindBg || bgPriority[screenX])) continue;
 
-            framebuffer_[std::size_t(y) * kScreenWidth + screenX] = applyPalette(palette, colorId);
+            if (cgb_)
+                putColor(screenX, objPaletteRam_, sprite.attr & 0x07, colorId);
+            else
+                framebuffer_[std::size_t(y) * kScreenWidth + screenX] = applyPalette(palette, colorId);
         }
     }
 }

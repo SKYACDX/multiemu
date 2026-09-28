@@ -77,11 +77,22 @@ JNIEXPORT void JNICALL Java_com_multiemu_gbcore_GameBoyNative_nativeRunFrame(JNI
 // values ready for android.graphics.Bitmap.setPixels().
 JNIEXPORT void JNICALL Java_com_multiemu_gbcore_GameBoyNative_nativeGetFramebuffer(
     JNIEnv* env, jclass, jlong handle, jintArray outPixels) {
-    const auto& framebuffer = handleToGameBoy(handle)->framebuffer();
-
-    std::vector<jint> pixels(framebuffer.size());
-    for (std::size_t i = 0; i < framebuffer.size(); i++) {
-        pixels[i] = kPalette[framebuffer[i] & 0x03];
+    const gb::GameBoy& gameBoy = *handleToGameBoy(handle);
+    std::vector<jint> pixels(gameBoy.framebuffer().size());
+    if (gameBoy.isColor()) {
+        // RGB555 -> 8 bits per channel, repeating the top bits into the low
+        // ones so 31 maps to 255 rather than 248.
+        auto expand = [](unsigned c) { return (c << 3) | (c >> 2); };
+        const auto& color = gameBoy.colorFramebuffer();
+        for (std::size_t i = 0; i < color.size(); i++) {
+            unsigned r = expand(color[i] & 0x1F), g = expand((color[i] >> 5) & 0x1F), b = expand((color[i] >> 10) & 0x1F);
+            pixels[i] = static_cast<jint>(0xFF000000u | (r << 16) | (g << 8) | b);
+        }
+    } else {
+        const auto& framebuffer = gameBoy.framebuffer();
+        for (std::size_t i = 0; i < framebuffer.size(); i++) {
+            pixels[i] = kPalette[framebuffer[i] & 0x03];
+        }
     }
     env->SetIntArrayRegion(outPixels, 0, static_cast<jsize>(pixels.size()), pixels.data());
 }

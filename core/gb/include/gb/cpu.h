@@ -10,11 +10,13 @@ class Cpu {
    public:
     explicit Cpu(Bus& bus) : bus_(bus) { reset(); }
 
-    // Puts registers in their post-bootrom power-up state (DMG values).
+    // Puts registers in their post-bootrom power-up state: the DMG's, or
+    // with cgb the CGB's in colour mode -- A=0x11 is how a game tells it
+    // is running on a Game Boy Color.
     // A real implementation will eventually want to *run* the bootrom
     // instead, but starting from the known post-boot state is enough to
     // start executing cartridge code and to unit-test the decoder.
-    void reset();
+    void reset(bool cgb = false);
 
     // Executes exactly one instruction, or services one pending interrupt
     // if IME (or, for waking from HALT, just IE&IF) allows it. Returns the

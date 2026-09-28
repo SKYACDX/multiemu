@@ -6,8 +6,7 @@ u8 SystemBus::read(u16 address) {
     if (address < 0x8000) return cartridge_->readRom(address);
     if (address < 0xA000) return ppu_.readVram(address);
     if (address < 0xC000) return cartridge_->readRam(address);
-    if (address < 0xE000) return wram_[address - 0xC000];
-    if (address < 0xFE00) return wram_[address - 0xE000];  // echo of WRAM
+    if (address < 0xFE00) return wramAt(address);  // WRAM, then its echo
     if (address < 0xFEA0) return ppu_.readOam(address);
     if (address < 0xFF00) return 0xFF;  // unusable range
     if (address == 0xFF00) return joypad_.readRegister();
@@ -20,6 +19,14 @@ u8 SystemBus::read(u16 address) {
     if (address == 0xFF0F) return if_;
     if (address >= 0xFF10 && address <= 0xFF3F) return apu_.readRegister(address);
     if (address >= 0xFF40 && address <= 0xFF4B) return ppu_.readRegister(address);
+    if (address == 0xFF4F || (address >= 0xFF68 && address <= 0xFF6B)) return ppu_.readRegister(address);
+    if (cgb_) {
+        if (address == 0xFF4D) return u8(0x7E | (doubleSpeed_ ? 0x80 : 0) | (speedSwitchArmed_ ? 0x01 : 0));
+        // Bit 7 clear while an HBlank DMA is running; the rest is blocks
+        // left minus one, so a finished (or never started) one reads 0xFF.
+        if (address == 0xFF55) return u8((hdmaActive_ ? 0x00 : 0x80) | ((hdmaBlocksLeft_ - 1) & 0x7F));
+        if (address == 0xFF70) return u8(0xF8 | wramBank_);
+    }
     if (address < 0xFF80) return 0xFF;  // unmapped I/O
     if (address < 0xFFFF) return hram_[address - 0xFF80];
     return ie_;  // 0xFFFF
@@ -32,10 +39,8 @@ void SystemBus::write(u16 address, u8 value) {
         ppu_.writeVram(address, value);
     } else if (address < 0xC000) {
         cartridge_->writeRam(address, value);
-    } else if (address < 0xE000) {
-        wram_[address - 0xC000] = value;
     } else if (address < 0xFE00) {
-        wram_[address - 0xE000] = value;  // echo of WRAM
+        wramAt(address) = value;  // WRAM, then its echo
     } else if (address < 0xFEA0) {
         ppu_.writeOam(address, value);
     } else if (address < 0xFF00) {
@@ -62,6 +67,22 @@ void SystemBus::write(u16 address, u8 value) {
         dmaTransfer(value);
     } else if (address >= 0xFF40 && address <= 0xFF4B) {
         ppu_.writeRegister(address, value);
+    } else if (address == 0xFF4F || (address >= 0xFF68 && address <= 0xFF6B)) {
+        ppu_.writeRegister(address, value);  // CGB-only; the PPU ignores them on a DMG
+    } else if (cgb_ && address == 0xFF4D) {
+        speedSwitchArmed_ = value & 0x01;
+    } else if (cgb_ && address == 0xFF51) {
+        hdmaSource_ = u16((hdmaSource_ & 0x00FF) | (value << 8));
+    } else if (cgb_ && address == 0xFF52) {
+        hdmaSource_ = u16((hdmaSource_ & 0xFF00) | (value & 0xF0));
+    } else if (cgb_ && address == 0xFF53) {
+        hdmaDest_ = u16((hdmaDest_ & 0x00FF) | ((value & 0x1F) << 8));
+    } else if (cgb_ && address == 0xFF54) {
+        hdmaDest_ = u16((hdmaDest_ & 0x1F00) | (value & 0xF0));
+    } else if (cgb_ && address == 0xFF55) {
+        writeHdma5(value);
+    } else if (cgb_ && address == 0xFF70) {
+        wramBank_ = (value & 0x07) ? (value & 0x07) : 1;
     } else if (address < 0xFF80) {
         // unmapped I/O, ignored
     } else if (address < 0xFFFF) {
@@ -69,6 +90,47 @@ void SystemBus::write(u16 address, u8 value) {
     } else {
         ie_ = value;
     }
+}
+
+void SystemBus::stop() {
+    // STOP always resets DIV. On a CGB with KEY1 armed it is also the
+    // speed switch; real hardware then sits still for ~2050 m-cycles,
+    // which nothing relies on closely enough to model.
+    timer_.resetDiv();
+    if (cgb_ && speedSwitchArmed_) {
+        doubleSpeed_ = !doubleSpeed_;
+        speedSwitchArmed_ = false;
+    }
+}
+
+void SystemBus::writeHdma5(u8 value) {
+    // Writing bit 7 clear while an HBlank DMA runs cancels it rather than
+    // starting a general one.
+    if (hdmaActive_ && !(value & 0x80)) {
+        hdmaActive_ = false;
+        return;
+    }
+    hdmaBlocksLeft_ = (value & 0x7F) + 1;
+    if (value & 0x80) {
+        hdmaActive_ = true;
+        // Started inside HBlank (or with the LCD off), the first block
+        // goes right away instead of waiting for the next HBlank.
+        if ((ppu_.readRegister(0xFF41) & 0x03) == 0) hdmaCopyBlock();
+    } else {
+        // General purpose: all at once. ponytail: instant, where the CPU
+        // really stalls 8 m-cycles a block; model it if a game times it.
+        hdmaActive_ = true;
+        while (hdmaActive_) hdmaCopyBlock();
+    }
+}
+
+void SystemBus::hdmaCopyBlock() {
+    for (int i = 0; i < 0x10; i++) {
+        ppu_.writeVram(u16(0x8000 | ((hdmaDest_ + i) & 0x1FFF)), read(u16(hdmaSource_ + i)));
+    }
+    hdmaSource_ = u16(hdmaSource_ + 0x10);
+    hdmaDest_ = u16((hdmaDest_ + 0x10) & 0x1FFF);
+    if (--hdmaBlocksLeft_ == 0) hdmaActive_ = false;
 }
 
 void SystemBus::dmaTransfer(u8 value) {

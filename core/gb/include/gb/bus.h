@@ -11,6 +11,10 @@ class Bus {
     virtual ~Bus() = default;
     virtual u8 read(u16 address) = 0;
     virtual void write(u16 address, u8 value) = 0;
+
+    // The CPU executed STOP. The real bus uses it for the CGB's speed
+    // switch; a flat test RAM has nothing to do.
+    virtual void stop() {}
 };
 
 }  // namespace gb

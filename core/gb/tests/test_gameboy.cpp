@@ -53,6 +53,21 @@ TEST_CASE(stepping_advances_pc_through_nops) {
     return true;
 }
 
+// Games tell a Game Boy Color apart by A=0x11 at the entry point; with
+// anything else, CGB-only ones show their "needs a Game Boy Color" screen.
+TEST_CASE(cgb_game_boots_with_cgb_registers) {
+    auto dmg = makeNopGameBoy();
+    CHECK(!dmg.isColor());
+    CHECK(dmg.cpu().a() == 0x01);
+
+    std::vector<gb::u8> rom(0x8000, 0x00);
+    rom[0x143] = 0x80;  // runs on both, prefers colour
+    gb::GameBoy cgb(gb::loadCartridge(std::move(rom)));
+    CHECK(cgb.isColor());
+    CHECK(cgb.cpu().a() == 0x11);
+    return true;
+}
+
 TEST_CASE(timer_advances_in_lockstep_with_cpu_steps) {
     auto gb = makeNopGameBoy();
     // Each NOP is 1 m-cycle = 4 t-cycles; DIV ticks every 256 t-cycles, so

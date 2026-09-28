@@ -15,7 +15,7 @@ ya pisamos** para que no se vuelvan a pisar.
 
 | Pieza | Dónde | ¿Sirve en escritorio? |
 |---|---|---|
-| Núcleo GB/GBC (propio) | `core/gb` | **Sí, tal cual.** Es C++ independiente de plataforma a propósito; el JNI es una capa aparte (`gbcore/src/main/cpp/gameboy_jni.cpp`). |
+| Núcleo GB/GBC (propio) | `core/gb` | **Sí, tal cual.** Es C++ independiente de plataforma a propósito; el JNI es una capa aparte (`gbcore/src/main/cpp/gameboy_jni.cpp`). Desde el modo Color (2026-09-28), un juego de GBC se lee con `isColor()` + `colorFramebuffer()` (RGB555); `framebuffer()` sigue funcionando pero en esos juegos da solo grises aproximados. Ver `nativeGetFramebuffer` para la conversión. |
 | GBA | mGBA vendorizado, `third_party/mgba` | **Sí.** Sin modificar: su `git status` está limpio. |
 | NDS | melonDS 1.1 vendorizado, `third_party/melonds` | **Sí, pero con parches.** Ver sección 2 — es la parte delicada. |
 | Capa `Platform::` de melonDS | `dscore/src/main/cpp/ds_platform.cpp` | Parcialmente. La lógica (red, firmware) se traduce; el I/O y el log son de Android. melonDS trae su propia versión Qt de referencia. |

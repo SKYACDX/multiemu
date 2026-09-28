@@ -11,7 +11,9 @@ namespace gb {
 class GameBoy {
    public:
     explicit GameBoy(std::unique_ptr<Cartridge> cartridge)
-        : bus_(std::move(cartridge)), cpu_(bus_) {}
+        : bus_(std::move(cartridge)), cpu_(bus_) {
+        if (bus_.cgbMode()) cpu_.reset(true);
+    }
 
     // Runs exactly one CPU step (an instruction, or interrupt dispatch)
     // and advances every other bus-owned device by the same number of
@@ -35,6 +37,11 @@ class GameBoy {
 
     bool frameReady() const { return frameReady_; }
     const Ppu::Framebuffer& framebuffer() const { return bus_.ppu().framebuffer(); }
+
+    // True for a Game Boy Color game (the cartridge header says so), which
+    // then runs in colour: read colorFramebuffer() instead of framebuffer().
+    bool isColor() const { return bus_.cgbMode(); }
+    const Ppu::ColorFramebuffer& colorFramebuffer() const { return bus_.ppu().colorFramebuffer(); }
 
     // Platform layer entry point: report a button's current physical
     // state (from touch controls, a gamepad, etc). Safe to call between
