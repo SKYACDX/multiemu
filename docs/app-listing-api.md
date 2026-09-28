@@ -141,6 +141,20 @@ adjuntar el binario a una versión concreta vía `AppRelease.apkUrl` --
 el mismo slot sirve para el `.exe` de un release `platform: "windows"`,
 el nombre del slot no cambia aunque el archivo no sea un APK).
 
+**Capturas por plataforma (2026-09-26):** `AppScreenshot` ahora tiene
+su propio `platform` (`"android"` | `"windows"`, default `"android"`
+si se omite) -- se manda en el registro, no en el presign:
+```
+POST /api/app/assets
+{"slot": "screenshot", "storedName": "...", "originalName": "win1.png", "platform": "windows"}
+```
+Antes todas las capturas caían en un solo array compartido y se
+mezclaban entre las pestañas Android/Windows de `/app` -- ahora
+`AppListing.screenshotsByPlatform` (`{ANDROID: string[], WINDOWS:
+string[]}`) las separa. El campo viejo `screenshots` (array plano con
+todas mezcladas) se mantiene igual, por compatibilidad -- no hace
+falta cambiar nada si algo ya lo lee.
+
 Límites sugeridos: ícono ≤2MB (PNG, idealmente 1024x1024 ya
 recortado con esquinas/círculo como los mipmaps de Android), captura
 ≤5MB cada una, APK sin límite fijo pero considerar que el
