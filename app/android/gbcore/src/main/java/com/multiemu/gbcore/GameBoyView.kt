@@ -5,6 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
+import android.os.Build
 import android.util.Log
 import android.view.Choreographer
 import android.view.View
@@ -50,12 +56,27 @@ class GameBoyView(context: Context) : View(context) {
     private var running = false
     private var speedMultiplier = 1
 
+    private var audioTrack: AudioTrack? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+    // The APU queues up to 4096 stereo frames; draining once per frame
+    // takes ~800, or ~2400 at 3x, so this never has to leave any behind.
+    private val audioBuffer = ShortArray(4096 * 2)
+
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             gameBoy?.let {
                 it.runFrame(speedMultiplier)
                 bitmap.setPixels(it.framebuffer, 0, SCREEN_WIDTH, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
                 invalidate()
+
+                // Always drain, so the APU's queue never fills and starts
+                // dropping; only play it at 1x. Fast-forwarded audio would
+                // have to be pitched up or chopped, and every mainstream
+                // emulator mutes it instead (GbaView does the same).
+                val frames = it.readAudioSamples(audioBuffer)
+                if (frames > 0 && speedMultiplier == 1) {
+                    audioTrack?.write(audioBuffer, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING)
+                }
 
                 if (it.hasBattery && ++framesSinceSave >= SAVE_INTERVAL_FRAMES) {
                     framesSinceSave = 0
@@ -79,6 +100,7 @@ class GameBoyView(context: Context) : View(context) {
     fun loadRom(rom: ByteArray, romId: String?) {
         writeSaveFile()
         gameBoy?.close()
+        releaseAudio()
         framesSinceSave = 0
 
         val instance = GameBoyNative.load(rom)
@@ -98,6 +120,70 @@ class GameBoyView(context: Context) : View(context) {
                 Log.w(TAG, "loadRom: failed to read save file $file", e)
             }
         }
+        startAudio()
+    }
+
+    private fun startAudio() {
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_GAME)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+        val rate = GameBoyNative.audioSampleRateHz
+        val minBufferSize = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(attributes)
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build(),
+            )
+            .setBufferSizeInBytes(minBufferSize * 2)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+
+        // Without audio focus some OEM audio policies drop a game's sound
+        // at the mixer even though the AudioTrack itself reports playing --
+        // found the hard way on GBA (see GbaView).
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (audioManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(attributes)
+                    .setWillPauseWhenDucked(false)
+                    .build()
+                audioFocusRequest = request
+                audioManager.requestAudioFocus(request)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+            }
+        }
+        if (windowVisibility == VISIBLE) audioTrack?.play()
+    }
+
+    private fun releaseAudio() {
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
+        }
+    }
+
+    // Choreographer stops delivering frames to an invisible window, so the
+    // emulation already pauses in the background on its own -- but an
+    // AudioTrack left playing would still run out its buffer and then sit
+    // underrunning. Pause it with the window, resume it with the window.
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (visibility == VISIBLE) audioTrack?.play() else audioTrack?.pause()
     }
 
     private fun writeSaveFile() {
@@ -127,6 +213,7 @@ class GameBoyView(context: Context) : View(context) {
         writeSaveFile()
         gameBoy?.close()
         gameBoy = null
+        releaseAudio()
         super.onDetachedFromWindow()
     }
 

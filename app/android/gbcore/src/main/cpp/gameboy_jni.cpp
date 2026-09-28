@@ -8,6 +8,7 @@
 #include <memory>
 #include <vector>
 
+#include "gb/apu.h"
 #include "gb/cartridge.h"
 #include "gb/gameboy.h"
 
@@ -28,6 +29,23 @@ gb::GameBoy* handleToGameBoy(jlong handle) { return reinterpret_cast<gb::GameBoy
 }  // namespace
 
 extern "C" {
+
+// Sound. core/gb gained an APU (from the desktop port) but nothing on this
+// side ever read it, so the Android build stayed silent. These two are the
+// whole bridge: the rate is a constant of the core, and reading drains
+// whatever the APU queued since the last call as interleaved stereo.
+JNIEXPORT jint JNICALL Java_com_multiemu_gbcore_GameBoyNative_nativeGetAudioSampleRate(JNIEnv*, jclass) {
+    return gb::Apu::kSampleRate;
+}
+
+JNIEXPORT jint JNICALL Java_com_multiemu_gbcore_GameBoyNative_nativeReadAudio(JNIEnv* env, jclass, jlong handle,
+                                                                             jshortArray out) {
+    const jsize length = env->GetArrayLength(out);
+    jshort* samples = env->GetShortArrayElements(out, nullptr);
+    const int frames = handleToGameBoy(handle)->readAudio(reinterpret_cast<gb::i16*>(samples), length / 2);
+    env->ReleaseShortArrayElements(out, samples, 0);
+    return frames;
+}
 
 // Returns 0 if the ROM's header is invalid or its mapper isn't supported
 // yet (see gb::loadCartridge). Callers must check for 0 before using the

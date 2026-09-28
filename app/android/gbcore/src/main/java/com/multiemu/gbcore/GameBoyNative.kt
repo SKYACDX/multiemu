@@ -32,6 +32,11 @@ class GameBoyNative private constructor(private var handle: Long) : AutoCloseabl
             return if (handle == 0L) null else GameBoyNative(handle)
         }
 
+        /** Output rate of the core's APU, in Hz -- fixed, so an AudioTrack can be built before any ROM runs. */
+        val audioSampleRateHz: Int by lazy { nativeGetAudioSampleRate() }
+
+        @JvmStatic private external fun nativeGetAudioSampleRate(): Int
+        @JvmStatic private external fun nativeReadAudio(handle: Long, outSamples: ShortArray): Int
         @JvmStatic private external fun nativeCreate(rom: ByteArray): Long
         @JvmStatic private external fun nativeDestroy(handle: Long)
         @JvmStatic private external fun nativeRunFrame(handle: Long)
@@ -63,6 +68,12 @@ class GameBoyNative private constructor(private var handle: Long) : AutoCloseabl
         check(handle != 0L) { "GameBoyNative used after close()" }
         repeat(times) { nativeRunFrame(handle) }
         nativeGetFramebuffer(handle, framebuffer)
+    }
+
+    /** Drains queued audio into [outSamples] (interleaved stereo 16-bit PCM); returns stereo frames written. */
+    fun readAudioSamples(outSamples: ShortArray): Int {
+        check(handle != 0L) { "GameBoyNative used after close()" }
+        return nativeReadAudio(handle, outSamples)
     }
 
     fun setButtonPressed(button: GameBoyButton, pressed: Boolean) {
