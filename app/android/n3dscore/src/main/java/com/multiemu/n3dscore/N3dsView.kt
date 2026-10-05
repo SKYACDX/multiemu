@@ -10,7 +10,8 @@ import java.io.File
 /**
  * Shows the running 3DS game (see [N3dsSession], which owns it) and takes
  * touches for its bottom screen. The core draws straight onto this view's
- * surface: both screens stacked, letterboxed and anchored to the top.
+ * surface, laid out like DsView's: stacked in portrait, side by side in
+ * landscape (see ScreenRects in n3ds_jni.cpp).
  */
 class N3dsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
 

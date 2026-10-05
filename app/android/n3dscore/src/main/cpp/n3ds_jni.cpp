@@ -281,17 +281,57 @@ std::string CreateFramebuffer(unsigned width, unsigned height) {
     return {};
 }
 
-// Blits the last picture onto the window, letterboxed to its aspect ratio
-// and anchored to the top, then shows it.
+// ---- screen layout ----
+// The core renders its default layout: the top screen (400x240) over the
+// bottom one (320x240, centred), 400x480 at native resolution. Present()
+// cuts the two apart and lays them out the way DsView does with the DS's:
+// stacked in a view taller than wide, side by side in a wider one, each
+// fitted to its half. Touches are mapped back through the same layout.
+
+struct Rect {
+    float left, top, width, height;  // view pixels, y down
+    bool contains(float x, float y) const { return x >= left && x < left + width && y >= top && y < top + height; }
+};
+
+// The source of each screen in the core's picture, as fractions (x, y down).
+constexpr float kTopSourceLeft = 0.0f, kTopSourceWidth = 1.0f;
+constexpr float kBottomSourceLeft = 0.1f, kBottomSourceWidth = 0.8f;  // 40..360 of 400
+
+// Centres a srcW:srcH image in a cell, aspect preserved.
+Rect FitRect(float srcW, float srcH, float cellLeft, float cellTop, float cellW, float cellH) {
+    const float scale = std::min(cellW / srcW, cellH / srcH);
+    const float w = srcW * scale, h = srcH * scale;
+    return {cellLeft + (cellW - w) / 2, cellTop + (cellH - h) / 2, w, h};
+}
+
+void ScreenRects(float viewW, float viewH, Rect& top, Rect& bottom) {
+    if (viewW > viewH) {
+        top = FitRect(400, 240, 0, 0, viewW / 2, viewH);
+        bottom = FitRect(320, 240, viewW / 2, 0, viewW / 2, viewH);
+    } else {
+        top = FitRect(400, 240, 0, 0, viewW, viewH / 2);
+        bottom = FitRect(320, 240, 0, viewH / 2, viewW, viewH / 2);
+    }
+}
+
+// Copies one screen (a horizontal band of the picture: the upper half for
+// the top screen) into its rect. Both framebuffers are bottom-up in GL.
+void BlitScreen(const Rect& dest, int surfaceH, float sourceLeft, float sourceWidth, bool upperHalf) {
+    const int w = g_pictureWidth, h = g_pictureHeight;
+    const int srcX0 = int(w * sourceLeft), srcX1 = int(w * (sourceLeft + sourceWidth));
+    const int srcY0 = upperHalf ? h / 2 : 0, srcY1 = upperHalf ? h : h / 2;
+    const int dstX0 = int(dest.left), dstX1 = int(dest.left + dest.width);
+    const int dstY0 = surfaceH - int(dest.top + dest.height), dstY1 = surfaceH - int(dest.top);
+    glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+}
+
 void Present() {
     if (g_window == EGL_NO_SURFACE || !g_hasPicture) return;
     EGLint surfaceWidth = 0, surfaceHeight = 0;
     eglQuerySurface(g_display, g_window, EGL_WIDTH, &surfaceWidth);
     eglQuerySurface(g_display, g_window, EGL_HEIGHT, &surfaceHeight);
-    const float scale = std::min(float(surfaceWidth) / g_pictureWidth, float(surfaceHeight) / g_pictureHeight);
-    const int width = int(g_pictureWidth * scale), height = int(g_pictureHeight * scale);
-    const int x = (surfaceWidth - width) / 2;
-    const int top = surfaceHeight;  // GL's y grows upwards: the top edge of the window
+    Rect top{}, bottom{};
+    ScreenRects(surfaceWidth, surfaceHeight, top, bottom);
 
     glDisable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -299,8 +339,8 @@ void Present() {
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo);
-    glBlitFramebuffer(0, 0, g_pictureWidth, g_pictureHeight, x, top - height, x + width, top, GL_COLOR_BUFFER_BIT,
-                      GL_LINEAR);
+    BlitScreen(top, surfaceHeight, kTopSourceLeft, kTopSourceWidth, true);
+    BlitScreen(bottom, surfaceHeight, kBottomSourceLeft, kBottomSourceWidth, false);
     eglSwapBuffers(g_display, g_window);
 }
 
@@ -455,24 +495,28 @@ JNIEXPORT jint JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSampleRate(JN
 
 JNIEXPORT jdouble JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeFps(JNIEnv*, jclass) { return g_av.timing.fps; }
 
-// A touch at (x, y) in a view of width x height, where Present() draws the
-// picture letterboxed and anchored to the top. Safe from the UI thread.
+// A touch at (x, y) in a view of width x height, laid out by ScreenRects.
+// Only touches on the bottom screen count. Safe from the UI thread.
 JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeTouch(JNIEnv*, jclass, jfloat x, jfloat y,
                                                                           jint width, jint height, jboolean pressed) {
-    const unsigned pictureWidth = g_pictureWidth, pictureHeight = g_pictureHeight;
-    if (!pressed || pictureWidth == 0 || pictureHeight == 0 || width <= 0 || height <= 0) {
+    Rect top{}, bottom{};
+    if (pressed && width > 0 && height > 0) ScreenRects(width, height, top, bottom);
+    if (!pressed || width <= 0 || height <= 0 || !bottom.contains(x, y)) {
         g_touching = false;
         return;
     }
-    const float scale = std::min(float(width) / pictureWidth, float(height) / pictureHeight);
-    const float pictureX = (x - (width - pictureWidth * scale) / 2) / scale;
-    const float pictureY = y / scale;
-    auto normalize = [](float value, unsigned size) {
-        const int scaled = int(std::clamp(value / size, 0.0f, 1.0f) * 0xFFFE) - 0x7FFF;
+    // Back into the core's picture: across the bottom screen's band of it,
+    // in the lower half.
+    const float pictureX = kBottomSourceLeft + (x - bottom.left) / bottom.width * kBottomSourceWidth;
+    const float pictureY = 0.5f + (y - bottom.top) / bottom.height * 0.5f;
+    // -0x7fff..0x7fff across the whole picture, the way the core's
+    // MouseTracker maps it back.
+    auto normalize = [](float fraction) {
+        const int scaled = int(std::clamp(fraction, 0.0f, 1.0f) * 0xFFFE) - 0x7FFF;
         return scaled == 0 ? 1 : scaled;  // the core reads an exact 0 as "no pointer"
     };
-    g_touchX = normalize(pictureX, pictureWidth);
-    g_touchY = normalize(pictureY, pictureHeight);
+    g_touchX = normalize(pictureX);
+    g_touchY = normalize(pictureY);
     g_touching = true;
     g_latchedTouch = true;
 }

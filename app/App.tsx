@@ -1363,7 +1363,7 @@ function App(): React.JSX.Element {
   const controlLayoutKey = `controlLayout_${system}_${isLandscape ? 'landscape' : 'portrait'}`;
   const defaultControlLayout = isLandscape
     ? DEFAULT_CONTROL_LAYOUT_LANDSCAPE
-    : system === 'nds'
+    : system === 'nds' || system === '3ds'
       ? DEFAULT_CONTROL_LAYOUT_NDS
       : DEFAULT_CONTROL_LAYOUT;
   useEffect(() => {
@@ -2925,18 +2925,23 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     borderRadius: 4,
   },
-  // Azahar draws both 3DS screens stacked (400x240 over 320x240, centred):
-  // 400:480 overall. Transparent for the same SurfaceView reason as
-  // screenDs. Landscape keeps the same stack, just shorter.
+  // The 3DS's two screens, laid out by N3dsView's native side the same way
+  // DsView lays out the DS's: stacked here, each fitted to its half -- the
+  // box is sized so the 5:3 top screen fills the width exactly, the 4:3
+  // bottom one centred below it. Same width as screenDs, so the default
+  // 1.4 scale gives it the same footprint. Transparent for the same
+  // SurfaceView reason as screenDs.
   screen3ds: {
-    width: 240,
-    height: 288,
+    width: 220,
+    height: 264,
     backgroundColor: 'transparent',
     borderRadius: 4,
   },
+  // Side by side, each screen in its half: a 5:3 top screen fills a half
+  // of 200x120 exactly.
   screen3dsLandscape: {
-    width: 150,
-    height: 180,
+    width: 400,
+    height: 120,
     backgroundColor: 'transparent',
     borderRadius: 4,
   },
