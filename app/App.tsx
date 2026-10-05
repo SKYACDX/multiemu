@@ -119,6 +119,7 @@ import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
 import {downloadPatchBytes, findCoverArt, getAppInfo, Hack, Patch, RomHackHubFile} from './src/api/romHackHub';
 import {
+  setSessionRejectedHandler,
   cloudSaveDownloadUrl,
   CloudSave,
   downloadCloudSave,
@@ -468,6 +469,10 @@ function App(): React.JSX.Element {
         if (session) {
           setAuthToken(session.token);
           setAuthUsername(session.username);
+          // Is it still alive? A rejected one is caught by the handler
+          // below, so the user hears about it now rather than the next
+          // time a save quietly fails to sync.
+          listCloudSaves(session.token).catch(() => {});
         }
       })
       .catch(() => {});
@@ -504,6 +509,35 @@ function App(): React.JSX.Element {
     setAuthUsername(null);
     setCloudSaves([]);
   }, []);
+
+  // The server stopped accepting the saved session (closed from the website,
+  // password changed, expired): forget it and say so -- once, however many
+  // requests fail at the same time.
+  const sessionRejectedShown = useRef(false);
+  useEffect(() => {
+    setSessionRejectedHandler(() => {
+      if (sessionRejectedShown.current) return;
+      sessionRejectedShown.current = true;
+      handleLogout();
+      Alert.alert(
+        'Tu sesión se cerró',
+        'RomHack Hub ya no reconoce la sesión de este teléfono (se cerró desde la web, cambiaste la ' +
+          'contraseña o caducó). Tus guardados no se están sincronizando con la nube. Vuelve a ' +
+          'iniciar sesión para seguir.',
+        [
+          {text: 'Ahora no', style: 'cancel', onPress: () => (sessionRejectedShown.current = false)},
+          {
+            text: 'Iniciar sesión',
+            onPress: () => {
+              sessionRejectedShown.current = false;
+              setScreen('account');
+            },
+          },
+        ],
+      );
+    });
+    return () => setSessionRejectedHandler(null);
+  }, [handleLogout]);
 
   // gameKey groups cloud saves by ROM regardless of which device produced
   // them -- "<system>:<romId>" so different systems' save formats can't

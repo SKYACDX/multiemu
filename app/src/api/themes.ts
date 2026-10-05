@@ -5,6 +5,7 @@
  * scheme as romHackHubAccount.ts's save-sync API.
  */
 import {Theme, ThemeSystem} from '../theme';
+import {reportSessionRejected} from './romHackHubAccount';
 
 const PUBLIC_BASE = 'https://emulatornds.online/api/v1';
 const ACCOUNT_BASE = 'https://www.emulatornds.online';
@@ -39,6 +40,7 @@ async function accountFetch<T>(path: string, options: RequestInit = {}, token: s
     },
   });
   if (!response.ok) {
+    if (response.status === 401) reportSessionRejected();
     const body = await response.json().catch(() => null);
     throw new Error(body?.error ?? `Error del servidor (HTTP ${response.status})`);
   }

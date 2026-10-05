@@ -64,7 +64,7 @@ export default function AccountScreen({username, onLogin, onVerifyTotp, onLogout
           <Text style={styles.connectedTitle}>Conectado como</Text>
           <Text style={styles.username}>{username}</Text>
           <Text style={styles.hint}>
-            Tus guardados manuales de GBA se pueden subir a la nube desde el menú de guardado, dentro del juego.
+            El guardado de tus juegos de GBA, DS y 3DS se sincroniza solo con la nube, y los estados se suben desde el menú del juego, en Guardado.
           </Text>
           <Pressable style={styles.logoutButton} onPress={onLogout}>
             <Text style={styles.logoutLabel}>Cerrar sesión</Text>
@@ -91,7 +91,7 @@ export default function AccountScreen({username, onLogin, onVerifyTotp, onLogout
       ) : (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Iniciar sesión en RomHack Hub</Text>
-          <Text style={styles.hint}>Para sincronizar tus guardados de GBA entre dispositivos.</Text>
+          <Text style={styles.hint}>Para sincronizar tus guardados de GBA, DS y 3DS entre dispositivos.</Text>
           <TextInput
             style={styles.input}
             placeholder="Correo"

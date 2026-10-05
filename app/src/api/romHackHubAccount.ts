@@ -23,6 +23,22 @@ export class TotpRequiredError extends Error {
   }
 }
 
+// What to do when the server rejects a saved session (HTTP 401 with a token
+// sent): set by App, which forgets it and tells the user. A session dies
+// without warning when it's closed from the website ("Cerrar todas las
+// sesiones", a password change) or expires, and everything that syncs
+// swallows its errors -- so without this the cloud just quietly stopped.
+let sessionRejectedHandler: (() => void) | null = null;
+
+export function setSessionRejectedHandler(handler: (() => void) | null) {
+  sessionRejectedHandler = handler;
+}
+
+/** For other clients of the same account API (themes.ts). */
+export function reportSessionRejected() {
+  sessionRejectedHandler?.();
+}
+
 async function accountFetch<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
   const response = await fetch(`${ACCOUNT_BASE}${path}`, {
     ...options,
@@ -33,6 +49,8 @@ async function accountFetch<T>(path: string, options: RequestInit = {}, token?: 
     },
   });
   if (!response.ok) {
+    // Only with a token: a wrong password at login is a 401 too.
+    if (response.status === 401 && token) reportSessionRejected();
     const body = await response.json().catch(() => null);
     throw new Error(body?.error ?? `Error del servidor (HTTP ${response.status})`);
   }
