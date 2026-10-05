@@ -108,9 +108,7 @@ void RetroLog(enum retro_log_level level, const char* format, ...) {
 uintptr_t CurrentFramebuffer() { return g_fbo; }
 
 // The options this app sets; anything else keeps the core's own default.
-// The console runs in Spanish, the language of this app. Kotlin can set
-// more before a game starts (nativeSetOption) -- the core reads them once,
-// while loading.
+// The console runs in Spanish, the language of this app.
 //
 // The emulated CPU runs at half clock: measured on an Adreno 610 phone, it
 // took a game from ~32 to ~41 fps, more than any other option (25% is
@@ -519,12 +517,6 @@ JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeTouch(JNIEnv*
     g_touchY = normalize(pictureY);
     g_touching = true;
     g_latchedTouch = true;
-}
-
-// A core option (citra_* key, value as the core lists it), for the next start.
-JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSetOption(JNIEnv* env, jclass, jstring key,
-                                                                              jstring value) {
-    g_options[FromJava(env, key)] = FromJava(env, value);
 }
 
 // id is a RETRO_DEVICE_ID_JOYPAD_* value.
