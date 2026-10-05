@@ -12,6 +12,8 @@ build/
 *.bin
 *.bmp
 *.png
+# ...except the store icon and screenshots the README and app catalogs use.
+!fastlane/**/*.png
 node_modules/
 .DS_Store
 
