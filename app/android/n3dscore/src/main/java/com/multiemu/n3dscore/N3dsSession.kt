@@ -30,6 +30,8 @@ object N3dsSession {
 
     private var romPath: String? = null
     private var surface: Surface? = null
+    private var surfaceWidth = 0
+    private var surfaceHeight = 0
     @Volatile private var paused = false
     private var looping = false
 
@@ -59,17 +61,19 @@ object N3dsSession {
             }
             romPath = path
             frameIntervalNanos = (1_000_000_000.0 / N3dsNative.nativeFps().coerceIn(30.0, 120.0)).toLong()
-            surface?.let { N3dsNative.nativeSetSurface(it) }
+            surface?.let { N3dsNative.nativeSetSurface(it, surfaceWidth, surfaceHeight) }
             startAudio(N3dsNative.nativeSampleRate())
             ensureLooping()
         }
     }
 
-    /** The view's surface is ready (or changed). */
-    fun attach(newSurface: Surface) {
+    /** The view's surface is ready (or changed size), at [width] x [height]. */
+    fun attach(newSurface: Surface, width: Int, height: Int) {
         emu.post {
             surface = newSurface
-            if (romPath != null) N3dsNative.nativeSetSurface(newSurface)
+            surfaceWidth = width
+            surfaceHeight = height
+            if (romPath != null) N3dsNative.nativeSetSurface(newSurface, width, height)
         }
     }
 
@@ -78,7 +82,7 @@ object N3dsSession {
         val done = java.util.concurrent.CountDownLatch(1)
         emu.post {
             surface = null
-            if (romPath != null) N3dsNative.nativeSetSurface(null)
+            if (romPath != null) N3dsNative.nativeSetSurface(null, 0, 0)
             done.countDown()
         }
         done.await(2, java.util.concurrent.TimeUnit.SECONDS)
@@ -94,6 +98,19 @@ object N3dsSession {
     }
 
     fun stop() = emu.post { stopNow() }
+
+    /**
+     * Saves/loads the whole console. On the emulation thread, between two
+     * frames, so the core is never mid-frame. [done] gets null on success,
+     * else a message for the user -- called on that thread.
+     */
+    fun saveState(path: String, done: (String?) -> Unit) = emu.post {
+        done(if (romPath == null) "No hay ningún juego de 3DS abierto" else N3dsNative.nativeSaveState(path))
+    }
+
+    fun loadState(path: String, done: (String?) -> Unit) = emu.post {
+        done(if (romPath == null) "No hay ningún juego de 3DS abierto" else N3dsNative.nativeLoadState(path))
+    }
 
     private fun stopNow() {
         audioTrack?.run { stop(); release() }

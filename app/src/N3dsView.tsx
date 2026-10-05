@@ -1,5 +1,5 @@
 import React, {forwardRef, useImperativeHandle, useRef} from 'react';
-import {findNodeHandle, requireNativeComponent, UIManager, ViewProps} from 'react-native';
+import {findNodeHandle, NativeModules, requireNativeComponent, UIManager, ViewProps} from 'react-native';
 
 const NativeN3dsView = requireNativeComponent<ViewProps>('N3dsView');
 
@@ -46,3 +46,20 @@ const N3dsView = forwardRef<N3dsViewHandle, ViewProps>((props, ref) => {
 });
 
 export default N3dsView;
+
+const {N3dsState} = NativeModules as {
+  N3dsState: {saveSlot(romId: string, slot: number): Promise<void>; loadSlot(romId: string, slot: number): Promise<void>};
+};
+
+/**
+ * 3DS state slots. The core writes/reads the slot file itself (the same
+ * file listStateSlots/deleteStateSlot see for GBA/DS): a 3DS state is tens
+ * of MB, too big to pass through JS as base64 like the others.
+ */
+export function save3dsSlot(romId: string, slot: number): Promise<void> {
+  return N3dsState.saveSlot(romId, slot);
+}
+
+export function load3dsSlot(romId: string, slot: number): Promise<void> {
+  return N3dsState.loadSlot(romId, slot);
+}

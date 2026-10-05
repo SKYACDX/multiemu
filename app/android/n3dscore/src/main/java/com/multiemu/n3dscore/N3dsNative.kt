@@ -15,12 +15,16 @@ object N3dsNative {
     /** Null on success, else a message for the user. */
     @JvmStatic external fun nativeStart(romPath: String, dataDir: String): String?
     @JvmStatic external fun nativeStop()
-    @JvmStatic external fun nativeSetSurface(surface: Surface?)
+    /** [width]/[height]: the view's, from surfaceChanged. Null [surface] detaches. */
+    @JvmStatic external fun nativeSetSurface(surface: Surface?, width: Int, height: Int)
     @JvmStatic external fun nativeRunFrame()
     /** Interleaved stereo; returns frames written. */
     @JvmStatic external fun nativeReadAudio(out: ShortArray): Int
     @JvmStatic external fun nativeSampleRate(): Int
     @JvmStatic external fun nativeFps(): Double
+    /** The whole console to/from a file. Null on success, else a message for the user. */
+    @JvmStatic external fun nativeSaveState(path: String): String?
+    @JvmStatic external fun nativeLoadState(path: String): String?
     /** A touch at (x, y) on a view of [width] x [height] showing the picture. Safe from any thread. */
     @JvmStatic external fun nativeTouch(x: Float, y: Float, width: Int, height: Int, pressed: Boolean)
     /** [id] is a libretro joypad id (RETRO_DEVICE_ID_JOYPAD_*). Safe from any thread. */

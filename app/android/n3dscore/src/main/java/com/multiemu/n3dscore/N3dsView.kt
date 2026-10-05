@@ -58,9 +58,11 @@ class N3dsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         return true
     }
 
-    override fun surfaceCreated(holder: SurfaceHolder) = N3dsSession.attach(holder.surface)
+    override fun surfaceCreated(holder: SurfaceHolder) =
+        N3dsSession.attach(holder.surface, holder.surfaceFrame.width(), holder.surfaceFrame.height())
 
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = N3dsSession.attach(holder.surface)
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) =
+        N3dsSession.attach(holder.surface, width, height)
 
     override fun surfaceDestroyed(holder: SurfaceHolder) = N3dsSession.detach()
 }

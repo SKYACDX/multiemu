@@ -42,7 +42,7 @@ import {
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import DsView, {DsButton, DsViewHandle} from './src/DsView';
-import N3dsView, {N3dsButton, N3dsViewHandle} from './src/N3dsView';
+import N3dsView, {load3dsSlot, N3dsButton, N3dsViewHandle, save3dsSlot} from './src/N3dsView';
 import {IconCloud, IconHome, IconMenu, IconPencil, IconSave, IconTrash, IconTriangle} from './src/icons';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
@@ -292,7 +292,8 @@ function App(): React.JSX.Element {
   // for GB) drag-to-reposition + screen scale, persisted natively (see
   // RomLibraryModule's getPreference/setPreference).
   const [editingControls, setEditingControls] = useState(false);
-  const [controlLayout, setControlLayout] = useState<ControlLayout>(DEFAULT_CONTROL_LAYOUT);
+  // The layout last loaded, with the key it belongs to -- see controlLayout below.
+  const [loadedLayout, setLoadedLayout] = useState<{key: string; layout: ControlLayout} | null>(null);
   // Which component the size +/- controls in "editar interfaz" apply to.
   const [scaleTarget, setScaleTarget] = useState<ScalableId>('screen');
   const [theme, setTheme] = useState<Theme>(() => defaultTheme('gb'));
@@ -781,8 +782,12 @@ function App(): React.JSX.Element {
   // sync above, which only covers the cartridge's own SRAM/flash save.
   const autoSaveState = useCallback(async () => {
     const romId = currentRomId.current;
-    if (!romId || (system !== 'gba' && system !== 'nds') || saveModalOpen) return;
+    if (!romId || (system !== 'gba' && system !== 'nds' && system !== '3ds') || saveModalOpen) return;
     try {
+      if (system === '3ds') {
+        await save3dsSlot(romId, AUTOSAVE_SLOT);
+        return;
+      }
       const base64 = await saveEmuState();
       await saveStateSlot(romId, AUTOSAVE_SLOT, base64);
     } catch {
@@ -791,13 +796,16 @@ function App(): React.JSX.Element {
   }, [system, saveModalOpen, saveEmuState]);
 
   useEffect(() => {
-    if (screen !== 'game' || (system !== 'gba' && system !== 'nds')) return;
-    const interval = setInterval(autoSaveState, AUTOSAVE_INTERVAL_MS);
+    if (screen !== 'game' || (system !== 'gba' && system !== 'nds' && system !== '3ds')) return;
+    // A 3DS state takes ~3s to write on a mid-range phone, which would
+    // freeze the game every 45s: it autosaves only on the way out (here,
+    // and in confirmExitToHome).
+    const interval = system === '3ds' ? null : setInterval(autoSaveState, AUTOSAVE_INTERVAL_MS);
     const sub = AppState.addEventListener('change', state => {
       if (state !== 'active') autoSaveState();
     });
     return () => {
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
       sub.remove();
     };
   }, [screen, system, autoSaveState]);
@@ -906,11 +914,14 @@ function App(): React.JSX.Element {
         onPress: () => {
           setMenuOpen(false);
           setEditingControls(false);
+          // The 3DS game outlives its view (N3dsSession), so this still
+          // saves it after the screen is gone.
+          if (system === '3ds') autoSaveState();
           setScreen('home');
         },
       },
     ]);
-  }, []);
+  }, [system, autoSaveState]);
 
   const openSaveModal = useCallback(() => {
     setSaveModalOpen(true);
@@ -933,8 +944,11 @@ function App(): React.JSX.Element {
       const romId = currentRomId.current;
       if (!romId) return;
       try {
-        const base64 = await saveEmuState();
-        await saveStateSlot(romId, slot, base64);
+        if (currentSaveSystem.current === '3ds') {
+          await save3dsSlot(romId, slot);
+        } else {
+          await saveStateSlot(romId, slot, await saveEmuState());
+        }
         setStateSlots(await listStateSlots(romId));
       } catch (e) {
         Alert.alert('No se pudo guardar', e instanceof Error ? e.message : String(e));
@@ -948,8 +962,11 @@ function App(): React.JSX.Element {
       const romId = currentRomId.current;
       if (!romId) return;
       try {
-        const base64 = await loadStateSlot(romId, slot);
-        await loadEmuState(base64);
+        if (currentSaveSystem.current === '3ds') {
+          await load3dsSlot(romId, slot);
+        } else {
+          await loadEmuState(await loadStateSlot(romId, slot));
+        }
         closeSaveModal();
       } catch (e) {
         Alert.alert('No se pudo cargar ese guardado', e instanceof Error ? e.message : String(e));
@@ -1421,6 +1438,16 @@ function App(): React.JSX.Element {
         : {offsets: {}, scales: {screen: windowWidth / portraitScreenBaseWidth}},
     [isLandscape, windowWidth, portraitScreenBaseWidth],
   );
+  // Until this system+orientation's own layout has loaded, its default --
+  // never the previous one's. Switching systems used to render the new
+  // screen for a moment at the old system's scale (GB's on a cold start),
+  // and resizing a 3DS surface right after it was created could leave its
+  // picture laid out for the old size.
+  const controlLayout = loadedLayout?.key === controlLayoutKey ? loadedLayout.layout : defaultControlLayout;
+  const setControlLayout = useCallback(
+    (layout: ControlLayout) => setLoadedLayout({key: controlLayoutKey, layout}),
+    [controlLayoutKey],
+  );
   useEffect(() => {
     let cancelled = false;
     getPreference(controlLayoutKey)
@@ -1450,14 +1477,14 @@ function App(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [controlLayoutKey, defaultControlLayout, isLandscape]);
+  }, [controlLayoutKey, defaultControlLayout, isLandscape, setControlLayout]);
 
   const persistControlLayout = useCallback(
     (layout: ControlLayout) => {
       setControlLayout(layout);
       setPreference(controlLayoutKey, JSON.stringify({...layout, v: CONTROL_LAYOUT_VERSION})).catch(() => {});
     },
-    [controlLayoutKey],
+    [controlLayoutKey, setControlLayout],
   );
 
   // Reads the live layout out of a ref rather than the render that built
@@ -1838,7 +1865,7 @@ function App(): React.JSX.Element {
               </View>
             </View>
           )}
-          {(system === 'gba' || system === 'nds') && (
+          {(system === 'gba' || system === 'nds' || system === '3ds') && (
             <Pressable
               style={styles.menuItem}
               onPress={() => {
@@ -1874,11 +1901,14 @@ function App(): React.JSX.Element {
   // content, only the surrounding <Modal>/<Pressable> backdrop differs
   // per layout (well, it doesn't -- but keeping one JSX literal here
   // avoids maintaining two copies of this large block in sync).
+  // Cloud sync covers GBA/DS; a 3DS keeps its saves inside the emulated
+  // console's storage, which isn't packaged for the cloud yet.
+  const cloudEnabled = !!authToken && system !== '3ds';
   const saveModalContent = (
     <>
       <Text style={styles.modalTitle}>Guardado manual</Text>
       <Text style={styles.modalSubtitle}>El juego está en pausa mientras eliges un espacio.</Text>
-      {(system === 'gba' || system === 'nds') && (
+      {(system === 'gba' || system === 'nds' || system === '3ds') && (
         <>
           <View style={styles.slotsRow}>
             {[0, 1, 2].map(slot => {
@@ -1921,7 +1951,7 @@ function App(): React.JSX.Element {
                       <Text style={[styles.slotActionLabel, !info.exists && styles.slotActionLabelDisabled]}>Cargar</Text>
                     </Pressable>
                   </View>
-                  {authToken && (
+                  {cloudEnabled && (
                     <View style={styles.slotActions}>
                       <Pressable
                         style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusy && styles.slotActionButtonDisabled]}
@@ -1989,7 +2019,7 @@ function App(): React.JSX.Element {
         </>
       )}
 
-      {authToken && (
+      {cloudEnabled && (
         <View style={styles.gameSaveRow}>
           <View style={{flex: 1}}>
             <Text style={styles.slotLabel}>Guardado del juego</Text>
@@ -2036,7 +2066,11 @@ function App(): React.JSX.Element {
           </View>
         </View>
       )}
-      {!authToken && <Text style={styles.modalCloudHint}>Inicia sesión en Cuenta para sincronizar guardados en la nube.</Text>}
+      {system === '3ds' ? (
+        <Text style={styles.modalCloudHint}>En 3DS los guardados en la nube todavía no están disponibles.</Text>
+      ) : (
+        !authToken && <Text style={styles.modalCloudHint}>Inicia sesión en Cuenta para sincronizar guardados en la nube.</Text>
+      )}
       <Pressable style={styles.modalCloseButton} onPress={closeSaveModal}>
         <Text style={styles.modalCloseLabel}>Cerrar y continuar</Text>
       </Pressable>

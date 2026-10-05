@@ -21,6 +21,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <cerrno>
 #include <cstdarg>
 #include <cstring>
@@ -56,6 +58,8 @@ EGLContext g_context = EGL_NO_CONTEXT;
 EGLSurface g_pbuffer = EGL_NO_SURFACE;
 EGLSurface g_window = EGL_NO_SURFACE;
 ANativeWindow* g_nativeWindow = nullptr;
+// The view's size, as Android reported it (see nativeSetSurface).
+int g_surfaceWidth = 0, g_surfaceHeight = 0;
 GLuint g_fbo = 0, g_texture = 0, g_depth = 0;
 std::atomic<unsigned> g_pictureWidth{0}, g_pictureHeight{0};  // also read by nativeTouch (UI thread)
 bool g_hasPicture = false;
@@ -114,9 +118,16 @@ uintptr_t CurrentFramebuffer() { return g_fbo; }
 // took a game from ~32 to ~41 fps, more than any other option (25% is
 // slower again -- the game spends the cycles waiting). The 3DS CPU is
 // rarely the bottleneck of a real game's logic, so few games notice.
+//
+// And it emulates the original 3DS, not the core's default New 3DS: 128MB of
+// RAM instead of 256, which halves both what the emulator holds and what a
+// state saves. Saving a state on a New 3DS serialized ~256MB and copied it
+// again before compressing -- on a 4GB phone Android killed the app for
+// memory mid-save. Only the handful of New-3DS-only games need the other.
 std::map<std::string, std::string> g_options = {
     {"citra_language_value", "Spanish"},
     {"citra_cpu_clock_percentage", "50"},
+    {"citra_is_new_3ds", "Old 3DS"},
 };
 
 const char* Option(const char* key) {
@@ -323,22 +334,54 @@ void BlitScreen(const Rect& dest, int surfaceH, float sourceLeft, float sourceWi
     glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 }
 
+// The core caches the GL state it believes is set (Citra's OpenGLState) and
+// only re-applies what it thinks changed -- its per-frame "reset" goes
+// through that cache too. Anything changed behind its back stays changed:
+// a viewport left at the window's size had it draw its next frames into the
+// wrong area of its framebuffer, and both screens came out shrunk into a
+// corner after a surface switch. So whatever touches GL state here puts it
+// back exactly as it found it.
+class GlStateGuard {
+   public:
+    GlStateGuard() {
+        glGetIntegerv(GL_VIEWPORT, viewport_);
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFramebuffer_);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer_);
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, clearColor_);
+        scissor_ = glIsEnabled(GL_SCISSOR_TEST);
+    }
+    ~GlStateGuard() {
+        glViewport(viewport_[0], viewport_[1], viewport_[2], viewport_[3]);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer_);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFramebuffer_);
+        glClearColor(clearColor_[0], clearColor_[1], clearColor_[2], clearColor_[3]);
+        if (scissor_) glEnable(GL_SCISSOR_TEST);
+    }
+
+   private:
+    GLint viewport_[4]{};
+    GLint readFramebuffer_ = 0, drawFramebuffer_ = 0;
+    GLfloat clearColor_[4]{};
+    GLboolean scissor_ = GL_FALSE;
+};
+
 void Present() {
     if (g_window == EGL_NO_SURFACE || !g_hasPicture) return;
-    EGLint surfaceWidth = 0, surfaceHeight = 0;
-    eglQuerySurface(g_display, g_window, EGL_WIDTH, &surfaceWidth);
-    eglQuerySurface(g_display, g_window, EGL_HEIGHT, &surfaceHeight);
+    const int surfaceWidth = g_surfaceWidth, surfaceHeight = g_surfaceHeight;
     Rect top{}, bottom{};
     ScreenRects(surfaceWidth, surfaceHeight, top, bottom);
 
-    glDisable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glViewport(0, 0, surfaceWidth, surfaceHeight);
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo);
-    BlitScreen(top, surfaceHeight, kTopSourceLeft, kTopSourceWidth, true);
-    BlitScreen(bottom, surfaceHeight, kBottomSourceLeft, kBottomSourceWidth, false);
+    {
+        GlStateGuard guard;
+        // Neither clear nor blit reads the viewport, so it's left alone.
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo);
+        BlitScreen(top, surfaceHeight, kTopSourceLeft, kTopSourceWidth, true);
+        BlitScreen(bottom, surfaceHeight, kBottomSourceLeft, kBottomSourceWidth, false);
+    }
     eglSwapBuffers(g_display, g_window);
 }
 
@@ -449,17 +492,27 @@ JNIEXPORT jstring JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeStart(JNIE
 
 JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeStop(JNIEnv*, jclass) { Stop(); }
 
-// surface null detaches (the view's surface is going away).
-JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSetSurface(JNIEnv* env, jclass, jobject surface) {
+// surface null detaches. width/height are the view's, from surfaceChanged.
+// The buffers are pinned to exactly that size and the layout uses it, rather
+// than asking EGL: a view remounted (coming back from Home) or resized right
+// after creation could leave eglQuerySurface reporting its first, smaller
+// size for good, and both screens were then laid out in a corner.
+JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSetSurface(JNIEnv* env, jclass, jobject surface,
+                                                                               jint width, jint height) {
     if (g_context == EGL_NO_CONTEXT) return;
     eglMakeCurrent(g_display, g_pbuffer, g_pbuffer, g_context);
+    // Switching the current surface may reset the viewport; see GlStateGuard.
+    GlStateGuard guard;
     if (g_window != EGL_NO_SURFACE) eglDestroySurface(g_display, g_window);
     if (g_nativeWindow) ANativeWindow_release(g_nativeWindow);
     g_window = EGL_NO_SURFACE;
     g_nativeWindow = nullptr;
     if (!surface) return;
     g_nativeWindow = ANativeWindow_fromSurface(env, surface);
-    if (!g_nativeWindow) return;
+    if (!g_nativeWindow || width <= 0 || height <= 0) return;
+    ANativeWindow_setBuffersGeometry(g_nativeWindow, width, height, 0);
+    g_surfaceWidth = width;
+    g_surfaceHeight = height;
     g_window = eglCreateWindowSurface(g_display, g_config, g_nativeWindow, nullptr);
     if (g_window == EGL_NO_SURFACE || !eglMakeCurrent(g_display, g_window, g_window, g_context)) {
         LOGE("eglCreateWindowSurface failed: 0x%x", eglGetError());
@@ -517,6 +570,53 @@ JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeTouch(JNIEnv*
     g_touchY = normalize(pictureY);
     g_touching = true;
     g_latchedTouch = true;
+}
+
+// Saves the whole console to path (the core compresses it with zstd). It
+// goes to path.tmp first and is renamed into place, so a crash mid-write
+// never leaves a broken slot. Null on success, else a message for the user.
+// A 3DS state is big -- this goes straight to disk, never through JS.
+JNIEXPORT jstring JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSaveState(JNIEnv* env, jclass, jstring path) {
+    if (!g_loaded) return env->NewStringUTF("no hay ningún juego de 3DS abierto");
+    const auto start = std::chrono::steady_clock::now();
+    const size_t size = coreSymbol<size_t (*)()>("retro_serialize_size")();
+    std::vector<uint8_t> state(size);
+    if (size == 0 || !coreSymbol<bool (*)(void*, size_t)>("retro_serialize")(state.data(), size)) {
+        return env->NewStringUTF("el núcleo de 3DS no pudo crear el estado");
+    }
+    const std::string target = FromJava(env, path);
+    const std::string temporary = target + ".tmp";
+    FILE* file = std::fopen(temporary.c_str(), "wb");
+    const bool written = file && std::fwrite(state.data(), 1, size, file) == size;
+    if (file) std::fclose(file);
+    if (!written || std::rename(temporary.c_str(), target.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        return env->NewStringUTF("no se pudo escribir el estado");
+    }
+    LOGI("state saved: %zu bytes in %lld ms", size,
+         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - start).count()));
+    return nullptr;
+}
+
+JNIEXPORT jstring JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeLoadState(JNIEnv* env, jclass, jstring path) {
+    if (!g_loaded) return env->NewStringUTF("no hay ningún juego de 3DS abierto");
+    const auto start = std::chrono::steady_clock::now();
+    FILE* file = std::fopen(FromJava(env, path).c_str(), "rb");
+    if (!file) return env->NewStringUTF("ese slot está vacío");
+    std::fseek(file, 0, SEEK_END);
+    const long size = std::ftell(file);
+    std::fseek(file, 0, SEEK_SET);
+    std::vector<uint8_t> state(size > 0 ? size : 0);
+    const bool read = size > 0 && std::fread(state.data(), 1, state.size(), file) == state.size();
+    std::fclose(file);
+    if (!read || !coreSymbol<bool (*)(const void*, size_t)>("retro_unserialize")(state.data(), state.size())) {
+        return env->NewStringUTF("el núcleo de 3DS no pudo cargar ese estado");
+    }
+    LOGI("state loaded: %ld bytes in %lld ms", size,
+         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - start).count()));
+    return nullptr;
 }
 
 // id is a RETRO_DEVICE_ID_JOYPAD_* value.
