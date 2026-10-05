@@ -1,0 +1,40 @@
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+
+android {
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    compileSdk rootProject.ext.compileSdkVersion
+
+    namespace "com.multiemu.n3dscore"
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+        ndk {
+            // Azahar (the 3DS core) is only prebuilt for arm64 -- a 3DS is
+            // out of reach of any 32-bit phone anyway. See
+            // n3dscore/build-azahar.cmd.
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    // The prebuilt core, renamed lib*.so so it is packaged and found like
+    // any other native library. Gitignored, produced by the script above.
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ["../../../third_party/azahar/android-jniLibs"]
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+        }
+    }
+}

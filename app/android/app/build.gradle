@@ -137,6 +137,7 @@ dependencies {
     implementation project(":gbcore")
     implementation project(":gbacore")
     implementation project(":dscore")
+    implementation project(":n3dscore")
 
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")

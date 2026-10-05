@@ -6,4 +6,5 @@ include ':app'
 include ':gbcore'
 include ':gbacore'
 include ':dscore'
+include ':n3dscore'
 includeBuild('../node_modules/@react-native/gradle-plugin')

@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Phase 1 test bench, launched from adb (see N3dsTestActivity). -->
+        <activity
+            android:name="com.multiemu.n3dscore.N3dsTestActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+    </application>
+</manifest>
