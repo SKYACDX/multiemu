@@ -73,3 +73,8 @@ primer VBlank y vuelca el framebuffer a un BMP:
 
 Si el pipeline (CPU + Bus + VRAM/OAM + PPU) funciona, `frame.bmp` muestra
 20 franjas de 8px alternando blanco/negro cubriendo toda la pantalla.
+
+
+## Licencia
+
+multiemu es software libre bajo la [GNU GPL v3 o posterior](LICENSE). Los emuladores que incluye conservan sus propias licencias; ver [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
