@@ -157,7 +157,7 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
                 Arguments.createMap().apply {
                     putString("path", cacheFile.absolutePath)
                     putString("name", romName)
-                    putInt("size", cacheFile.length().toInt())
+                    putDouble("size", cacheFile.length().toDouble())
                 },
             )
         } catch (e: IOException) {
@@ -225,7 +225,7 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
                     Arguments.createMap().apply {
                         putString("path", cacheFile.absolutePath)
                         putString("name", romName)
-                        putInt("size", cacheFile.length().toInt())
+                        putDouble("size", cacheFile.length().toDouble())
                     },
                 )
                 return

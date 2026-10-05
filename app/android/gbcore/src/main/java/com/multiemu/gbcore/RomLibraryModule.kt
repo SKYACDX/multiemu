@@ -243,7 +243,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         map.putString("name", getString("name"))
         map.putString("system", getString("system"))
         map.putString("label", getString("label"))
-        map.putInt("size", getInt("size"))
+        map.putDouble("size", getLong("size").toDouble())
         map.putDouble("savedAt", getLong("savedAt").toDouble())
         return map
     }
