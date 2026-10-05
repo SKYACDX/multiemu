@@ -123,7 +123,7 @@ export default function HomeScreen({
           <View style={[styles.actionIconCircle, {backgroundColor: '#1e5c4f'}]}>
             <IconLink size={20} color="#a0ffe8" />
           </View>
-          <Text style={styles.actionLabel}>Link local (beta)</Text>
+          <Text style={styles.actionLabel}>Link local</Text>
         </Pressable>
       </View>
 
