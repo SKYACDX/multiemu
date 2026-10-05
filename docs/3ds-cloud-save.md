@@ -2,8 +2,9 @@
 
 Definido e implementado primero en `multiemu_exe` (`src/save3ds.js` y
 `test/save3ds.test.js`, 2026-10-05). Android tiene que seguirlo al pie de la
-letra para que los dos dispositivos vean la misma partida. Aún no está
-implementado en Android.
+letra para que los dos dispositivos vean la misma partida. En Android:
+`N3dsCloudSave.kt` (con `N3dsCloudSaveTest`, que fija la huella de referencia)
+y los flujos de guardado del juego de `App.tsx`.
 
 ## Qué se sube
 

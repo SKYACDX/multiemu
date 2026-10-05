@@ -63,3 +63,36 @@ export function save3dsSlot(romId: string, slot: number): Promise<void> {
 export function load3dsSlot(romId: string, slot: number): Promise<void> {
   return N3dsState.loadSlot(romId, slot);
 }
+
+const {N3dsCloud} = NativeModules as {
+  N3dsCloud: {
+    gameKey(romPath: string): Promise<string>;
+    localSave(romPath: string): Promise<{base64: string; fingerprint: number; newestModified: number} | null>;
+    zipFingerprint(base64: string): Promise<number>;
+    restoreSave(romPath: string, base64: string): Promise<void>;
+  };
+};
+
+/**
+ * The 3DS in-game save for the cloud -- the same contract as the desktop port
+ * (docs/3ds-cloud-save.md): key "3ds:<program ID>", the save folder as a zip,
+ * compared by a fingerprint of its contents rather than the zip's bytes.
+ */
+export function n3dsGameKey(romPath: string): Promise<string> {
+  return N3dsCloud.gameKey(romPath);
+}
+
+/** The local save as a zip plus its fingerprint, or null while the game has saved nothing. */
+export function n3dsLocalSave(romPath: string) {
+  return N3dsCloud.localSave(romPath);
+}
+
+/** A cloud zip's fingerprint; -1 if it holds no progress. */
+export function n3dsZipFingerprint(base64: string): Promise<number> {
+  return N3dsCloud.zipFingerprint(base64);
+}
+
+/** Closes the game and puts the cloud zip in place of its save (the old one is backed up). */
+export function n3dsRestoreSave(romPath: string, base64: string): Promise<void> {
+  return N3dsCloud.restoreSave(romPath, base64);
+}

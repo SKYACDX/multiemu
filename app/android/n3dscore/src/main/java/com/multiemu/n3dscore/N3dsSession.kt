@@ -100,6 +100,16 @@ object N3dsSession {
     fun stop() = emu.post { stopNow() }
 
     /**
+     * Closes the game, if one is open, then runs [block] -- on the emulation
+     * thread, so the core can't be writing its save files meanwhile. The next
+     * [load] starts the game fresh, reading whatever [block] left there.
+     */
+    fun stopThen(block: () -> Unit) = emu.post {
+        stopNow()
+        block()
+    }
+
+    /**
      * Saves/loads the whole console. On the emulation thread, between two
      * frames, so the core is never mid-frame. [done] gets null on success,
      * else a message for the user -- called on that thread.

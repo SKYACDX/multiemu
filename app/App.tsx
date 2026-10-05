@@ -42,7 +42,16 @@ import {
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import DsView, {DsButton, DsViewHandle} from './src/DsView';
-import N3dsView, {load3dsSlot, N3dsButton, N3dsViewHandle, save3dsSlot} from './src/N3dsView';
+import N3dsView, {
+  load3dsSlot,
+  N3dsButton,
+  n3dsGameKey,
+  n3dsLocalSave,
+  n3dsRestoreSave,
+  N3dsViewHandle,
+  n3dsZipFingerprint,
+  save3dsSlot,
+} from './src/N3dsView';
 import {IconCloud, IconHome, IconMenu, IconPencil, IconSave, IconTrash, IconTriangle} from './src/icons';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
@@ -284,6 +293,9 @@ function App(): React.JSX.Element {
   // from. Set by handlePickRom, consumed by the remount effect below.
   const currentDsRomPath = useRef<string | null>(null);
   const current3dsRomPath = useRef<string | null>(null);
+  // A 3DS game's cloud key is "3ds:<program ID>" (docs/3ds-cloud-save.md),
+  // not "<system>:<romId>": read from the ROM when it opens.
+  const current3dsCloudKey = useRef<string | null>(null);
   // Read by cloudGameKey/readGameSavePaused/checkGameSaveConflict -- a
   // ref (not the system state) so it's never stale/racy relative to
   // those closures, same reasoning as currentRomId.
@@ -344,6 +356,21 @@ function App(): React.JSX.Element {
   const coverLookupId = useRef(0);
   // The ROM's own icon as the background (DS/3DS) -- for when there's no
   // cover art to look up. Same stale-lookup guard as the cover lookups.
+  // A 3DS game's cloud key comes from its own header; once known, the same
+  // conflict check GBA/DS get when a game opens.
+  const checkGameSaveConflictRef = useRef<((romId: string) => void) | null>(null);
+  const start3dsCloudSync = (path: string, romId: string) => {
+    current3dsCloudKey.current = null;
+    lastSyncedSaveCrc.current = null;
+    saveConflictChecked.current = false;
+    n3dsGameKey(path)
+      .then(key => {
+        current3dsCloudKey.current = key;
+        checkGameSaveConflictRef.current?.(romId);
+      })
+      .catch(() => {});
+  };
+
   const showRomIcon = useCallback((path: string) => {
     const lookupId = ++coverLookupId.current;
     readRomIcon(path).then(url => {
@@ -470,6 +497,7 @@ function App(): React.JSX.Element {
   // -- so the prefix was hardcoded to "gba:" until NDS needed a second
   // one; existing GBA keys are unaffected, they still get exactly that).
   const cloudGameKey = useCallback(() => {
+    if (currentSaveSystem.current === '3ds') return current3dsCloudKey.current;
     const romId = currentRomId.current;
     return romId ? `${currentSaveSystem.current}:${romId}` : null;
   }, []);
@@ -546,21 +574,59 @@ function App(): React.JSX.Element {
   // reads on "continue". Reuses the same cloud list/slot mechanism with a
   // reserved slot number. Only safe while paused, same as the state
   // slots (see EmulatorControlModule.kt).
+  // The in-game save as it goes to the cloud, and the number it's compared
+  // by: a GBA/DS .sav and its CRC32, or a 3DS game's save folder as a zip and
+  // its content fingerprint (docs/3ds-cloud-save.md). Null while there's no
+  // save. newestModified (3DS only) says when the core last wrote to it.
+  const readLocalGameSave = useCallback(
+    async (romId: string): Promise<{bytes: Uint8Array; crc: number; newestModified?: number} | null> => {
+      if (currentSaveSystem.current === '3ds') {
+        const path = current3dsRomPath.current;
+        const local = path ? await n3dsLocalSave(path) : null;
+        return local && {bytes: base64ToBytes(local.base64), crc: local.fingerprint, newestModified: local.newestModified};
+      }
+      const base64 = await getGameSaveBytes(romId);
+      const bytes = base64ToBytes(base64);
+      return {bytes, crc: crc32(bytes)};
+    },
+    [],
+  );
+
+  /** The comparable number for a cloud copy; -1 (3DS) for one without progress. */
+  const remoteGameSaveCrc = useCallback(
+    (bytes: Uint8Array): Promise<number> =>
+      currentSaveSystem.current === '3ds' ? n3dsZipFingerprint(bytesToBase64(bytes)) : Promise.resolve(crc32(bytes)),
+    [],
+  );
+
+  /** Puts a cloud copy in place of the local save (a 3DS game is closed first; see reloadActiveRom). */
+  const writeLocalGameSave = useCallback(async (romId: string, bytes: Uint8Array) => {
+    if (currentSaveSystem.current === '3ds') {
+      if (current3dsRomPath.current) await n3dsRestoreSave(current3dsRomPath.current, bytesToBase64(bytes));
+    } else {
+      await setGameSaveBytes(romId, bytesToBase64(bytes));
+    }
+  }, []);
+
+  const gameSaveFileName = () => (currentSaveSystem.current === '3ds' ? 'game.zip' : 'game.sav');
+
   const handleUploadGameSave = useCallback(async () => {
     const romId = currentRomId.current;
     const gameKey = cloudGameKey();
     if (!authToken || !gameKey || !romId) return;
     setCloudBusySlot(GAME_SAVE_CLOUD_SLOT);
     try {
-      const base64 = await getGameSaveBytes(romId);
-      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, base64ToBytes(base64), 'game.sav');
+      const local = await readLocalGameSave(romId);
+      if (!local) throw new Error('Este juego todavía no ha guardado nada');
+      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, local.bytes, gameSaveFileName());
+      lastSyncedSaveCrc.current = local.crc;
       refreshCloudSaves();
     } catch (e) {
       Alert.alert('No se pudo subir el guardado del juego', e instanceof Error ? e.message : String(e));
     } finally {
       setCloudBusySlot(null);
     }
-  }, [authToken, cloudGameKey, refreshCloudSaves]);
+  }, [authToken, cloudGameKey, readLocalGameSave, refreshCloudSaves]);
 
   const handleDownloadGameSave = useCallback(async () => {
     const romId = currentRomId.current;
@@ -570,17 +636,18 @@ function App(): React.JSX.Element {
     setCloudBusySlot(GAME_SAVE_CLOUD_SLOT);
     try {
       const bytes = await downloadCloudSave(authToken, remote.id);
-      await setGameSaveBytes(romId, bytesToBase64(bytes));
-      // mGBA already has the old save file mapped in memory -- reload the
-      // ROM so it reopens the file we just overwrote from scratch.
-      gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+      await writeLocalGameSave(romId, bytes);
+      lastSyncedSaveCrc.current = await remoteGameSaveCrc(bytes);
+      // The core already has the old save open (mGBA maps it in memory; a
+      // 3DS game was just closed) -- restart it on the one just written.
+      reloadActiveRom(romId);
       closeSaveModal();
     } catch (e) {
       Alert.alert('No se pudo descargar el guardado del juego', e instanceof Error ? e.message : String(e));
     } finally {
       setCloudBusySlot(null);
     }
-  }, [authToken, cloudSaves]);
+  }, [authToken, cloudSaves, writeLocalGameSave, remoteGameSaveCrc]);
 
   // CRC of the game-save bytes as of the last successful upload/download,
   // so the periodic auto-sync effect can tell "changed since we last
@@ -628,7 +695,9 @@ function App(): React.JSX.Element {
   }, [saveModalOpen, setActiveViewPaused]);
 
   const reloadActiveRom = useCallback((romId: string) => {
-    if (currentSaveSystem.current === 'nds') {
+    if (currentSaveSystem.current === '3ds') {
+      if (current3dsRomPath.current) n3dsRef.current?.loadRomPath(current3dsRomPath.current);
+    } else if (currentSaveSystem.current === 'nds') {
       if (currentDsRomPath.current) dsRef.current?.loadRomPath(currentDsRomPath.current, romId);
     } else {
       gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
@@ -651,8 +720,10 @@ function App(): React.JSX.Element {
       try {
         const saves = await listCloudSaves(authToken);
         const remote = saves.find(s => s.gameKey === gameKey && s.slot === GAME_SAVE_CLOUD_SLOT);
-        const localBase64 = await readGameSavePaused(romId);
-        const localCrc = localBase64 ? crc32(base64ToBytes(localBase64)) : null;
+        const local = currentSaveSystem.current === '3ds' ? await readLocalGameSave(romId) : null;
+        const localBase64 = currentSaveSystem.current === '3ds' ? null : await readGameSavePaused(romId);
+        const localBytes = local ? local.bytes : localBase64 ? base64ToBytes(localBase64) : null;
+        const localCrc = local ? local.crc : localBytes ? crc32(localBytes) : null;
 
         if (!remote) {
           saveConflictChecked.current = true; // Nothing in the cloud yet -- the autosync timer will create it.
@@ -660,10 +731,12 @@ function App(): React.JSX.Element {
         }
 
         const remoteBytes = await downloadCloudSave(authToken, remote.id);
-        const remoteCrc = crc32(remoteBytes);
+        const remoteCrc = await remoteGameSaveCrc(remoteBytes);
         const remoteDate = formatCloudTimestamp(remote.updatedAt);
 
-        if (localCrc === remoteCrc) {
+        // A cloud copy with no progress in it (3DS: just the core's metadata)
+        // is nothing worth offering over the local save.
+        if (localCrc === remoteCrc || remoteCrc === -1) {
           lastSyncedSaveCrc.current = remoteCrc;
           saveConflictChecked.current = true;
           return;
@@ -678,7 +751,7 @@ function App(): React.JSX.Element {
               {
                 text: 'Descargar',
                 onPress: async () => {
-                  await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
+                  await writeLocalGameSave(romId, remoteBytes);
                   lastSyncedSaveCrc.current = remoteCrc;
                   saveConflictChecked.current = true;
                   reloadActiveRom(romId);
@@ -696,7 +769,7 @@ function App(): React.JSX.Element {
             {
               text: 'Este dispositivo',
               onPress: async () => {
-                await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, base64ToBytes(localBase64!), 'game.sav');
+                await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, localBytes!, gameSaveFileName());
                 lastSyncedSaveCrc.current = localCrc;
                 saveConflictChecked.current = true;
                 refreshCloudSaves();
@@ -705,7 +778,7 @@ function App(): React.JSX.Element {
             {
               text: 'La nube',
               onPress: async () => {
-                await setGameSaveBytes(romId, bytesToBase64(remoteBytes));
+                await writeLocalGameSave(romId, remoteBytes);
                 lastSyncedSaveCrc.current = remoteCrc;
                 saveConflictChecked.current = true;
                 reloadActiveRom(romId);
@@ -717,8 +790,9 @@ function App(): React.JSX.Element {
         // Best-effort -- skip silently, the manual Subir/Bajar buttons still work.
       }
     },
-    [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, reloadActiveRom],
+    [authToken, cloudGameKey, readGameSavePaused, readLocalGameSave, refreshCloudSaves, reloadActiveRom, remoteGameSaveCrc, writeLocalGameSave],
   );
+  checkGameSaveConflictRef.current = checkGameSaveConflict;
 
   // Silently pushes the current in-game save to the cloud if it changed
   // since the last sync -- the "cada que haya un cambio... se actualice
@@ -728,10 +802,12 @@ function App(): React.JSX.Element {
   // (same as GBA's SRAM/flash) even though its ROM isn't, so this reuses
   // the exact same path -- only the full-state autosave below is
   // GBA-only.
-  const autoSyncGameSave = useCallback(async () => {
+  // settled: the game is paused or closed, so nothing is mid-write (see the
+  // 3DS check below).
+  const autoSyncGameSave = useCallback(async (settled = false) => {
     const romId = currentRomId.current;
     const gameKey = cloudGameKey();
-    if (!authToken || !gameKey || !romId || (system !== 'gba' && system !== 'nds')) return;
+    if (!authToken || !gameKey || !romId || (system !== 'gba' && system !== 'nds' && system !== '3ds')) return;
     // Never push blind: the very first sync for this ROM (typically
     // "logged in after the ROM was already loaded") must reconcile
     // against whatever's already in the cloud instead of assuming local
@@ -740,24 +816,32 @@ function App(): React.JSX.Element {
       checkGameSaveConflict(romId);
       return;
     }
-    const base64 = await readGameSavePaused(romId);
-    if (!base64) return;
-    const crc = crc32(base64ToBytes(base64));
-    if (crc === lastSyncedSaveCrc.current) return;
+    let local: {bytes: Uint8Array; crc: number; newestModified?: number} | null;
+    if (system === '3ds') {
+      local = await readLocalGameSave(romId).catch(() => null);
+      // A 3DS save is many files the core writes straight into while the
+      // game runs: one touched in the last 5s may be half written.
+      if (local && !settled && Date.now() - (local.newestModified ?? 0) < 5000) return;
+    } else {
+      const base64 = await readGameSavePaused(romId);
+      local = base64 ? {bytes: base64ToBytes(base64), crc: crc32(base64ToBytes(base64))} : null;
+    }
+    if (!local || local.crc === lastSyncedSaveCrc.current) return;
     try {
-      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, base64ToBytes(base64), 'game.sav');
-      lastSyncedSaveCrc.current = crc;
+      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, local.bytes, gameSaveFileName());
+      lastSyncedSaveCrc.current = local.crc;
       refreshCloudSaves();
     } catch {
       // Best-effort -- the next tick (or the manual "Subir" button) retries.
     }
-  }, [authToken, cloudGameKey, readGameSavePaused, refreshCloudSaves, system, checkGameSaveConflict]);
+  }, [authToken, cloudGameKey, readGameSavePaused, readLocalGameSave, refreshCloudSaves, system, checkGameSaveConflict]);
 
   useEffect(() => {
-    if (screen !== 'game' || (system !== 'gba' && system !== 'nds') || !authToken) return;
-    const interval = setInterval(autoSyncGameSave, AUTOSAVE_INTERVAL_MS);
+    if (screen !== 'game' || (system !== 'gba' && system !== 'nds' && system !== '3ds') || !authToken) return;
+    const interval = setInterval(() => autoSyncGameSave(), AUTOSAVE_INTERVAL_MS);
     const sub = AppState.addEventListener('change', state => {
-      if (state !== 'active') autoSyncGameSave();
+      // Backgrounded: the game pauses with the window, nothing is mid-write.
+      if (state !== 'active') autoSyncGameSave(true);
     });
     return () => {
       clearInterval(interval);
@@ -771,7 +855,7 @@ function App(): React.JSX.Element {
   // instant a session appears instead of waiting up to AUTOSAVE_INTERVAL_MS
   // for autoSyncGameSave's own fallback to kick in.
   useEffect(() => {
-    if (screen !== 'game' || (system !== 'gba' && system !== 'nds') || !authToken) return;
+    if (screen !== 'game' || (system !== 'gba' && system !== 'nds' && system !== '3ds') || !authToken) return;
     if (saveConflictChecked.current) return;
     const romId = currentRomId.current;
     if (romId) checkGameSaveConflict(romId);
@@ -916,12 +1000,15 @@ function App(): React.JSX.Element {
           setEditingControls(false);
           // The 3DS game outlives its view (N3dsSession), so this still
           // saves it after the screen is gone.
-          if (system === '3ds') autoSaveState();
+          if (system === '3ds') {
+            autoSaveState();
+            autoSyncGameSave(true);
+          }
           setScreen('home');
         },
       },
     ]);
-  }, [system, autoSaveState]);
+  }, [system, autoSaveState, autoSyncGameSave]);
 
   const openSaveModal = useCallback(() => {
     setSaveModalOpen(true);
@@ -1065,6 +1152,7 @@ function App(): React.JSX.Element {
         setRomLabel(picked.name);
         setCoverImageUrl(null);
         showRomIcon(romPath);
+        start3dsCloudSync(romPath, romId);
         setStateSlots([]);
         setSystem('3ds');
         setScreen('game');
@@ -1208,6 +1296,7 @@ function App(): React.JSX.Element {
           setRomLabel(rom.label);
           setCoverImageUrl(null);
           showRomIcon(current3dsRomPath.current);
+          start3dsCloudSync(current3dsRomPath.current, currentRomId.current);
           setStateSlots([]);
           setSystem('3ds');
           setScreen('game');
@@ -1901,9 +1990,10 @@ function App(): React.JSX.Element {
   // content, only the surrounding <Modal>/<Pressable> backdrop differs
   // per layout (well, it doesn't -- but keeping one JSX literal here
   // avoids maintaining two copies of this large block in sync).
-  // Cloud sync covers GBA/DS; a 3DS keeps its saves inside the emulated
-  // console's storage, which isn't packaged for the cloud yet.
-  const cloudEnabled = !!authToken && system !== '3ds';
+  // The in-game save syncs on every system; a 3DS state is ~11MB, over what
+  // the cloud takes, so those stay local.
+  const cloudEnabled = !!authToken;
+  const stateCloudEnabled = !!authToken && system !== '3ds';
   const saveModalContent = (
     <>
       <Text style={styles.modalTitle}>Guardado manual</Text>
@@ -1951,7 +2041,7 @@ function App(): React.JSX.Element {
                       <Text style={[styles.slotActionLabel, !info.exists && styles.slotActionLabelDisabled]}>Cargar</Text>
                     </Pressable>
                   </View>
-                  {cloudEnabled && (
+                  {stateCloudEnabled && (
                     <View style={styles.slotActions}>
                       <Pressable
                         style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusy && styles.slotActionButtonDisabled]}
@@ -2067,7 +2157,11 @@ function App(): React.JSX.Element {
         </View>
       )}
       {system === '3ds' ? (
-        <Text style={styles.modalCloudHint}>En 3DS los guardados en la nube todavía no están disponibles.</Text>
+        <Text style={styles.modalCloudHint}>
+          {authToken
+            ? 'En 3DS solo el guardado del juego va a la nube; los slots se quedan en este teléfono.'
+            : 'Inicia sesión en Cuenta para sincronizar el guardado del juego en la nube.'}
+        </Text>
       ) : (
         !authToken && <Text style={styles.modalCloudHint}>Inicia sesión en Cuenta para sincronizar guardados en la nube.</Text>
       )}
