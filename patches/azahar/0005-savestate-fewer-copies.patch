@@ -1,0 +1,47 @@
+diff --git a/src/core/savestate.cpp b/src/core/savestate.cpp
+index 16c3db6..992ee08 100644
+--- a/src/core/savestate.cpp
++++ b/src/core/savestate.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include <chrono>
+ #include <sstream>
++#include <boost/iostreams/device/array.hpp>
++#include <boost/iostreams/stream.hpp>
+ #include <cryptopp/hex.h>
+ #include <fmt/ranges.h>
+ #include "common/archives.h"
+@@ -248,7 +250,10 @@ std::vector<u8> System::SaveStateBuffer() const {
+     oarchive oa{sstream};
+     oa&* this;
+ 
+-    const std::string& str{sstream.str()};
++    // A view, not str(): that copied the whole serialized console (~140MB on an
++    // original 3DS) once more before compressing, enough to get the app
++    // killed for memory on a 4GB phone.
++    const std::string_view str{sstream.view()};
+     const auto data = std::span<const u8>{reinterpret_cast<const u8*>(str.data()), str.size()};
+     auto buffer = Common::Compression::CompressDataZSTDDefault(data);
+ 
+@@ -305,13 +310,14 @@ bool System::LoadStateBuffer(std::vector<u8> buffer) {
+         return false;
+     }
+ 
+-    std::vector<u8> state(buffer.begin() + sizeof(CSTHeader), buffer.end());
+-    auto decompressed = Common::Compression::DecompressDataZSTD(state);
+-
+-    std::istringstream sstream{
+-        std::string{reinterpret_cast<char*>(decompressed.data()), decompressed.size()},
+-        std::ios_base::binary};
+-    decompressed.clear();
++    // Decompressed straight from the buffer and read in place: this used to
++    // copy the compressed state, then the decompressed one into a string,
++    // then that string into an istringstream -- three copies of the whole
++    // console, enough to get the app killed for memory on a 4GB phone.
++    const auto decompressed = Common::Compression::DecompressDataZSTD(
++        std::span<const u8>{buffer.data() + sizeof(CSTHeader), buffer.size() - sizeof(CSTHeader)});
++    boost::iostreams::stream<boost::iostreams::array_source> sstream{
++        reinterpret_cast<const char*>(decompressed.data()), decompressed.size()};
+ 
+     // Deserialize
+     iarchive ia{sstream};
