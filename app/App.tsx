@@ -1644,12 +1644,34 @@ function App(): React.JSX.Element {
         : system === '3ds'
           ? styles.screen3ds.width
           : styles.screen.width;
+  const portraitScreenBaseHeight =
+    system === 'gba'
+      ? styles.screenGba.height
+      : system === 'nds'
+        ? styles.screenDs.height
+        : system === '3ds'
+          ? styles.screen3ds.height
+          : styles.screen.height;
+  // Where the portrait controls (L/R, Home and the menu included) begin. A
+  // full-width DS -- two stacked screens -- is taller than the room above
+  // them on most phones, and the L/R row then sat on the bottom strip of
+  // the touch screen, swallowing taps there. So the default is full width
+  // unless that runs into the controls; 0 until measured.
+  const [portraitControlsTop, setPortraitControlsTop] = useState(0);
   const defaultControlLayout = useMemo<ControlLayout>(
     () =>
       isLandscape
         ? DEFAULT_CONTROL_LAYOUT_LANDSCAPE
-        : {offsets: {}, scales: {screen: windowWidth / portraitScreenBaseWidth}},
-    [isLandscape, windowWidth, portraitScreenBaseWidth],
+        : {
+            offsets: {},
+            scales: {
+              screen: Math.min(
+                windowWidth / portraitScreenBaseWidth,
+                portraitControlsTop > 0 ? portraitControlsTop / portraitScreenBaseHeight : Infinity,
+              ),
+            },
+          },
+    [isLandscape, windowWidth, portraitScreenBaseWidth, portraitScreenBaseHeight, portraitControlsTop],
   );
   // Until this system+orientation's own layout has loaded, its default --
   // never the previous one's. Switching systems used to render the new
@@ -2168,31 +2190,31 @@ function App(): React.JSX.Element {
               return (
                 <View key={slot} style={styles.slotCard}>
                   <View style={styles.slotCardTop}>
-                    <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
+                    <View style={{flex: 1}}>
+                      <Text style={styles.slotLabel}>Slot {slot + 1}</Text>
+                      <Text style={styles.slotMeta} numberOfLines={1}>
+                        {info.exists
+                          ? new Date(info.savedAt ?? 0).toLocaleString(undefined, {
+                              day: '2-digit',
+                              month: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                          : 'Vacío'}
+                        {cloud ? ` · Nube: ${formatCloudTimestamp(cloud.updatedAt)}` : ''}
+                      </Text>
+                    </View>
                     {info.exists && (
-                      <Pressable hitSlop={8} onPress={() => handleDeleteSlot(slot)}>
-                        <IconTrash size={13} />
+                      <Pressable style={styles.slotDelete} hitSlop={8} onPress={() => handleDeleteSlot(slot)}>
+                        <IconTrash size={18} />
                       </Pressable>
                     )}
                   </View>
-                  <Text style={styles.slotMeta} numberOfLines={1}>
-                    {info.exists
-                      ? new Date(info.savedAt ?? 0).toLocaleString(undefined, {
-                          day: '2-digit',
-                          month: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
-                      : 'Vacío'}
-                  </Text>
-                  {cloud && (
-                    <Text style={styles.slotMeta} numberOfLines={1}>
-                      Nube: {formatCloudTimestamp(cloud.updatedAt)}
-                    </Text>
-                  )}
                   <View style={styles.slotActions}>
                     <Pressable style={styles.slotActionButton} onPress={() => handleSaveSlot(slot)}>
-                      <Text style={styles.slotActionLabel}>Guardar</Text>
+                      <Text style={styles.slotActionLabel} numberOfLines={1}>
+                        Guardar
+                      </Text>
                     </Pressable>
                     <Pressable
                       style={[styles.slotActionButton, !info.exists && styles.slotActionButtonDisabled]}
@@ -2200,37 +2222,48 @@ function App(): React.JSX.Element {
                       onPress={() => handleLoadSlot(slot)}>
                       <Text style={[styles.slotActionLabel, !info.exists && styles.slotActionLabelDisabled]}>Cargar</Text>
                     </Pressable>
+                    {stateCloudEnabled && (
+                      <>
+                        {/* Nothing to upload from an empty slot. */}
+                        <Pressable
+                          style={[
+                            styles.slotActionButton,
+                            styles.slotActionButtonCloud,
+                            (!info.exists || cloudBusy) && styles.slotActionButtonDisabled,
+                          ]}
+                          disabled={!info.exists || cloudBusy}
+                          onPress={() => handleUploadCloudSlot(slot)}>
+                          {cloudBusy ? (
+                            <ActivityIndicator size="small" color="#a0ffe8" />
+                          ) : (
+                            <>
+                              <IconCloud size={14} color={info.exists ? '#a0ffe8' : '#777'} />
+                              <Text
+                                style={[
+                                  styles.slotActionLabel,
+                                  info.exists ? styles.slotActionLabelCloud : styles.slotActionLabelDisabled,
+                                ]}>
+                                Subir
+                              </Text>
+                            </>
+                          )}
+                        </Pressable>
+                        <Pressable
+                          style={[
+                            styles.slotActionButton,
+                            styles.slotActionButtonCloud,
+                            (!cloud || cloudBusy) && styles.slotActionButtonDisabled,
+                          ]}
+                          disabled={!cloud || cloudBusy}
+                          onPress={() => handleDownloadCloudSlot(slot)}>
+                          <IconCloud size={14} color={cloud ? '#a0ffe8' : '#777'} />
+                          <Text style={[styles.slotActionLabel, cloud ? styles.slotActionLabelCloud : styles.slotActionLabelDisabled]}>
+                            Bajar
+                          </Text>
+                        </Pressable>
+                      </>
+                    )}
                   </View>
-                  {stateCloudEnabled && (
-                    <View style={styles.slotActions}>
-                      <Pressable
-                        style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusy && styles.slotActionButtonDisabled]}
-                        disabled={cloudBusy}
-                        onPress={() => handleUploadCloudSlot(slot)}>
-                        {cloudBusy ? (
-                          <ActivityIndicator size="small" color="#a0ffe8" />
-                        ) : (
-                          <>
-                            <IconCloud size={11} color="#a0ffe8" />
-                            <Text style={[styles.slotActionLabel, styles.slotActionLabelCloud]}>Subir</Text>
-                          </>
-                        )}
-                      </Pressable>
-                      <Pressable
-                        style={[
-                          styles.slotActionButton,
-                          styles.slotActionButtonCloud,
-                          (!cloud || cloudBusy) && styles.slotActionButtonDisabled,
-                        ]}
-                        disabled={!cloud || cloudBusy}
-                        onPress={() => handleDownloadCloudSlot(slot)}>
-                        <IconCloud size={11} color={cloud ? '#a0ffe8' : '#777'} />
-                        <Text style={[styles.slotActionLabel, cloud && styles.slotActionLabelCloud, !cloud && styles.slotActionLabelDisabled]}>
-                          Bajar
-                        </Text>
-                      </Pressable>
-                    </View>
-                  )}
                 </View>
               );
             })}
@@ -2258,7 +2291,7 @@ function App(): React.JSX.Element {
                   </Text>
                 </View>
                 <Pressable
-                  style={[styles.slotActionButton, !autoInfo.exists && styles.slotActionButtonDisabled]}
+                  style={[styles.slotActionButton, styles.slotActionSolo, !autoInfo.exists && styles.slotActionButtonDisabled]}
                   disabled={!autoInfo.exists}
                   onPress={() => handleLoadSlot(AUTOSAVE_SLOT)}>
                   <Text style={[styles.slotActionLabel, !autoInfo.exists && styles.slotActionLabelDisabled]}>Cargar</Text>
@@ -2270,8 +2303,8 @@ function App(): React.JSX.Element {
       )}
 
       {cloudEnabled && (
-        <View style={styles.gameSaveRow}>
-          <View style={{flex: 1}}>
+        <View style={[styles.slotCard, styles.gameSaveCard]}>
+          <View>
             <Text style={styles.slotLabel}>Guardado del juego</Text>
             <Text style={styles.slotMeta} numberOfLines={1}>
               {(() => {
@@ -2289,7 +2322,7 @@ function App(): React.JSX.Element {
                 <ActivityIndicator size="small" color="#a0ffe8" />
               ) : (
                 <>
-                  <IconCloud size={11} color="#a0ffe8" />
+                  <IconCloud size={14} color="#a0ffe8" />
                   <Text style={[styles.slotActionLabel, styles.slotActionLabelCloud]}>Subir</Text>
                 </>
               )}
@@ -2303,7 +2336,7 @@ function App(): React.JSX.Element {
               ]}
               disabled={!cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) || cloudBusySlot === GAME_SAVE_CLOUD_SLOT}
               onPress={handleDownloadGameSave}>
-              <IconCloud size={11} color={cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) ? '#a0ffe8' : '#777'} />
+              <IconCloud size={14} color={cloudSaves.some(s => s.slot === GAME_SAVE_CLOUD_SLOT) ? '#a0ffe8' : '#777'} />
               <Text
                 style={[
                   styles.slotActionLabel,
@@ -2391,8 +2424,10 @@ function App(): React.JSX.Element {
 
         <Modal visible={saveModalOpen} transparent animationType="fade" onRequestClose={closeSaveModal}>
           <Pressable style={styles.modalBackdrop} onPress={closeSaveModal}>
-            <Pressable style={styles.modalCard} onPress={() => {}}>
-              {saveModalContent}
+            <Pressable style={[styles.modalCard, styles.menuCard]} onPress={() => {}}>
+              <ScrollView style={styles.menuScroll} contentContainerStyle={styles.menuScrollContent}>
+                {saveModalContent}
+              </ScrollView>
             </Pressable>
           </Pressable>
         </Modal>
@@ -2440,7 +2475,7 @@ function App(): React.JSX.Element {
               scrollContent's justifyContent:'space-between') so controls
               stay in comfortable thumb reach instead of bunching up right
               under the screen. */}
-          <View style={styles.bottomGroup}>
+          <View style={styles.bottomGroup} onLayout={e => setPortraitControlsTop(e.nativeEvent.layout.y)}>
             {/* One shared touch surface for D-pad/A/B/L/R/SELECT/START -- see
                 GameControls for why these can no longer be separate Pressables
                 (L/R only do anything, and light up, once a GBA ROM is loaded). */}
@@ -2475,8 +2510,10 @@ function App(): React.JSX.Element {
       {/* Floating, pauses the game while open -- see openSaveModal/closeSaveModal. */}
       <Modal visible={saveModalOpen} transparent animationType="fade" onRequestClose={closeSaveModal}>
         <Pressable style={styles.modalBackdrop} onPress={closeSaveModal}>
-          <Pressable style={styles.modalCard} onPress={() => {}}>
-            {saveModalContent}
+          <Pressable style={[styles.modalCard, styles.menuCard]} onPress={() => {}}>
+            <ScrollView style={styles.menuScroll} contentContainerStyle={styles.menuScrollContent}>
+              {saveModalContent}
+            </ScrollView>
           </Pressable>
         </Pressable>
       </Modal>
@@ -3370,29 +3407,32 @@ const styles = StyleSheet.create({
     backgroundColor: '#2f5f8f',
   },
   modalCloseLabel: {color: '#fff', fontWeight: '700', fontSize: 13},
-  slotsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  slotsRow: {width: '100%', gap: 8},
   slotCard: {
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    width: '100%',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     borderRadius: 10,
     backgroundColor: '#242526',
-    width: 96,
   },
+  gameSaveCard: {marginTop: 12},
   slotCardTop: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 6},
-  slotLabel: {color: '#ddd', fontSize: 12, fontWeight: '700'},
-  slotMeta: {color: '#777', fontSize: 10},
-  slotActions: {flexDirection: 'row', gap: 4, marginTop: 4},
+  slotDelete: {width: 36, height: 36, alignItems: 'center', justifyContent: 'center'},
+  slotLabel: {color: '#ddd', fontSize: 14, fontWeight: '700'},
+  slotMeta: {color: '#8a8a8a', fontSize: 12, marginTop: 2},
+  slotActions: {flexDirection: 'row', gap: 6},
+  // 44dp tall: these are tapped mid-game, often in a hurry.
   slotActionButton: {
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    borderRadius: 6,
+    flex: 1,
+    minHeight: 44,
+    paddingHorizontal: 2,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#3a5a7a',
   },
+  slotActionSolo: {flex: 0, paddingHorizontal: 20},
   slotActionButtonDisabled: {backgroundColor: '#2a2a2a', opacity: 0.5},
   slotActionButtonCloud: {
     flexDirection: 'row',
@@ -3400,7 +3440,7 @@ const styles = StyleSheet.create({
     gap: 4,
     backgroundColor: '#1e5c4f',
   },
-  slotActionLabel: {color: '#fff', fontSize: 9, fontWeight: '700'},
+  slotActionLabel: {color: '#fff', fontSize: 12, fontWeight: '700'},
   slotActionLabelDisabled: {color: '#777'},
   slotActionLabelCloud: {color: '#a0ffe8'},
   modalCloudHint: {color: '#666', fontSize: 10, textAlign: 'center', marginTop: 10, paddingHorizontal: 8},
@@ -3410,8 +3450,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     backgroundColor: '#242526',
     borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     marginTop: 12,
     width: '100%',
   },

@@ -34,4 +34,5 @@ android {
 dependencies {
     implementation("com.facebook.react:react-android")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    testImplementation("junit:junit:4.13.2")
 }

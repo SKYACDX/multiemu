@@ -6,6 +6,31 @@ import {IconAccount, IconCartridge, IconClose, IconFile, IconFolder, IconGlobe, 
 const SYSTEM_LABEL: Record<string, string> = {gb: 'GB', gbc: 'GBC', gba: 'GBA', nds: 'NDS', '3ds': '3DS'};
 const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba: '#c2536a', nds: '#8e5cd9', '3ds': '#d9534f'};
 
+// Same names and sizes as the desktop app's library (multiemu_exe
+// src/renderer/library.js): the title inside a DS/3DS game, else the file
+// name without its extension, a leading "1234 - " or anything in ( ) / [ ].
+function gameName(rom: CachedRom): string {
+  if (rom.title) return rom.title;
+  const tidy = rom.label
+    .replace(/\.[^.]+$/, '')
+    .replace(/^\d+\s+-\s+/, '')
+    .replace(/\s*[([][^)\]]*[)\]]/g, '')
+    .trim();
+  return tidy || rom.label;
+}
+
+// "2 GB", "16 MB", "65 KB": the largest unit with a whole number in front.
+const sizeNumber = new Intl.NumberFormat('es', {maximumFractionDigits: 1});
+function sizeText(bytes: number): string {
+  for (const [unit, size] of [['GB', 1024 ** 3], ['MB', 1024 ** 2], ['KB', 1024]] as const) {
+    if (bytes >= size) return `${sizeNumber.format(bytes / size)} ${unit}`;
+  }
+  return `${bytes} B`;
+}
+
+// A .gbc plays on the Game Boy core (system 'gb'), but it's a Game Boy Color game.
+const badgeSystem = (rom: CachedRom) => (rom.system === 'gb' && /\.gbc$/i.test(rom.name) ? 'gbc' : rom.system);
+
 interface Props {
   recentRoms: CachedRom[];
   onSelectRecent: (rom: CachedRom) => void;
@@ -125,20 +150,20 @@ export default function HomeScreen({
         contentContainerStyle={styles.list}
         renderItem={({item}) => (
           <Pressable style={styles.slotCard} onPress={() => onSelectRecent(item)}>
-            <View style={[styles.slotCardAccent, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]} />
+            <View style={[styles.slotCardAccent, {backgroundColor: SYSTEM_COLOR[badgeSystem(item)] ?? '#555'}]} />
             <View style={styles.slotCardTop}>
-              <View style={[styles.systemBadge, {backgroundColor: SYSTEM_COLOR[item.system] ?? '#555'}]}>
-                <Text style={styles.systemBadgeLabel}>{SYSTEM_LABEL[item.system] ?? item.system.toUpperCase()}</Text>
+              <View style={[styles.systemBadge, {backgroundColor: SYSTEM_COLOR[badgeSystem(item)] ?? '#555'}]}>
+                <Text style={styles.systemBadgeLabel}>{SYSTEM_LABEL[badgeSystem(item)] ?? item.system.toUpperCase()}</Text>
               </View>
               <Pressable hitSlop={10} onPress={() => onDeleteRecent(item)}>
                 <IconClose size={14} color="#777" />
               </Pressable>
             </View>
             <Text style={styles.romLabel} numberOfLines={2}>
-              {item.label}
+              {gameName(item)}
             </Text>
             <Text style={styles.romMeta} numberOfLines={1}>
-              {(item.size / 1024 / 1024).toFixed(1)} MB
+              {sizeText(item.size)}
             </Text>
           </Pressable>
         )}

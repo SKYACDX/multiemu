@@ -5,6 +5,8 @@ export interface CachedRom {
   name: string;
   system: string;
   label: string;
+  /** The name inside a DS/3DS game (see RomTitle.kt); '' when it has none. */
+  title?: string;
   size: number;
   savedAt: number;
 }

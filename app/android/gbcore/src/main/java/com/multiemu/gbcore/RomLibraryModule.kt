@@ -170,9 +170,18 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         try {
             val index = readIndex()
             val result: WritableArray = Arguments.createArray()
+            // The name inside each DS/3DS game, read once and kept in the
+            // index ("" when it has none): see RomTitle.
+            var titled = false
             for (i in index.length() - 1 downTo 0) {
-                result.pushMap(index.getJSONObject(i).toWritableMap())
+                val entry = index.getJSONObject(i)
+                if (!entry.has("title")) {
+                    entry.put("title", RomTitle.read(romFile(entry.getString("id")), entry.getString("system")) ?: "")
+                    titled = true
+                }
+                result.pushMap(entry.toWritableMap())
             }
+            if (titled) writeIndex(index)
             promise.resolve(result)
         } catch (e: Exception) {
             promise.reject("CACHE_READ_ERROR", e.message, e)
@@ -243,6 +252,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         map.putString("name", getString("name"))
         map.putString("system", getString("system"))
         map.putString("label", getString("label"))
+        map.putString("title", optString("title", ""))
         map.putDouble("size", getLong("size").toDouble())
         map.putDouble("savedAt", getLong("savedAt").toDouble())
         return map
