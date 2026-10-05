@@ -17,6 +17,7 @@ interface RomFilePickerNativeModule {
   pickRomPath(extensions: string[]): Promise<PickedRomPath>;
   readFileAsBase64(path: string): Promise<string>;
   readFileHeaderBase64(path: string, length: number): Promise<string>;
+  readRomIcon(path: string): Promise<string | null>;
   downloadRom(url: string, fileName: string, extensions: string[]): Promise<PickedRomPath>;
 }
 
@@ -76,6 +77,15 @@ export function readFileAsBase64(path: string): Promise<string> {
 /** Reads just the first `length` bytes of a file at a plain path, as base64 -- e.g. an NDS ROM's header, without loading the whole file. */
 export function readFileHeaderBase64(path: string, length: number): Promise<string> {
   return RomFilePicker.readFileHeaderBase64(path, length);
+}
+
+/**
+ * The icon a DS/3DS game carries in its own ROM, as a PNG data URL (null if
+ * it has none) -- the blurred in-game background when RomHack Hub has no
+ * cover art for it. Never throws.
+ */
+export function readRomIcon(path: string): Promise<string | null> {
+  return RomFilePicker.readRomIcon(path).catch(() => null);
 }
 
 /**

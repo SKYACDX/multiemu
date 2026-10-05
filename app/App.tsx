@@ -20,7 +20,7 @@
  * @format
  */
 
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -43,7 +43,7 @@ import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import DsView, {DsButton, DsViewHandle} from './src/DsView';
 import N3dsView, {N3dsButton, N3dsViewHandle} from './src/N3dsView';
-import {IconCloud, IconHome, IconPencil, IconSave, IconTrash, IconTriangle} from './src/icons';
+import {IconCloud, IconHome, IconMenu, IconPencil, IconSave, IconTrash, IconTriangle} from './src/icons';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
 import HubScreen from './src/HubScreen';
@@ -61,6 +61,7 @@ import {
   pickRomFilePath,
   readFileAsBase64,
   readFileHeaderBase64,
+  readRomIcon,
   RomPickerCancelledError,
 } from './src/RomFilePicker';
 import {
@@ -141,7 +142,10 @@ type ScalableId = ClusterId;
 interface ControlLayout {
   offsets: Partial<Record<ClusterId, ClusterOffset>>;
   scales: Partial<Record<ScalableId, number>>;
+  // 2 since portrait screens default to the full width; see the loader.
+  v?: number;
 }
+const CONTROL_LAYOUT_VERSION = 2;
 const DEFAULT_CONTROL_LAYOUT: ControlLayout = {offsets: {}, scales: {}};
 /**
  * L and R used to be one draggable cluster keyed 'shoulders'; they are
@@ -337,6 +341,14 @@ function App(): React.JSX.Element {
   // landing after a newer one has already loaded.
   const [coverImageUrl, setCoverImageUrl] = useState<string | null>(null);
   const coverLookupId = useRef(0);
+  // The ROM's own icon as the background (DS/3DS) -- for when there's no
+  // cover art to look up. Same stale-lookup guard as the cover lookups.
+  const showRomIcon = useCallback((path: string) => {
+    const lookupId = ++coverLookupId.current;
+    readRomIcon(path).then(url => {
+      if (coverLookupId.current === lookupId) setCoverImageUrl(url);
+    });
+  }, []);
 
   // RomHack Hub account session -- token kept only in memory + native
   // SharedPreferences (see saveAuthSession/getAuthSession), never in JS
@@ -871,6 +883,35 @@ function App(): React.JSX.Element {
     [system],
   );
 
+  // The in-game menu: speed, saves and the controls editor, out of the way
+  // of the screen and the buttons. The game pauses while it is open.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const openMenu = useCallback(() => {
+    setActiveViewPaused(true);
+    setMenuOpen(true);
+  }, [setActiveViewPaused]);
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+    setActiveViewPaused(false);
+  }, [setActiveViewPaused]);
+
+  // Home is one tap from the controls, so it asks first: leaving by
+  // accident drops whatever happened since the last save.
+  const confirmExitToHome = useCallback(() => {
+    Alert.alert('¿Salir del juego?', 'Volverás al inicio. Lo que no hayas guardado podría perderse.', [
+      {text: 'Seguir jugando', style: 'cancel'},
+      {
+        text: 'Salir',
+        style: 'destructive',
+        onPress: () => {
+          setMenuOpen(false);
+          setEditingControls(false);
+          setScreen('home');
+        },
+      },
+    ]);
+  }, []);
+
   const openSaveModal = useCallback(() => {
     setSaveModalOpen(true);
     setActiveViewPaused(true);
@@ -1006,6 +1047,7 @@ function App(): React.JSX.Element {
         current3dsRomPath.current = romPath;
         setRomLabel(picked.name);
         setCoverImageUrl(null);
+        showRomIcon(romPath);
         setStateSlots([]);
         setSystem('3ds');
         setScreen('game');
@@ -1044,7 +1086,7 @@ function App(): React.JSX.Element {
         readFileHeaderBase64(dsPath, 0x0c)
           .then(base64 => {
             const romTitle = readRomTitle(base64ToBytes(base64), 'nds');
-            return findCoverArt('nds', romTitle);
+            return findCoverArt('nds', romTitle).then(url => url ?? readRomIcon(dsPath));
           })
           .then(url => {
             if (coverLookupId.current === lookupId) setCoverImageUrl(url);
@@ -1148,6 +1190,7 @@ function App(): React.JSX.Element {
           hasUserRom.current = true;
           setRomLabel(rom.label);
           setCoverImageUrl(null);
+          showRomIcon(current3dsRomPath.current);
           setStateSlots([]);
           setSystem('3ds');
           setScreen('game');
@@ -1176,7 +1219,7 @@ function App(): React.JSX.Element {
           readFileHeaderBase64(dsPath, 0x0c)
             .then(base64 => {
               const romTitle = readRomTitle(base64ToBytes(base64), 'nds');
-              return findCoverArt('nds', romTitle);
+              return findCoverArt('nds', romTitle).then(url => url ?? readRomIcon(dsPath));
             })
             .then(url => {
               if (coverLookupId.current === lookupId) setCoverImageUrl(url);
@@ -1238,7 +1281,7 @@ function App(): React.JSX.Element {
           readFileHeaderBase64(dsPath, 0x0c)
             .then(base64 => {
               const romTitle = readRomTitle(base64ToBytes(base64), 'nds');
-              return findCoverArt('nds', romTitle);
+              return findCoverArt('nds', romTitle).then(url => url ?? readRomIcon(dsPath));
             })
             .then(url => {
               if (coverLookupId.current === lookupId) setCoverImageUrl(url);
@@ -1361,11 +1404,23 @@ function App(): React.JSX.Element {
   // layout, and landscape's fixed-corner controls need a different
   // default scale than portrait's stacked-below-the-screen ones.
   const controlLayoutKey = `controlLayout_${system}_${isLandscape ? 'landscape' : 'portrait'}`;
-  const defaultControlLayout = isLandscape
-    ? DEFAULT_CONTROL_LAYOUT_LANDSCAPE
-    : system === 'nds' || system === '3ds'
-      ? DEFAULT_CONTROL_LAYOUT_NDS
-      : DEFAULT_CONTROL_LAYOUT;
+  // Portrait: every screen spans the full width of the device by default,
+  // whatever its base size -- the scale that does that, per system.
+  const portraitScreenBaseWidth =
+    system === 'gba'
+      ? styles.screenGba.width
+      : system === 'nds'
+        ? styles.screenDs.width
+        : system === '3ds'
+          ? styles.screen3ds.width
+          : styles.screen.width;
+  const defaultControlLayout = useMemo<ControlLayout>(
+    () =>
+      isLandscape
+        ? DEFAULT_CONTROL_LAYOUT_LANDSCAPE
+        : {offsets: {}, scales: {screen: windowWidth / portraitScreenBaseWidth}},
+    [isLandscape, windowWidth, portraitScreenBaseWidth],
+  );
   useEffect(() => {
     let cancelled = false;
     getPreference(controlLayoutKey)
@@ -1373,7 +1428,17 @@ function App(): React.JSX.Element {
         if (cancelled) return;
         if (json) {
           try {
-            setControlLayout(migrateControlLayout(JSON.parse(json)));
+            const saved = migrateControlLayout(JSON.parse(json));
+            // A portrait screen size saved before screens filled the width
+            // was chosen against the old framed layout: it gives way to the
+            // new default. The buttons' arrangement is kept.
+            if (!isLandscape && (saved.v ?? 1) < CONTROL_LAYOUT_VERSION) {
+              const {screen: _scale, ...scales} = saved.scales;
+              const {screen: _offset, ...offsets} = saved.offsets;
+              setControlLayout({...saved, scales, offsets});
+              return;
+            }
+            setControlLayout(saved);
             return;
           } catch {
             // Fall through to the default below.
@@ -1385,12 +1450,12 @@ function App(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [controlLayoutKey, defaultControlLayout]);
+  }, [controlLayoutKey, defaultControlLayout, isLandscape]);
 
   const persistControlLayout = useCallback(
     (layout: ControlLayout) => {
       setControlLayout(layout);
-      setPreference(controlLayoutKey, JSON.stringify(layout)).catch(() => {});
+      setPreference(controlLayoutKey, JSON.stringify({...layout, v: CONTROL_LAYOUT_VERSION})).catch(() => {});
     },
     [controlLayoutKey],
   );
@@ -1656,7 +1721,7 @@ function App(): React.JSX.Element {
     );
   }
 
-  const screenScale = controlLayout.scales.screen ?? (isLandscape ? 2 : 1);
+  const screenScale = controlLayout.scales.screen ?? defaultControlLayout.scales.screen ?? 1;
   const scaledScreenStyle = (base: {width: number; height: number; backgroundColor: string; borderRadius: number}) => ({
     ...base,
     width: base.width * screenScale,
@@ -1693,7 +1758,12 @@ function App(): React.JSX.Element {
       : SCALE_TARGETS;
   const editToolbar = editingControls && (
     <View style={styles.editToolbar}>
-      <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>
+      <View style={styles.editToolbarHeader}>
+        <Text style={[styles.editToolbarHint, styles.editToolbarHintInRow]}>Arrastra un grupo de botones para moverlo</Text>
+        <Pressable style={styles.editDoneButton} onPress={() => setEditingControls(false)} hitSlop={6}>
+          <Text style={styles.editDoneLabel}>Listo</Text>
+        </Pressable>
+      </View>
       <View style={[styles.editToolbarRow, styles.scaleTargetRow]}>
         {scaleTargets.map(t => (
           <Pressable
@@ -1743,6 +1813,61 @@ function App(): React.JSX.Element {
         </View>
       )}
     </View>
+  );
+
+  const menuModal = (
+    <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={closeMenu}>
+      <Pressable style={styles.modalBackdrop} onPress={closeMenu}>
+        <Pressable style={styles.modalCard} onPress={() => {}}>
+          <Text style={styles.modalTitle} numberOfLines={1}>
+            {romLabel}
+          </Text>
+          <Text style={styles.modalSubtitle}>El juego está en pausa.</Text>
+          {system !== '3ds' && (
+            <View style={styles.menuSection}>
+              <Text style={styles.menuSectionLabel}>Velocidad</Text>
+              <View style={styles.menuSpeedRow}>
+                {([1, 2, 3] as const).map(multiplier => (
+                  <Pressable
+                    key={multiplier}
+                    style={[styles.speedButton, styles.menuSpeedButton, speed === multiplier && styles.speedButtonActive]}
+                    onPress={() => handleSetSpeed(multiplier)}>
+                    <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          )}
+          {(system === 'gba' || system === 'nds') && (
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                setMenuOpen(false);
+                openSaveModal();
+              }}>
+              <IconSave size={16} color="#cfe3fa" />
+              <Text style={styles.menuItemLabel}>Guardado</Text>
+            </Pressable>
+          )}
+          <Pressable
+            style={styles.menuItem}
+            onPress={() => {
+              closeMenu();
+              setEditingControls(true);
+            }}>
+            <IconPencil size={16} color="#cfe3fa" />
+            <Text style={styles.menuItemLabel}>Tamaño y posición de los controles</Text>
+          </Pressable>
+          <Pressable style={styles.menuItem} onPress={confirmExitToHome}>
+            <IconHome size={16} color="#f0a0a0" />
+            <Text style={[styles.menuItemLabel, styles.menuItemDanger]}>Salir al inicio</Text>
+          </Pressable>
+          <Pressable style={styles.modalCloseButton} onPress={closeMenu}>
+            <Text style={styles.modalCloseLabel}>Seguir jugando</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 
   // Shared between portrait and landscape's save modals -- identical
@@ -1934,31 +2059,14 @@ function App(): React.JSX.Element {
         <View style={styles.landscapeRoot}>
           <View onLayout={e => setLandscapeHeaderHeight(e.nativeEvent.layout.height)}>
             <View style={styles.landscapeTopBar}>
-              <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
+              <Pressable style={styles.homeButton} onPress={confirmExitToHome} hitSlop={8}>
                 <IconHome size={18} />
               </Pressable>
               <Text style={styles.landscapeRomLabel} numberOfLines={1}>
                 {romLabel}
               </Text>
-              {system !== '3ds' &&
-                ([1, 2, 3] as const).map(multiplier => (
-                  <Pressable
-                    key={multiplier}
-                    style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
-                    onPress={() => handleSetSpeed(multiplier)}>
-                    <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
-                  </Pressable>
-                ))}
-              {(system === 'gba' || system === 'nds') && (
-                <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
-                  <IconSave size={14} color="#cfe3fa" />
-                </Pressable>
-              )}
-              <Pressable
-                style={[styles.homeButton, editingControls && styles.editToggleActive]}
-                onPress={() => setEditingControls(v => !v)}
-                hitSlop={8}>
-                <IconPencil size={16} color={editingControls ? '#14151a' : '#fff'} />
+              <Pressable style={styles.homeButton} onPress={openMenu} hitSlop={8}>
+                <IconMenu size={18} />
               </Pressable>
             </View>
 
@@ -2000,6 +2108,7 @@ function App(): React.JSX.Element {
             </Pressable>
           </Pressable>
         </Modal>
+        {menuModal}
       </SafeAreaView>
     );
   }
@@ -2024,39 +2133,18 @@ function App(): React.JSX.Element {
               console/screen and lay out exactly as if it weren't there,
               no matter how big MAX_SCREEN_SCALE lets it grow. */}
           <View style={styles.portraitStage}>
+            {/* Bare, edge to edge: no console shell or bezel around it, so
+                the default scale (see defaultControlLayout) spans the full
+                width of the device. */}
             <DraggableCluster id="screen" editing={editingControls} offset={controlLayout.offsets.screen} onDrag={handleDragCluster}>
-              <View style={[styles.consoleShell, {borderColor: controlStyle.shellBorder, backgroundColor: controlStyle.shellBackground}]}>
-                <View style={[styles.screenBezel, {backgroundColor: withAlpha(controlStyle.screenBezel, 0.55)}]}>{screenView}</View>
-                <View style={styles.speakerGrill}>
-                  {[0, 1, 2, 3, 4].map(i => (
-                    <View key={i} style={[styles.speakerHole, {backgroundColor: controlStyle.shellBorder}]} />
-                  ))}
-                </View>
-              </View>
+              {screenView}
             </DraggableCluster>
           </View>
 
+          {/* Nothing over the screen while playing: Home and the menu live
+              between L and R below. Only the controls editor, while open. */}
           <View style={styles.topGroup}>
-            <View style={styles.topBar}>
-              <Pressable style={styles.homeButton} onPress={() => setScreen('home')} hitSlop={8}>
-                <IconHome size={20} />
-              </Pressable>
-              <View style={styles.titleBlock}>
-                <View style={styles.romLabelRow}>
-                  {busy && <ActivityIndicator size="small" color="#7ab8ff" style={styles.romLabelSpinner} />}
-                  <Text style={styles.romLabel} numberOfLines={1}>
-                    {romLabel}
-                  </Text>
-                </View>
-              </View>
-              <Pressable
-                style={[styles.homeButton, editingControls && styles.editToggleActive]}
-                onPress={() => setEditingControls(v => !v)}
-                hitSlop={8}>
-                <IconPencil size={17} color={editingControls ? '#14151a' : '#fff'} />
-              </Pressable>
-            </View>
-
+            {busy && <ActivityIndicator size="small" color="#7ab8ff" style={styles.portraitBusy} />}
             {editToolbar}
           </View>
 
@@ -2078,25 +2166,18 @@ function App(): React.JSX.Element {
               theme={theme}
             />
 
-            {system !== '3ds' && (
-            <View style={styles.speedRow}>
-              {([1, 2, 3] as const).map(multiplier => (
-                <Pressable
-                  key={multiplier}
-                  style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
-                  onPress={() => handleSetSpeed(multiplier)}>
-                  <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
-                </Pressable>
-              ))}
-
-              {(system === 'gba' || system === 'nds') && (
-                <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
-                  <IconSave size={16} color="#cfe3fa" />
-                  <Text style={styles.saveOpenLabel}>Guardado</Text>
-                </Pressable>
-              )}
+            {/* Home and the menu, in the gap L and R leave between them:
+                clear of the screen above and of the buttons. After
+                GameControls and above its elevation, so its full-width touch
+                surface doesn't sit on top of them. */}
+            <View style={styles.portraitMenuRow} pointerEvents="box-none">
+              <Pressable style={styles.portraitMenuButton} onPress={confirmExitToHome} hitSlop={6}>
+                <IconHome size={17} />
+              </Pressable>
+              <Pressable style={styles.portraitMenuButton} onPress={openMenu} hitSlop={6}>
+                <IconMenu size={17} />
+              </Pressable>
             </View>
-            )}
           </View>
         </View>
       ) : (
@@ -2111,6 +2192,7 @@ function App(): React.JSX.Element {
           </Pressable>
         </Pressable>
       </Modal>
+      {menuModal}
     </SafeAreaView>
   );
 }
@@ -2715,7 +2797,47 @@ const styles = StyleSheet.create({
   // face buttons sat on top of the lower (touch) screen at any useful
   // size. Anchoring to the top spends that dead space on the screen
   // instead, which is the room the controls were competing for.
-  portraitStage: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'flex-start', paddingTop: 8},
+  portraitStage: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'flex-start'},
+  portraitBusy: {marginTop: 8},
+  portraitMenuRow: {
+    position: 'absolute',
+    top: 6,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 14,
+    elevation: 16,
+  },
+  portraitMenuButton: {
+    width: 38,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  menuSection: {width: '100%', marginBottom: 10},
+  menuSectionLabel: {color: '#888', fontSize: 12, marginBottom: 6},
+  menuSpeedRow: {flexDirection: 'row', gap: 8},
+  menuSpeedButton: {flex: 1, height: 36},
+  menuItem: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginTop: 6,
+    borderRadius: 10,
+    backgroundColor: '#272a33',
+  },
+  menuItemLabel: {color: '#e6e6e6', fontSize: 14, fontWeight: '600'},
+  menuItemDanger: {color: '#f0a0a0'},
+  editToolbarHeader: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8},
+  editDoneButton: {paddingVertical: 6, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#2f5f8f'},
+  editDoneLabel: {color: '#fff', fontWeight: '700', fontSize: 13},
+  editToolbarHintInRow: {flex: 1},
   bottomGroup: {alignItems: 'center', width: '100%'},
   // Landscape: a slim top bar (not the portrait topGroup's console+title
   // block) plus a "stage" that fills the rest -- the screen centered in
@@ -2740,13 +2862,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: 'rgba(15,16,20,0.22)',
   },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    paddingHorizontal: 16,
-  },
   homeButton: {
     width: 40,
     height: 40,
@@ -2754,7 +2869,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 20,
   },
-  editToggleActive: {backgroundColor: '#7ab8ff'},
   editToolbar: {
     width: '100%',
     marginTop: 8,
@@ -2822,20 +2936,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 17,
   },
-  titleBlock: {alignItems: 'center', flex: 1},
-  romLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  romLabelSpinner: {
-    marginRight: 6,
-  },
-  romLabel: {
-    color: '#ccc',
-    fontSize: 13,
-    fontWeight: '600',
-    maxWidth: 220,
-  },
   shoulderButton: {
     width: 44,
     height: 34,
@@ -2864,25 +2964,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.12)',
   },
   shoulderLabel: {color: '#eee', fontWeight: '700', fontSize: 13},
-  // A stylized "device shell" around the screen -- a rounded, elevated
-  // panel with a border tinted to the active system (blue for GB/GBC,
-  // maroon for GBA, matching HomeScreen's badge colors) instead of the
-  // emulator view floating bare on the background.
-  consoleShell: {
-    marginTop: 8,
-    borderWidth: 2,
-    borderRadius: 24,
-    backgroundColor: '#1e2027',
-    paddingTop: 10,
-    paddingBottom: 6,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: {width: 0, height: 6},
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    elevation: 10,
-  },
+  // Landscape only: portrait shows the screen bare, edge to edge.
   screenBezel: {
     backgroundColor: '#000',
     borderRadius: 10,
@@ -2945,17 +3027,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     borderRadius: 4,
   },
-  speakerGrill: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 6,
-  },
-  speakerHole: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    opacity: 0.6,
-  },
   shoulderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2966,12 +3037,6 @@ const styles = StyleSheet.create({
     // on its own real edge, symmetrically, on any screen width.
     width: '100%',
     marginTop: 6,
-  },
-  speedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 12,
   },
   speedButton: {
     width: 40,
@@ -2984,17 +3049,6 @@ const styles = StyleSheet.create({
   speedButtonActive: {backgroundColor: '#4a90d9'},
   speedLabel: {color: '#888', fontSize: 12, fontWeight: '700'},
   speedLabelActive: {color: '#fff'},
-  saveOpenButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#254a70',
-    marginLeft: 4,
-  },
-  saveOpenLabel: {color: '#cfe3fa', fontSize: 12, fontWeight: '700'},
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',

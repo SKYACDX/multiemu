@@ -110,6 +110,12 @@ class RomFilePickerModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    /** The icon inside a DS/3DS ROM as a PNG data URL, or null -- see [RomIcon]. */
+    @ReactMethod
+    fun readRomIcon(path: String, promise: Promise) {
+        promise.resolve(RomIcon.dataUrl(path))
+    }
+
     /**
      * Downloads [url] (a RomHack Hub file's downloadUrl) straight to a
      * cache file, extracting it first if it's a .zip -- the same
