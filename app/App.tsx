@@ -433,6 +433,26 @@ function App(): React.JSX.Element {
     return () => sub.remove();
   }, [checkForUpdate]);
 
+  // Android 7-8 can't check the rotated signing key (APK Signature Scheme v3
+  // is Android 9+; see docs/signing.md): to them the app is only signed with
+  // the old key, which leaked. Reinstalling changes nothing there, so say
+  // what does help, once.
+  useEffect(() => {
+    if (Platform.OS !== 'android' || Number(Platform.Version) >= 28) return;
+    getPreference('legacySigningNoticeShown')
+      .then(shown => {
+        if (shown) return;
+        Alert.alert(
+          'Aviso de seguridad',
+          'Tu versión de Android (7 u 8) no puede comprobar la nueva firma de multiemu. Instala ' +
+            'las actualizaciones solo desde emulatornds.online, nunca de otro sitio. Más adelante ' +
+            'multiemu necesitará Android 9 o superior.',
+          [{text: 'Entendido', onPress: () => setPreference('legacySigningNoticeShown', '1').catch(() => {})}],
+        );
+      })
+      .catch(() => {});
+  }, []);
+
   const dismissUpdateBanner = useCallback(() => {
     if (availableUpdate) setPreference('dismissedUpdateVersionCode', String(availableUpdate.versionCode)).catch(() => {});
     setAvailableUpdate(null);
