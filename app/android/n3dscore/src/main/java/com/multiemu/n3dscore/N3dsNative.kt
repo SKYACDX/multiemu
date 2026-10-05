@@ -27,6 +27,10 @@ object N3dsNative {
     @JvmStatic external fun nativeLoadState(path: String): String?
     /** A touch at (x, y) on a view of [width] x [height] showing the picture. Safe from any thread. */
     @JvmStatic external fun nativeTouch(x: Float, y: Float, width: Int, height: Int, pressed: Boolean)
+    /** Local wireless through a room server; see n3ds_jni.cpp. Status: {state, error, members}. */
+    @JvmStatic external fun nativeRoomJoin(host: String, port: Int, nickname: String)
+    @JvmStatic external fun nativeRoomLeave()
+    @JvmStatic external fun nativeRoomStatus(): IntArray
     /** [id] is a libretro joypad id (RETRO_DEVICE_ID_JOYPAD_*). Safe from any thread. */
     @JvmStatic external fun nativeSetButton(id: Int, pressed: Boolean)
 }

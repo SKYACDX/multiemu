@@ -120,3 +120,53 @@ export function n3dsUploadSlot(romId: string, slot: number, uploadUrl: string, c
 export function n3dsDownloadSlot(romId: string, slot: number, downloadUrl: string): Promise<void> {
   return N3dsState.downloadSlot(romId, slot, downloadUrl);
 }
+
+// ---- Local wireless over the internet --------------------------------------
+//
+// The game's local wireless (trades, battles, the Festival Plaza) carried to
+// another phone or PC through a room on Azahar's room server. Same server and
+// room numbering as the desktop app (ROOM_SERVER in its preload.js): room n
+// (1 to N3DS_ROOM_COUNT) is UDP port N3DS_ROOM_PORT + n - 1.
+export const N3DS_ROOM_SERVER = '160.34.211.121';
+export const N3DS_ROOM_PORT = 24872;
+export const N3DS_ROOM_COUNT = 10;
+
+/** Network::RoomMember::State: joined, or joined as the room's moderator. */
+export const N3DS_ROOM_JOINED_STATES = [3, 4];
+
+/** Network::RoomMember::Error, in order -- the same messages as the desktop app. */
+export const N3DS_ROOM_ERRORS = [
+  'Se perdió la conexión con la sala',
+  'La sala te sacó',
+  'No se pudo conectar a la sala',
+  'Ya hay alguien con ese nombre en la sala',
+  'Otra consola de la sala tiene la misma dirección',
+  'Otra consola de la sala tiene el mismo ID de consola',
+  'La sala usa otra versión de Azahar',
+  'La contraseña de la sala no es esa',
+  'La sala no responde',
+  'La sala está llena',
+  'Esta consola está vetada en la sala',
+];
+
+const {N3dsRoom} = NativeModules as {
+  N3dsRoom: {
+    join(host: string, port: number, nickname: string): void;
+    leave(): void;
+    status(): Promise<{state: number; error: number; members: number}>;
+  };
+};
+
+/** Starts joining room [room] (1-based); poll n3dsRoomStatus for the outcome. */
+export function join3dsRoom(room: number) {
+  // The room only needs it unique; the games show their own trainer names.
+  N3dsRoom.join(N3DS_ROOM_SERVER, N3DS_ROOM_PORT + room - 1, `multiemu-${Math.random().toString(16).slice(2, 8)}`);
+}
+
+export function leave3dsRoom() {
+  N3dsRoom.leave();
+}
+
+export function n3dsRoomStatus() {
+  return N3dsRoom.status();
+}

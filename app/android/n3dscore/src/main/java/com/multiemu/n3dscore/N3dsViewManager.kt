@@ -226,9 +226,44 @@ class N3dsCloudModule(private val context: ReactApplicationContext) : ReactConte
     }
 }
 
+/**
+ * The running game's local wireless over the internet: joining a room on
+ * the room server (same server and room numbering as the desktop app, see
+ * N3dsView.tsx) and polling how that went.
+ */
+class N3dsRoomModule(context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
+    override fun getName() = "N3dsRoom"
+
+    @ReactMethod
+    fun join(host: String, port: Int, nickname: String) {
+        N3dsSession.joinRoom(host, port, nickname)
+    }
+
+    @ReactMethod
+    fun leave() {
+        N3dsSession.leaveRoom()
+    }
+
+    /** {state, error, members}; see nativeRoomStatus in n3ds_jni.cpp. */
+    @ReactMethod
+    fun status(promise: Promise) {
+        N3dsSession.roomStatus { (state, error, members) ->
+            promise.resolve(Arguments.createMap().apply {
+                putInt("state", state)
+                putInt("error", error)
+                putInt("members", members)
+            })
+        }
+    }
+}
+
 class N3dsPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
-        if (N3dsNative.available) listOf(N3dsStateModule(reactContext), N3dsCloudModule(reactContext)) else emptyList()
+        if (N3dsNative.available) {
+            listOf(N3dsStateModule(reactContext), N3dsCloudModule(reactContext), N3dsRoomModule(reactContext))
+        } else {
+            emptyList()
+        }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =
         if (N3dsNative.available) listOf(N3dsViewManager()) else emptyList()

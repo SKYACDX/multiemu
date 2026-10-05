@@ -122,6 +122,18 @@ object N3dsSession {
         done(if (romPath == null) "No hay ningún juego de 3DS abierto" else N3dsNative.nativeLoadState(path))
     }
 
+    /** Local wireless through a room server (see N3dsRoomModule). No-ops without a game. */
+    fun joinRoom(host: String, port: Int, nickname: String) = emu.post {
+        if (romPath != null) N3dsNative.nativeRoomJoin(host, port, nickname)
+    }
+
+    fun leaveRoom() = emu.post { if (romPath != null) N3dsNative.nativeRoomLeave() }
+
+    /** {state, error, members}, given to [done] on the emulation thread. */
+    fun roomStatus(done: (IntArray) -> Unit) = emu.post {
+        done(if (romPath != null) N3dsNative.nativeRoomStatus() else intArrayOf(-1, -1, 0))
+    }
+
     private fun stopNow() {
         audioTrack?.run { stop(); release() }
         audioTrack = null

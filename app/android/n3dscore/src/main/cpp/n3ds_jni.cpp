@@ -619,6 +619,40 @@ JNIEXPORT jstring JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeLoadState(
     return nullptr;
 }
 
+// Local wireless over the internet, through the room calls
+// patches/azahar/0003 adds: joining a room on a room server makes the game's
+// local wireless see every console in that room. Joining finishes on the
+// room's own threads, so nativeRoomStatus is polled. Closing the game
+// (retro_deinit) leaves the room too.
+JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeRoomJoin(JNIEnv* env, jclass, jstring host,
+                                                                            jint port, jstring nickname) {
+    auto join = g_loaded ? coreSymbol<void (*)(const char*, unsigned, const char*, const char*)>("multiemu_room_join")
+                         : nullptr;
+    if (join) join(FromJava(env, host).c_str(), static_cast<unsigned>(port), FromJava(env, nickname).c_str(), "");
+}
+
+JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeRoomLeave(JNIEnv*, jclass) {
+    auto leave = g_loaded ? coreSymbol<void (*)()>("multiemu_room_leave") : nullptr;
+    if (leave) leave();
+}
+
+// {state, error, members}: state is a Network::RoomMember::State (3 joined,
+// 4 joined as moderator), error a RoomMember::Error (-1 none).
+JNIEXPORT jintArray JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeRoomStatus(JNIEnv* env, jclass) {
+    jint status[3] = {-1, -1, 0};
+    auto state = g_loaded ? coreSymbol<int (*)()>("multiemu_room_state") : nullptr;
+    auto error = g_loaded ? coreSymbol<int (*)()>("multiemu_room_error") : nullptr;
+    auto members = g_loaded ? coreSymbol<int (*)()>("multiemu_room_members") : nullptr;
+    if (state && error && members) {
+        status[0] = state();
+        status[1] = error();
+        status[2] = members();
+    }
+    jintArray out = env->NewIntArray(3);
+    env->SetIntArrayRegion(out, 0, 3, status);
+    return out;
+}
+
 // id is a RETRO_DEVICE_ID_JOYPAD_* value.
 JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSetButton(JNIEnv*, jclass, jint id,
                                                                               jboolean pressed) {

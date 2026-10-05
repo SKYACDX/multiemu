@@ -33,9 +33,11 @@ import {
   Platform,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
+  ToastAndroid,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -43,8 +45,14 @@ import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import DsView, {DsButton, DsViewHandle} from './src/DsView';
 import N3dsView, {
+  join3dsRoom,
+  leave3dsRoom,
   load3dsSlot,
+  N3DS_ROOM_COUNT,
+  N3DS_ROOM_ERRORS,
+  N3DS_ROOM_JOINED_STATES,
   N3dsButton,
+  n3dsRoomStatus,
   n3dsDownloadSlot,
   n3dsGameKey,
   n3dsLocalSave,
@@ -1056,6 +1064,53 @@ function App(): React.JSX.Element {
     setActiveViewPaused(false);
   }, [setActiveViewPaused]);
 
+  // 3DS local wireless over the internet: this console and another phone or
+  // PC in the same room on the room server (see N3dsView.tsx). Joining and
+  // dropping out happen on the room's own threads, so the status is polled.
+  const [n3dsRoom, setN3dsRoom] = useState<number | null>(null); // joined or being joined
+  const [n3dsRoomPick, setN3dsRoomPick] = useState(1);
+  const [n3dsRoomJoined, setN3dsRoomJoined] = useState(false);
+  const [n3dsRoomMembers, setN3dsRoomMembers] = useState(0);
+  const handleJoin3dsRoom = useCallback(() => {
+    setN3dsRoom(n3dsRoomPick);
+    setN3dsRoomJoined(false);
+    join3dsRoom(n3dsRoomPick);
+  }, [n3dsRoomPick]);
+  const handleLeave3dsRoom = useCallback(() => {
+    leave3dsRoom();
+    setN3dsRoom(null);
+    setN3dsRoomJoined(false);
+  }, []);
+  useEffect(() => {
+    if (n3dsRoom === null) return;
+    // Leaving the game leaves the room: the 3DS game itself outlives the
+    // screen (N3dsSession), so it would otherwise stay in it.
+    if (screen !== 'game' || system !== '3ds') {
+      handleLeave3dsRoom();
+      return;
+    }
+    let joined = false;
+    const interval = setInterval(() => {
+      n3dsRoomStatus()
+        .then(status => {
+          const nowJoined = N3DS_ROOM_JOINED_STATES.includes(status.state);
+          setN3dsRoomMembers(status.members);
+          if (nowJoined !== joined) {
+            joined = nowJoined;
+            setN3dsRoomJoined(nowJoined);
+            if (nowJoined) ToastAndroid.show(`Conectado a la sala ${n3dsRoom}`, ToastAndroid.SHORT);
+          }
+          if (!nowJoined && status.error >= 0) {
+            ToastAndroid.show(N3DS_ROOM_ERRORS[status.error] ?? 'No se pudo conectar a la sala', ToastAndroid.LONG);
+            setN3dsRoom(null);
+            setN3dsRoomJoined(false);
+          }
+        })
+        .catch(() => {});
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [n3dsRoom, screen, system, handleLeave3dsRoom]);
+
   // Home is one tap from the controls, so it asks first: leaving by
   // accident drops whatever happened since the last save.
   const confirmExitToHome = useCallback(() => {
@@ -2003,53 +2058,89 @@ function App(): React.JSX.Element {
   const menuModal = (
     <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={closeMenu}>
       <Pressable style={styles.modalBackdrop} onPress={closeMenu}>
-        <Pressable style={styles.modalCard} onPress={() => {}}>
-          <Text style={styles.modalTitle} numberOfLines={1}>
-            {romLabel}
-          </Text>
-          <Text style={styles.modalSubtitle}>El juego está en pausa.</Text>
-          {system !== '3ds' && (
-            <View style={styles.menuSection}>
-              <Text style={styles.menuSectionLabel}>Velocidad</Text>
-              <View style={styles.menuSpeedRow}>
-                {([1, 2, 3] as const).map(multiplier => (
-                  <Pressable
-                    key={multiplier}
-                    style={[styles.speedButton, styles.menuSpeedButton, speed === multiplier && styles.speedButtonActive]}
-                    onPress={() => handleSetSpeed(multiplier)}>
-                    <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
-                  </Pressable>
-                ))}
+        {/* Scrolls when it doesn't fit: in landscape the 3DS menu is taller than the screen. */}
+        <Pressable style={[styles.modalCard, styles.menuCard]} onPress={() => {}}>
+          <ScrollView style={styles.menuScroll} contentContainerStyle={styles.menuScrollContent}>
+            <Text style={styles.modalTitle} numberOfLines={1}>
+              {romLabel}
+            </Text>
+            <Text style={styles.modalSubtitle}>El juego está en pausa.</Text>
+            {system !== '3ds' && (
+              <View style={styles.menuSection}>
+                <Text style={styles.menuSectionLabel}>Velocidad</Text>
+                <View style={styles.menuSpeedRow}>
+                  {([1, 2, 3] as const).map(multiplier => (
+                    <Pressable
+                      key={multiplier}
+                      style={[styles.speedButton, styles.menuSpeedButton, speed === multiplier && styles.speedButtonActive]}
+                      onPress={() => handleSetSpeed(multiplier)}>
+                      <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
+                    </Pressable>
+                  ))}
+                </View>
               </View>
-            </View>
-          )}
-          {(system === 'gba' || system === 'nds' || system === '3ds') && (
+            )}
+            {(system === 'gba' || system === 'nds' || system === '3ds') && (
+              <Pressable
+                style={styles.menuItem}
+                onPress={() => {
+                  setMenuOpen(false);
+                  openSaveModal();
+                }}>
+                <IconSave size={16} color="#cfe3fa" />
+                <Text style={styles.menuItemLabel}>Guardado</Text>
+              </Pressable>
+            )}
+            {system === '3ds' && (
+              <View style={[styles.menuSection, styles.menuRoomSection]}>
+                <Text style={styles.menuSectionLabel}>Inalámbrica por internet</Text>
+                <Text style={styles.menuRoomNote}>
+                  {n3dsRoom === null
+                    ? 'Con otro celular o una PC en la misma sala, el juego los ve como si estuvieran juntos (intercambios, combates).'
+                    : n3dsRoomJoined
+                      ? `En la sala ${n3dsRoom} · ${n3dsRoomMembers} ${n3dsRoomMembers === 1 ? 'consola' : 'consolas'}`
+                      : `Conectando a la sala ${n3dsRoom}…`}
+                </Text>
+                <View style={styles.menuRoomGrid}>
+                  {Array.from({length: N3DS_ROOM_COUNT}, (_, i) => i + 1).map(room => {
+                    const active = (n3dsRoom ?? n3dsRoomPick) === room;
+                    return (
+                      <Pressable
+                        key={room}
+                        disabled={n3dsRoom !== null}
+                        style={[styles.speedButton, styles.menuRoomButton, active && styles.speedButtonActive]}
+                        onPress={() => setN3dsRoomPick(room)}>
+                        <Text style={[styles.speedLabel, active && styles.speedLabelActive]}>{room}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Pressable
+                  style={[styles.menuItem, styles.menuRoomAction]}
+                  onPress={n3dsRoom === null ? handleJoin3dsRoom : handleLeave3dsRoom}>
+                  <Text style={[styles.menuItemLabel, n3dsRoom !== null && styles.menuItemDanger]}>
+                    {n3dsRoom === null ? `Conectar a la sala ${n3dsRoomPick}` : 'Desconectar'}
+                  </Text>
+                </Pressable>
+              </View>
+            )}
             <Pressable
               style={styles.menuItem}
               onPress={() => {
-                setMenuOpen(false);
-                openSaveModal();
+                closeMenu();
+                setEditingControls(true);
               }}>
-              <IconSave size={16} color="#cfe3fa" />
-              <Text style={styles.menuItemLabel}>Guardado</Text>
+              <IconPencil size={16} color="#cfe3fa" />
+              <Text style={styles.menuItemLabel}>Tamaño y posición de los controles</Text>
             </Pressable>
-          )}
-          <Pressable
-            style={styles.menuItem}
-            onPress={() => {
-              closeMenu();
-              setEditingControls(true);
-            }}>
-            <IconPencil size={16} color="#cfe3fa" />
-            <Text style={styles.menuItemLabel}>Tamaño y posición de los controles</Text>
-          </Pressable>
-          <Pressable style={styles.menuItem} onPress={confirmExitToHome}>
-            <IconHome size={16} color="#f0a0a0" />
-            <Text style={[styles.menuItemLabel, styles.menuItemDanger]}>Salir al inicio</Text>
-          </Pressable>
-          <Pressable style={styles.modalCloseButton} onPress={closeMenu}>
-            <Text style={styles.modalCloseLabel}>Seguir jugando</Text>
-          </Pressable>
+            <Pressable style={styles.menuItem} onPress={confirmExitToHome}>
+              <IconHome size={16} color="#f0a0a0" />
+              <Text style={[styles.menuItemLabel, styles.menuItemDanger]}>Salir al inicio</Text>
+            </Pressable>
+            <Pressable style={styles.modalCloseButton} onPress={closeMenu}>
+              <Text style={styles.modalCloseLabel}>Seguir jugando</Text>
+            </Pressable>
+          </ScrollView>
         </Pressable>
       </Pressable>
     </Modal>
@@ -3031,6 +3122,14 @@ const styles = StyleSheet.create({
   },
   menuItemLabel: {color: '#e6e6e6', fontSize: 14, fontWeight: '600'},
   menuItemDanger: {color: '#f0a0a0'},
+  menuCard: {maxHeight: '100%', paddingHorizontal: 0},
+  menuScroll: {width: '100%'},
+  menuScrollContent: {alignItems: 'center', paddingHorizontal: 20},
+  menuRoomSection: {marginTop: 6, marginBottom: 4},
+  menuRoomNote: {color: '#b8bcc6', fontSize: 12, marginBottom: 8},
+  menuRoomGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 6},
+  menuRoomButton: {width: '18%', height: 32},
+  menuRoomAction: {justifyContent: 'center'},
   editToolbarHeader: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8},
   editDoneButton: {paddingVertical: 6, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#2f5f8f'},
   editDoneLabel: {color: '#fff', fontWeight: '700', fontSize: 13},
