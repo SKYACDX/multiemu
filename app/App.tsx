@@ -42,6 +42,7 @@ import {
 import GameBoyView, {GameBoyButton, GameBoyViewHandle} from './src/GameBoyView';
 import GbaView, {GbaButton, GbaViewHandle} from './src/GbaView';
 import DsView, {DsButton, DsViewHandle} from './src/DsView';
+import N3dsView, {N3dsButton, N3dsViewHandle} from './src/N3dsView';
 import {IconCloud, IconHome, IconPencil, IconSave, IconTrash, IconTriangle} from './src/icons';
 import HomeScreen from './src/HomeScreen';
 import FolderScreen from './src/FolderScreen';
@@ -119,8 +120,9 @@ import {TEST_ROM_BASE64} from './src/testRom';
 const PATCH_EXTENSIONS: SupportedPatchExt[] = ['ips', 'bps', 'ups'];
 
 type Screen = 'home' | 'game' | 'hub' | 'folder' | 'account' | 'localLink' | 'themeEditor' | 'themesExplore' | 'feedback';
-type EmulatedSystem = 'gb' | 'gba' | 'nds';
-type PadButtonId = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'X' | 'Y' | 'SELECT' | 'START';
+type EmulatedSystem = 'gb' | 'gba' | 'nds' | '3ds';
+type PadButtonId =
+  | 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | 'A' | 'B' | 'L' | 'R' | 'X' | 'Y' | 'ZL' | 'ZR' | 'SELECT' | 'START';
 
 // Draggable clusters a user can reposition in "Personalizar controles"
 // mode -- grouped (whole D-pad, whole A/B) rather than per-button, which
@@ -204,13 +206,18 @@ const SCALE_TARGETS: {id: ScalableId; label: string}[] = [
   {id: 'system', label: 'Start/Select'},
 ];
 
-// 3DS isn't emulated yet (see docs/roadmap.md) -- only accept what one of
-// the three cores can actually run, so picking the wrong file fails fast
-// with a clear message instead of silently loading garbage.
-const SUPPORTED_ROM_EXTENSIONS = ['gb', 'gbc', 'gba', 'nds'];
+// Only accept what one of the cores can actually run, so picking the wrong
+// file fails fast with a clear message instead of silently loading garbage.
+// 3DS games have to be decrypted dumps (.3ds/.cci/.cxi).
+const N3DS_EXTENSIONS = ['3ds', 'cci', 'cxi'];
+const SUPPORTED_ROM_EXTENSIONS = ['gb', 'gbc', 'gba', 'nds', ...N3DS_EXTENSIONS];
+// The folder browser reads a ROM whole into JS, which a 1-4GB 3DS game
+// can't survive -- those open through "Cargar un archivo" instead.
+const FOLDER_ROM_EXTENSIONS = SUPPORTED_ROM_EXTENSIONS.filter(e => !N3DS_EXTENSIONS.includes(e));
 
 function systemForExtension(extension: string): EmulatedSystem {
   const ext = extension.toLowerCase();
+  if (N3DS_EXTENSIONS.includes(ext)) return '3ds';
   if (ext === 'gba') return 'gba';
   if (ext === 'nds') return 'nds';
   return 'gb';
@@ -233,7 +240,12 @@ const GAME_SAVE_CLOUD_SLOT = 99;
 const AUTOSAVE_SLOT = 3;
 const AUTOSAVE_INTERVAL_MS = 45_000;
 
-const PLATFORM_LABEL: Record<EmulatedSystem, string> = {gb: 'Game Boy / Color', gba: 'Game Boy Advance', nds: 'Nintendo DS'};
+const PLATFORM_LABEL: Record<EmulatedSystem, string> = {
+  gb: 'Game Boy / Color',
+  gba: 'Game Boy Advance',
+  nds: 'Nintendo DS',
+  '3ds': 'Nintendo 3DS',
+};
 
 function App(): React.JSX.Element {
   // The Activity survives rotation (see AndroidManifest.xml's
@@ -261,11 +273,13 @@ function App(): React.JSX.Element {
   const gameBoyRef = useRef<GameBoyViewHandle>(null);
   const gbaRef = useRef<GbaViewHandle>(null);
   const dsRef = useRef<DsViewHandle>(null);
+  const n3dsRef = useRef<N3dsViewHandle>(null);
   // NDS's equivalent of baseRomBytes -- there's no byte buffer to keep
   // for it (the whole point of loadRomPath is to avoid ever holding a
   // 128-512MB ROM in JS memory), just the path DsView should read it
   // from. Set by handlePickRom, consumed by the remount effect below.
   const currentDsRomPath = useRef<string | null>(null);
+  const current3dsRomPath = useRef<string | null>(null);
   // Read by cloudGameKey/readGameSavePaused/checkGameSaveConflict -- a
   // ref (not the system state) so it's never stale/racy relative to
   // those closures, same reasoning as currentRomId.
@@ -575,7 +589,9 @@ function App(): React.JSX.Element {
   // currentSaveSystem's own comment for why this reads that ref instead
   // of the system state.
   const setActiveViewPaused = useCallback((paused: boolean) => {
-    if (currentSaveSystem.current === 'nds') {
+    if (currentSaveSystem.current === '3ds') {
+      n3dsRef.current?.setPaused(paused);
+    } else if (currentSaveSystem.current === 'nds') {
       dsRef.current?.setPaused(paused);
     } else {
       gbaRef.current?.setPaused(paused);
@@ -943,6 +959,10 @@ function App(): React.JSX.Element {
       const base64 = bytesToBase64(baseRomBytes.current);
       gbaRef.current?.loadRomBase64(base64, romId);
       gbaRef.current?.setSpeedMultiplier(1);
+    } else if (system === '3ds') {
+      // The game outlives the view (N3dsSession): this re-attaches it, or
+      // starts it the first time.
+      if (current3dsRomPath.current) n3dsRef.current?.loadRomPath(current3dsRomPath.current);
     } else if (system === 'nds') {
       if (currentDsRomPath.current) dsRef.current?.loadRomPath(currentDsRomPath.current, romId);
       setGbaCartLabel(null);
@@ -968,6 +988,29 @@ function App(): React.JSX.Element {
       const extension = picked.name.split('.').pop() ?? '';
       const targetSystem = systemForExtension(extension);
       hasUserRom.current = true;
+
+      if (targetSystem === '3ds') {
+        // A 3DS game keeps its saves inside the emulated console's own
+        // storage rather than a .sav, so it has no state slots, cloud sync
+        // or cover art yet -- only the play itself, like the DS branch
+        // minus those.
+        const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+        currentRomId.current = romId;
+        currentSaveSystem.current = '3ds';
+        let romPath = picked.path;
+        try {
+          const cached = await saveRomToCachePath(picked.path, picked.name, '3ds', picked.name);
+          romPath = cached.path;
+          refreshRecentRoms();
+        } catch {}
+        current3dsRomPath.current = romPath;
+        setRomLabel(picked.name);
+        setCoverImageUrl(null);
+        setStateSlots([]);
+        setSystem('3ds');
+        setScreen('game');
+        return;
+      }
 
       if (targetSystem === 'nds') {
         // romId is a stable, deterministic identifier (name+size, not the
@@ -1045,7 +1088,7 @@ function App(): React.JSX.Element {
     setScreen('folder');
     setFolderLoading(true);
     try {
-      const files = await listRomFolder(picked.uri, SUPPORTED_ROM_EXTENSIONS);
+      const files = await listRomFolder(picked.uri, FOLDER_ROM_EXTENSIONS);
       setFolderFiles(files);
     } catch (e) {
       Alert.alert('No se pudo abrir la carpeta', e instanceof Error ? e.message : String(e));
@@ -1076,7 +1119,7 @@ function App(): React.JSX.Element {
       setBusy(true);
       setRomLabel('Cargando ROM…');
       try {
-        const read = await readRomFromFolder(file.uri, SUPPORTED_ROM_EXTENSIONS);
+        const read = await readRomFromFolder(file.uri, FOLDER_ROM_EXTENSIONS);
         const extension = read.name.split('.').pop() ?? '';
         const targetSystem = systemForExtension(extension);
         loadIntoEmulator(base64ToBytes(read.base64), read.name, targetSystem, read.base64);
@@ -1098,6 +1141,18 @@ function App(): React.JSX.Element {
       setBusy(true);
       setRomLabel('Cargando ROM…');
       try {
+        if (rom.system === '3ds') {
+          currentRomId.current = `${rom.name}-${rom.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+          currentSaveSystem.current = '3ds';
+          current3dsRomPath.current = await loadCachedRomPath(rom.id);
+          hasUserRom.current = true;
+          setRomLabel(rom.label);
+          setCoverImageUrl(null);
+          setStateSlots([]);
+          setSystem('3ds');
+          setScreen('game');
+          return;
+        }
         if (rom.system === 'nds') {
           // Same deterministic romId formula as handlePickRom/
           // handleSelectHubFile (name+size, not rom.id -- that's just the
@@ -1285,7 +1340,11 @@ function App(): React.JSX.Element {
   // only meaningful, and only sent, once a GBA ROM is loaded.
   const dispatchButton = useCallback(
     (button: PadButtonId, pressed: boolean) => {
-      if (system === 'gba') {
+      if (system === '3ds') {
+        n3dsRef.current?.setButtonPressed(button as N3dsButton, pressed);
+      } else if (button === 'ZL' || button === 'ZR') {
+        // Only the 3DS has them.
+      } else if (system === 'gba') {
         if (button !== 'X' && button !== 'Y') gbaRef.current?.setButtonPressed(button as GbaButton, pressed);
       } else if (system === 'nds') {
         dsRef.current?.setButtonPressed(button as DsButton, pressed);
@@ -1615,6 +1674,8 @@ function App(): React.JSX.Element {
       <GbaView ref={gbaRef} style={scaledScreenStyle(styles.screenGba)} />
     ) : system === 'nds' ? (
       <DsView ref={dsRef} style={scaledScreenStyle(isLandscape ? styles.screenDsLandscape : styles.screenDs)} />
+    ) : system === '3ds' ? (
+      <N3dsView ref={n3dsRef} style={scaledScreenStyle(isLandscape ? styles.screen3dsLandscape : styles.screen3ds)} />
     ) : (
       <GameBoyView ref={gameBoyRef} style={scaledScreenStyle(styles.screen)} />
     );
@@ -1627,7 +1688,9 @@ function App(): React.JSX.Element {
   // move and scale with it -- there's nothing left for a separate 'xy'
   // target to act on, only a label to widen.
   const scaleTargets =
-    system === 'nds' ? SCALE_TARGETS.map(t => (t.id === 'actions' ? {...t, label: 'A/B/X/Y'} : t)) : SCALE_TARGETS;
+    system === 'nds' || system === '3ds'
+      ? SCALE_TARGETS.map(t => (t.id === 'actions' ? {...t, label: 'A/B/X/Y'} : t))
+      : SCALE_TARGETS;
   const editToolbar = editingControls && (
     <View style={styles.editToolbar}>
       <Text style={styles.editToolbarHint}>Arrastra un grupo de botones para moverlo</Text>
@@ -1877,14 +1940,15 @@ function App(): React.JSX.Element {
               <Text style={styles.landscapeRomLabel} numberOfLines={1}>
                 {romLabel}
               </Text>
-              {([1, 2, 3] as const).map(multiplier => (
-                <Pressable
-                  key={multiplier}
-                  style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
-                  onPress={() => handleSetSpeed(multiplier)}>
-                  <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
-                </Pressable>
-              ))}
+              {system !== '3ds' &&
+                ([1, 2, 3] as const).map(multiplier => (
+                  <Pressable
+                    key={multiplier}
+                    style={[styles.speedButton, speed === multiplier && styles.speedButtonActive]}
+                    onPress={() => handleSetSpeed(multiplier)}>
+                    <Text style={[styles.speedLabel, speed === multiplier && styles.speedLabelActive]}>×{multiplier}</Text>
+                  </Pressable>
+                ))}
               {(system === 'gba' || system === 'nds') && (
                 <Pressable style={styles.saveOpenButton} onPress={openSaveModal}>
                   <IconSave size={14} color="#cfe3fa" />
@@ -2014,6 +2078,7 @@ function App(): React.JSX.Element {
               theme={theme}
             />
 
+            {system !== '3ds' && (
             <View style={styles.speedRow}>
               {([1, 2, 3] as const).map(multiplier => (
                 <Pressable
@@ -2031,6 +2096,7 @@ function App(): React.JSX.Element {
                 </Pressable>
               )}
             </View>
+            )}
           </View>
         </View>
       ) : (
@@ -2095,7 +2161,8 @@ function GameControls({
   const clusterScale = (id: ClusterId): {transform: [{scale: number}]} => ({transform: [{scale: scales[id] ?? 1}]});
   // Portrait only -- landscape pins the controls to fixed corners and
   // keeps its own X/Y pill row, so it doesn't take the diamond.
-  const isDs = system === 'nds';
+  // The 3DS has the same four-button diamond as the DS.
+  const isDs = system === 'nds' || system === '3ds';
   type ViewRef = React.ElementRef<typeof View>;
   const refs = useRef<Partial<Record<PadButtonId, ViewRef | null>>>({});
   const rects = useRef<Partial<Record<PadButtonId, {x: number; y: number; w: number; h: number}>>>({});
@@ -2176,6 +2243,23 @@ function GameControls({
 
   const isPressed = (id: PadButtonId) => pressed.has(id);
 
+  // ZL/ZR (3DS only) ride along under L and R, in the same draggable
+  // cluster, so they move and scale with them.
+  const zButton = (id: 'ZL' | 'ZR', alpha: number) =>
+    system === '3ds' && (
+      <View
+        ref={setRef(id)}
+        style={[
+          styles.shoulderButton,
+          styles.shoulderButtonZ,
+          {backgroundColor: withAlpha(cs.shoulderColor, alpha), borderRadius: cs.shoulderRadius},
+          clusterScale('shoulders'),
+          isPressed(id) && styles.shoulderButtonPressed,
+        ]}>
+        <Text style={styles.shoulderLabel}>{id}</Text>
+      </View>
+    );
+
   // Landscape: no drag-to-reposition (fixed corners instead -- rotating
   // the phone already gives plenty of room without needing per-user
   // placement), so this skips DraggableCluster/padRow/shoulderRow/
@@ -2219,6 +2303,7 @@ function GameControls({
             ]}>
             <Text style={styles.shoulderLabel}>L</Text>
           </View>
+          {zButton('ZL', 0.75)}
           </DraggableCluster>
         </View>
         <View style={styles.landscapeShoulderRight}>
@@ -2234,6 +2319,7 @@ function GameControls({
             ]}>
             <Text style={styles.shoulderLabel}>R</Text>
           </View>
+          {zButton('ZR', 0.75)}
           </DraggableCluster>
         </View>
 
@@ -2384,6 +2470,7 @@ function GameControls({
             <View style={styles.shoulderHighlight} />
             <Text style={styles.shoulderLabel}>L</Text>
           </View>
+          {zButton('ZL', 0.85)}
         </DraggableCluster>
         <DraggableCluster id="shoulderR" editing={editing} offset={offsets.shoulderR} onDrag={onDrag}>
           <View
@@ -2398,6 +2485,7 @@ function GameControls({
             <View style={styles.shoulderHighlight} />
             <Text style={styles.shoulderLabel}>R</Text>
           </View>
+          {zButton('ZR', 0.85)}
         </DraggableCluster>
       </View>
 
@@ -2761,6 +2849,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#2a2a2a',
     opacity: 0.55,
   },
+  // ZL/ZR under L/R on the 3DS: a little shorter, so the pair stays compact.
+  shoulderButtonZ: {
+    height: 28,
+    marginTop: 6,
+  },
   shoulderButtonPressed: {backgroundColor: '#4a72a0'},
   shoulderHighlight: {
     position: 'absolute',
@@ -2829,6 +2922,21 @@ const styles = StyleSheet.create({
   screenDsLandscape: {
     width: 400,
     height: 150,
+    backgroundColor: 'transparent',
+    borderRadius: 4,
+  },
+  // Azahar draws both 3DS screens stacked (400x240 over 320x240, centred):
+  // 400:480 overall. Transparent for the same SurfaceView reason as
+  // screenDs. Landscape keeps the same stack, just shorter.
+  screen3ds: {
+    width: 240,
+    height: 288,
+    backgroundColor: 'transparent',
+    borderRadius: 4,
+  },
+  screen3dsLandscape: {
+    width: 150,
+    height: 180,
     backgroundColor: 'transparent',
     borderRadius: 4,
   },

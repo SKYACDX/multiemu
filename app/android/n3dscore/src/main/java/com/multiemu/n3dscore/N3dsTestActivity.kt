@@ -26,16 +26,14 @@ class N3dsTestActivity : Activity() {
             finish()
             return
         }
-        view = N3dsView(this).apply {
-            onError = { Toast.makeText(this@N3dsTestActivity, it, Toast.LENGTH_LONG).show() }
-            start(rom)
+        // Any "citra_*" string extra is passed to the core as an option,
+        // for trying settings from adb (--es citra_cpu_clock_percentage 50).
+        intent.extras?.keySet()?.filter { it.startsWith("citra_") }?.forEach { key ->
+            intent.getStringExtra(key)?.let { N3dsNative.nativeSetOption(key, it) }
         }
+        N3dsSession.stop()  // a fresh start, so the options above apply
+        view = N3dsView(this).apply { loadRomPath(rom) }
         setContentView(view)
-    }
-
-    override fun onDestroy() {
-        view?.stop()
-        super.onDestroy()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {

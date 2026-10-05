@@ -24,6 +24,7 @@
 #include <cerrno>
 #include <cstdarg>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
@@ -56,11 +57,29 @@ EGLSurface g_pbuffer = EGL_NO_SURFACE;
 EGLSurface g_window = EGL_NO_SURFACE;
 ANativeWindow* g_nativeWindow = nullptr;
 GLuint g_fbo = 0, g_texture = 0, g_depth = 0;
-unsigned g_pictureWidth = 0, g_pictureHeight = 0;
+std::atomic<unsigned> g_pictureWidth{0}, g_pictureHeight{0};  // also read by nativeTouch (UI thread)
 bool g_hasPicture = false;
 
 // ---- input / audio ----
 std::atomic<uint32_t> g_keys{0};  // set from the UI thread, read on the emulation thread
+std::atomic<bool> g_touching{false};
+std::atomic<int> g_touchX{0}, g_touchY{0};
+// A quick tap can press and release between two frames, and the game never
+// sees it. Each press is latched until the core has run one whole frame
+// with it held (see LatchFrameDone).
+std::atomic<uint32_t> g_latchedKeys{0};
+std::atomic<bool> g_latchedTouch{false};
+uint32_t g_seenKeys = 0;  // emulation thread only
+bool g_seenTouch = false;
+
+// After each retro_run: latches the core has now seen for a whole frame
+// are dropped; the ones set since then get their frame next.
+void LatchFrameDone() {
+    g_latchedKeys &= ~g_seenKeys;
+    g_seenKeys = g_latchedKeys;
+    if (g_seenTouch) g_latchedTouch = false;
+    g_seenTouch = g_latchedTouch;
+}
 std::mutex g_audioLock;
 std::vector<int16_t> g_audio;
 
@@ -89,10 +108,22 @@ void RetroLog(enum retro_log_level level, const char* format, ...) {
 uintptr_t CurrentFramebuffer() { return g_fbo; }
 
 // The options this app sets; anything else keeps the core's own default.
-// The console runs in Spanish, the language of this app.
+// The console runs in Spanish, the language of this app. Kotlin can set
+// more before a game starts (nativeSetOption) -- the core reads them once,
+// while loading.
+//
+// The emulated CPU runs at half clock: measured on an Adreno 610 phone, it
+// took a game from ~32 to ~41 fps, more than any other option (25% is
+// slower again -- the game spends the cycles waiting). The 3DS CPU is
+// rarely the bottleneck of a real game's logic, so few games notice.
+std::map<std::string, std::string> g_options = {
+    {"citra_language_value", "Spanish"},
+    {"citra_cpu_clock_percentage", "50"},
+};
+
 const char* Option(const char* key) {
-    if (std::strcmp(key, "citra_language_value") == 0) return "Spanish";
-    return nullptr;
+    auto found = g_options.find(key);
+    return found == g_options.end() ? nullptr : found->second.c_str();
 }
 
 bool Environment(unsigned cmd, void* data) {
@@ -181,15 +212,26 @@ void InputPoll() {}
 
 int16_t InputState(unsigned port, unsigned device, unsigned index, unsigned id) {
     if (port != 0) return 0;
-    if (device == RETRO_DEVICE_JOYPAD) return (g_keys >> id) & 1;
+    const uint32_t keys = g_keys | g_latchedKeys;
+    if (device == RETRO_DEVICE_JOYPAD) return (keys >> id) & 1;
     // The Circle Pad follows the D-pad until there is an analog control:
     // plenty of 3DS games move only with the stick.
     if (device == RETRO_DEVICE_ANALOG && index == RETRO_DEVICE_INDEX_ANALOG_LEFT) {
-        auto held = [](unsigned button) { return static_cast<int>((g_keys >> button) & 1); };
+        auto held = [keys](unsigned button) { return static_cast<int>((keys >> button) & 1); };
         const int axis = id == RETRO_DEVICE_ID_ANALOG_X
                              ? held(RETRO_DEVICE_ID_JOYPAD_RIGHT) - held(RETRO_DEVICE_ID_JOYPAD_LEFT)
                              : held(RETRO_DEVICE_ID_JOYPAD_DOWN) - held(RETRO_DEVICE_ID_JOYPAD_UP);
         return static_cast<int16_t>(axis * 0x7FFF);
+    }
+    // The touch screen: -0x7fff..0x7fff across the whole picture (both
+    // screens), the way the core's MouseTracker maps it back.
+    if (device == RETRO_DEVICE_POINTER) {
+        switch (id) {
+        case RETRO_DEVICE_ID_POINTER_PRESSED: return g_touching || g_latchedTouch ? 1 : 0;
+        case RETRO_DEVICE_ID_POINTER_X: return static_cast<int16_t>(g_touchX.load());
+        case RETRO_DEVICE_ID_POINTER_Y: return static_cast<int16_t>(g_touchY.load());
+        default: return 0;
+        }
     }
     return 0;
 }
@@ -290,6 +332,10 @@ void Stop() {
     g_loaded = g_initialized = g_hasPicture = g_noGame = false;
     g_hwRender = nullptr;
     g_keys = 0;
+    g_latchedKeys = 0;
+    g_latchedTouch = false;
+    g_seenKeys = 0;
+    g_seenTouch = false;
     std::lock_guard<std::mutex> lock(g_audioLock);
     g_audio.clear();
 }
@@ -391,6 +437,7 @@ JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSetSurface(JN
 JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeRunFrame(JNIEnv*, jclass) {
     if (!g_loaded) return;
     g_retroRun();
+    LatchFrameDone();
     Present();
 }
 
@@ -408,14 +455,44 @@ JNIEXPORT jint JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSampleRate(JN
 
 JNIEXPORT jdouble JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeFps(JNIEnv*, jclass) { return g_av.timing.fps; }
 
+// A touch at (x, y) in a view of width x height, where Present() draws the
+// picture letterboxed and anchored to the top. Safe from the UI thread.
+JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeTouch(JNIEnv*, jclass, jfloat x, jfloat y,
+                                                                          jint width, jint height, jboolean pressed) {
+    const unsigned pictureWidth = g_pictureWidth, pictureHeight = g_pictureHeight;
+    if (!pressed || pictureWidth == 0 || pictureHeight == 0 || width <= 0 || height <= 0) {
+        g_touching = false;
+        return;
+    }
+    const float scale = std::min(float(width) / pictureWidth, float(height) / pictureHeight);
+    const float pictureX = (x - (width - pictureWidth * scale) / 2) / scale;
+    const float pictureY = y / scale;
+    auto normalize = [](float value, unsigned size) {
+        const int scaled = int(std::clamp(value / size, 0.0f, 1.0f) * 0xFFFE) - 0x7FFF;
+        return scaled == 0 ? 1 : scaled;  // the core reads an exact 0 as "no pointer"
+    };
+    g_touchX = normalize(pictureX, pictureWidth);
+    g_touchY = normalize(pictureY, pictureHeight);
+    g_touching = true;
+    g_latchedTouch = true;
+}
+
+// A core option (citra_* key, value as the core lists it), for the next start.
+JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSetOption(JNIEnv* env, jclass, jstring key,
+                                                                              jstring value) {
+    g_options[FromJava(env, key)] = FromJava(env, value);
+}
+
 // id is a RETRO_DEVICE_ID_JOYPAD_* value.
 JNIEXPORT void JNICALL Java_com_multiemu_n3dscore_N3dsNative_nativeSetButton(JNIEnv*, jclass, jint id,
                                                                               jboolean pressed) {
     if (id < 0 || id > 15) return;
-    if (pressed)
+    if (pressed) {
         g_keys |= 1u << id;
-    else
+        g_latchedKeys |= 1u << id;
+    } else {
         g_keys &= ~(1u << id);
+    }
 }
 
 }  // extern "C"

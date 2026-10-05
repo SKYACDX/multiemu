@@ -9,6 +9,7 @@ import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.multiemu.dscore.DsPackage
 import com.multiemu.gbacore.GbaPackage
 import com.multiemu.gbcore.GameBoyPackage
+import com.multiemu.n3dscore.N3dsPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -20,6 +21,7 @@ class MainApplication : Application(), ReactApplication {
           add(GameBoyPackage())
           add(GbaPackage())
           add(DsPackage())
+          add(N3dsPackage())
         },
     )
   }

@@ -38,3 +38,7 @@ android {
         }
     }
 }
+
+dependencies {
+    implementation("com.facebook.react:react-android")
+}

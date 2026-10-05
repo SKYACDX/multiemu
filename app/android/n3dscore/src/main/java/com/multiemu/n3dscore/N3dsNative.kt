@@ -21,6 +21,10 @@ object N3dsNative {
     @JvmStatic external fun nativeReadAudio(out: ShortArray): Int
     @JvmStatic external fun nativeSampleRate(): Int
     @JvmStatic external fun nativeFps(): Double
+    /** A core option (citra_* key), read by the core when the next game starts. */
+    @JvmStatic external fun nativeSetOption(key: String, value: String)
+    /** A touch at (x, y) on a view of [width] x [height] showing the picture. Safe from any thread. */
+    @JvmStatic external fun nativeTouch(x: Float, y: Float, width: Int, height: Int, pressed: Boolean)
     /** [id] is a libretro joypad id (RETRO_DEVICE_ID_JOYPAD_*). Safe from any thread. */
     @JvmStatic external fun nativeSetButton(id: Int, pressed: Boolean)
 }

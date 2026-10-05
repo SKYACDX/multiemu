@@ -6,7 +6,7 @@
  * losing fields once custom-image assets (v2) exist server-side.
  */
 
-export type ThemeSystem = 'gb' | 'gbc' | 'gba' | 'nds';
+export type ThemeSystem = 'gb' | 'gbc' | 'gba' | 'nds' | '3ds';
 
 export interface ThemePalette {
   shellBackground: string;
@@ -65,7 +65,13 @@ const EMPTY_ASSETS: ThemeAssets = {
 };
 
 /** Today's hardcoded look, per system -- what you get with no theme applied. */
-const SYSTEM_ACCENT: Record<ThemeSystem, string> = {gb: '#4a90d9', gbc: '#4a90d9', gba: '#c2536a', nds: '#7a5cc2'};
+const SYSTEM_ACCENT: Record<ThemeSystem, string> = {
+  gb: '#4a90d9',
+  gbc: '#4a90d9',
+  gba: '#c2536a',
+  nds: '#7a5cc2',
+  '3ds': '#c94a46',
+};
 
 export function defaultTheme(system: ThemeSystem): Theme {
   return {
