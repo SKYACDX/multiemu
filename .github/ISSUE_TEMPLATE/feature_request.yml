@@ -1,0 +1,28 @@
+name: Feature request / Petición
+description: An idea to make multiemu better. / Una idea para mejorar multiemu.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: English or Spanish is fine. / Puedes escribir en inglés o en español.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like? / ¿Qué te gustaría?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What would it help with? / ¿Para qué te serviría?
+  - type: dropdown
+    id: system
+    attributes:
+      label: System / Sistema
+      multiple: true
+      options:
+        - Game Boy / Game Boy Color
+        - Game Boy Advance
+        - Nintendo DS
+        - Nintendo 3DS
+        - All / Todos

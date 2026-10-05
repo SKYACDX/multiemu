@@ -1,0 +1,9 @@
+<p>multiemu brings Game Boy, Game Boy Color, Game Boy Advance, Nintendo DS and Nintendo 3DS emulation together in one free, open-source app.</p>
+<ul>
+<li><b>Cloud saves:</b> sign in with a free RomHack Hub account and your GBA, DS and 3DS game saves sync on their own between your phone and the Windows app. Save states can be uploaded and downloaded per slot.</li>
+<li><b>3DS local wireless over the internet:</b> join a room on the project's room server and a 3DS game's local wireless (trades, battles) sees the other consoles in that room, phone to phone or phone to PC.</li>
+<li><b>Its own Game Boy core</b>, written from scratch; GBA, DS and 3DS run on mGBA, melonDS and Azahar.</li>
+<li>Save states with an automatic slot, on-screen controls you can move and resize, console themes, 1x to 3x speed.</li>
+</ul>
+<p>multiemu does not include any game, BIOS or firmware. Use dumps of games you own.</p>
+<p>3DS emulation needs a 64-bit ARM phone.</p>

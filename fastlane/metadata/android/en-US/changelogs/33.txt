@@ -1,0 +1,4 @@
+- Nintendo 3DS: local wireless over the internet. Join a room (1-10) from the game menu to trade and battle with another phone or the Windows app.
+- Recents shows the real names of DS and 3DS games, GBC games get their own badge, sizes read "2 GB".
+- Bigger save-slot buttons; Upload is disabled on an empty slot.
+- DS in portrait no longer sits under the L/R buttons.

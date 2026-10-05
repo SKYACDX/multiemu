@@ -1,0 +1,59 @@
+name: Bug report / Reportar un error
+description: Something doesn't work as it should. / Algo no funciona como debería.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! English or Spanish is fine. / ¡Gracias por avisar! Puedes escribir en inglés o en español.
+        **Never attach or link ROMs, BIOS or firmware.** / **Nunca adjuntes ni enlaces ROMs, BIOS o firmware.**
+  - type: input
+    id: version
+    attributes:
+      label: App version / Versión de la app
+      description: Android Settings → Apps → multiemu. / Ajustes de Android → Aplicaciones → multiemu.
+      placeholder: "1.16"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Phone and Android version / Teléfono y versión de Android
+      placeholder: "Honor X7, Android 13"
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System / Sistema
+      options:
+        - Game Boy / Game Boy Color
+        - Game Boy Advance
+        - Nintendo DS
+        - Nintendo 3DS
+        - App (menus, cloud, account) / App (menús, nube, cuenta)
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game, if it only happens with one / Juego, si solo pasa con uno
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect? / ¿Qué pasó y qué esperabas?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / Pasos para reproducirlo
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or logs / Capturas o registros
+      description: Optional. / Opcional.

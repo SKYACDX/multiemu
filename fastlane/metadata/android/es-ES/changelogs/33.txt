@@ -1,0 +1,4 @@
+- Nintendo 3DS: inalámbrica por internet. Entra a una sala (1-10) desde el menú del juego para intercambiar y combatir con otro celular o con la app de Windows.
+- Recientes muestra el nombre real de los juegos de DS y 3DS, los de GBC llevan su insignia y los tamaños se leen "2 GB".
+- Botones de guardado más grandes; "Subir" se desactiva en un espacio vacío.
+- El DS en vertical ya no queda debajo de los botones L y R.

@@ -1,0 +1,9 @@
+<p>multiemu reúne la emulación de Game Boy, Game Boy Color, Game Boy Advance, Nintendo DS y Nintendo 3DS en una sola app libre y de código abierto.</p>
+<ul>
+<li><b>Guardados en la nube:</b> con una cuenta gratuita de RomHack Hub, el guardado de tus juegos de GBA, DS y 3DS se sincroniza solo entre el teléfono y la app de Windows. Los estados se suben y bajan por espacio.</li>
+<li><b>Inalámbrica de 3DS por internet:</b> entra a una sala del servidor del proyecto y la inalámbrica local de un juego de 3DS (intercambios, combates) ve a las demás consolas de esa sala, de teléfono a teléfono o de teléfono a PC.</li>
+<li><b>Núcleo de Game Boy propio</b>, escrito desde cero; GBA, DS y 3DS corren en mGBA, melonDS y Azahar.</li>
+<li>Estados con espacio automático, controles en pantalla que se pueden mover y redimensionar, temas de consola, velocidad x1 a x3.</li>
+</ul>
+<p>multiemu no incluye ningún juego, BIOS ni firmware. Usa copias de juegos que tengas.</p>
+<p>La emulación de 3DS necesita un teléfono ARM de 64 bits.</p>
