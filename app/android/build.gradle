@@ -1,7 +1,10 @@
 buildscript {
     ext {
         buildToolsVersion = "37.0.0"
-        minSdkVersion = 24
+        // Android 9: releases are signed with the rotated key alone, which
+        // only APK Signature Scheme v3 (Android 9+) can trust as an update
+        // of the old one -- see docs/signing.md.
+        minSdkVersion = 28
         compileSdkVersion = 37
         targetSdkVersion = 36
         ndkVersion = "29.0.14206865"

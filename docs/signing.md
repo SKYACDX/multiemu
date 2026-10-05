@@ -15,9 +15,11 @@ vieja dice que la nueva (`multiemu2026`, RSA 4096) la sustituye.
   la versión anterior sin desinstalar ni perder datos. Una vez instalada, un
   APK firmado solo con la clave vieja se rechaza (el lineage no da el permiso
   `rollback` a la vieja).
-- **Android 7-8 (API 24-27)**: no entiende v3 y solo comprueba la firma v1/v2,
-  que sigue hecha con la clave vieja. Esos teléfonos siguen expuestos; la
-  única salida para ellos sería subir `minSdk` a 28.
+- **Android 7-8 (API 24-27)**: no entienden v3. La 1.13 (versionCode 29)
+  aún llevaba también la firma v2 con la clave vieja para ellos; desde la
+  1.14 la contraseña de la clave vieja ya no existe (se borró con
+  `keystore.properties` sin guardarla), así que se firma **solo con la
+  nueva** y `minSdk` es 28. Esos teléfonos se quedan en la 1.13.
 
 ## Dónde está cada cosa
 
@@ -25,7 +27,7 @@ Todo fuera del repo, en `D:\Keys\multiemu` (o lo que diga `MULTIEMU_KEYS`):
 
 | Archivo | Qué es |
 |---|---|
-| `multiemu-release.keystore` | clave vieja; hay que **conservarla siempre** (firma v1/v2 y extiende el lineage) |
+| `multiemu-release.keystore` | clave vieja; ya sin contraseña, no firma nada. Se conserva solo como registro |
 | `multiemu-release-2026.jks` | clave nueva (PKCS12, alias `multiemu2026`) |
 | `lineage-2026.bin` | la prueba de rotación vieja -> nueva (no es secreta) |
 
@@ -37,8 +39,8 @@ clave nueva no se puede volver a publicar una actualización**.
 ## Publicar
 
 1. `gradlew assembleRelease` en `app/android` -> `app-release-unsigned.apk`.
-2. `tools\sign-release.cmd` (lo corre quien tiene las contraseñas; las pide
-   una por una) -> `app-release.apk`, firmado y verificado.
+2. `tools\sign-release.cmd` (lo corre quien tiene la contraseña de la clave
+   nueva; la pide) -> `app-release.apk`, firmado y verificado.
 3. Subirlo como siempre (`docs/publishing.md`).
 
 Para probar en un teléfono sin las claves: `gradlew assembleDev` da la misma

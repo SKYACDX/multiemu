@@ -1,11 +1,12 @@
 @echo off
-rem Signs the release APK with key rotation (APK Signature Scheme v3), see
+rem Signs the release APK with the rotated key (APK Signature Scheme v3), see
 rem docs/signing.md. Run it yourself after `gradlew assembleRelease`: apksigner
-rem asks for each password -- paste them from the password manager. Nothing
-rem here stores them, and nothing else should.
+rem asks for the password -- paste it from the password manager. Nothing here
+rem stores it, and nothing else should.
 rem
-rem Android 9+ gets the new key (with the lineage proving the old one handed
-rem over); Android 7-8 can only check the old key, so v1/v2 still use it.
+rem The new key alone, with the lineage proving the old one handed over to it:
+rem Android 9+ (the minimum since 1.14) trusts it as an update of the old key.
+rem The old key's password is gone, so the old key signs nothing any more.
 setlocal
 set BT=D:\Android\build-tools\37.0.0
 if "%MULTIEMU_KEYS%"=="" set MULTIEMU_KEYS=D:\Keys\multiemu
@@ -18,11 +19,9 @@ if not exist "%APKDIR%\app-release-unsigned.apk" (
 
 "%BT%\zipalign.exe" -f -p 4 "%APKDIR%\app-release-unsigned.apk" "%APKDIR%\app-release-aligned.apk" || exit /b 1
 
-echo Firma #1 = clave anterior (multiemu), #2 = clave nueva (multiemu2026).
 call "%BT%\apksigner.bat" sign ^
-  --ks "%MULTIEMU_KEYS%\multiemu-release.keystore" --ks-key-alias multiemu ^
-  --next-signer --ks "%MULTIEMU_KEYS%\multiemu-release-2026.jks" --ks-key-alias multiemu2026 ^
-  --lineage "%MULTIEMU_KEYS%\lineage-2026.bin" --rotation-min-sdk-version 28 ^
+  --ks "%MULTIEMU_KEYS%\multiemu-release-2026.jks" --ks-key-alias multiemu2026 ^
+  --lineage "%MULTIEMU_KEYS%\lineage-2026.bin" ^
   --out "%APKDIR%\app-release.apk" "%APKDIR%\app-release-aligned.apk"
 set RESULT=%ERRORLEVEL%
 del "%APKDIR%\app-release-aligned.apk"
