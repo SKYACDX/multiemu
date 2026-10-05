@@ -82,8 +82,8 @@ android {
         applicationId "com.multiemuapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 29
-        versionName "1.13"
+        versionCode 30
+        versionName "1.14"
     }
     signingConfigs {
         debug {
