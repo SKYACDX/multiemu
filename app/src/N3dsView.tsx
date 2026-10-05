@@ -48,7 +48,13 @@ const N3dsView = forwardRef<N3dsViewHandle, ViewProps>((props, ref) => {
 export default N3dsView;
 
 const {N3dsState} = NativeModules as {
-  N3dsState: {saveSlot(romId: string, slot: number): Promise<void>; loadSlot(romId: string, slot: number): Promise<void>};
+  N3dsState: {
+    saveSlot(romId: string, slot: number): Promise<void>;
+    loadSlot(romId: string, slot: number): Promise<void>;
+    slotSize(romId: string, slot: number): Promise<number>;
+    uploadSlot(romId: string, slot: number, uploadUrl: string, contentType: string): Promise<number>;
+    downloadSlot(romId: string, slot: number, downloadUrl: string): Promise<void>;
+  };
 };
 
 /**
@@ -95,4 +101,22 @@ export function n3dsZipFingerprint(base64: string): Promise<number> {
 /** Closes the game and puts the cloud zip in place of its save (the old one is backed up). */
 export function n3dsRestoreSave(romPath: string, base64: string): Promise<void> {
   return N3dsCloud.restoreSave(romPath, base64);
+}
+
+/** A 3DS slot file's size in bytes (0 when empty). */
+export function n3dsSlotSize(romId: string, slot: number): Promise<number> {
+  return N3dsState.slotSize(romId, slot);
+}
+
+/** PUTs a 3DS slot file to a presigned URL, natively (a state is ~12MB). */
+export function n3dsUploadSlot(romId: string, slot: number, uploadUrl: string, contentType: string): Promise<number> {
+  return N3dsState.uploadSlot(romId, slot, uploadUrl, contentType);
+}
+
+/**
+ * Downloads a cloud state and loads it into the running game; the local slot
+ * is only replaced once it has loaded (one from a New 3DS may not).
+ */
+export function n3dsDownloadSlot(romId: string, slot: number, downloadUrl: string): Promise<void> {
+  return N3dsState.downloadSlot(romId, slot, downloadUrl);
 }

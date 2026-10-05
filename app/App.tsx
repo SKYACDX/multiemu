@@ -45,9 +45,12 @@ import DsView, {DsButton, DsViewHandle} from './src/DsView';
 import N3dsView, {
   load3dsSlot,
   N3dsButton,
+  n3dsDownloadSlot,
   n3dsGameKey,
   n3dsLocalSave,
   n3dsRestoreSave,
+  n3dsSlotSize,
+  n3dsUploadSlot,
   N3dsViewHandle,
   n3dsZipFingerprint,
   save3dsSlot,
@@ -116,12 +119,14 @@ import {crc32} from './src/patchers/crc32';
 import {applyPatch, detectPatchExt, SupportedPatchExt} from './src/patchers';
 import {downloadPatchBytes, findCoverArt, getAppInfo, Hack, Patch, RomHackHubFile} from './src/api/romHackHub';
 import {
+  cloudSaveDownloadUrl,
   CloudSave,
   downloadCloudSave,
   listCloudSaves,
   login as accountLogin,
   TotpRequiredError,
   uploadCloudSave,
+  uploadCloudSaveVia,
   verifyTotp as accountVerifyTotp,
 } from './src/api/romHackHubAccount';
 import {extractFromZip} from './src/zip';
@@ -246,6 +251,15 @@ function systemForPlatformSlug(slug: string): EmulatedSystem {
 // are manual full-state saves) so both kinds can live side by side.
 // Must be >=0 -- RomHack Hub's API rejects negative slot numbers.
 const GAME_SAVE_CLOUD_SLOT = 99;
+
+// A 3DS state from the desktop port can't load on Android, or one from
+// Android there: Azahar serializes with boost's binary archive, which isn't
+// portable (a `long` is 4 bytes on Windows, 8 on Android arm64). So the two
+// keep their 3DS states in separate cloud slots -- Windows 0-3, Android 10-13
+// -- rather than overwriting each other's with something unusable.
+const N3DS_CLOUD_STATE_SLOT_BASE = 10;
+const cloudStateSlot = (system: EmulatedSystem, slot: number) =>
+  system === '3ds' ? N3DS_CLOUD_STATE_SLOT_BASE + slot : slot;
 
 // A 4th state slot, written automatically (see the autosave effect
 // below) so a crash or an accidental close doesn't cost hours of
@@ -550,6 +564,19 @@ function App(): React.JSX.Element {
       if (!authToken || !gameKey) return;
       setCloudBusySlot(slot);
       try {
+        if (currentSaveSystem.current === '3ds') {
+          // The state of the running game, like GBA/DS -- written to this
+          // slot first, then the file goes up natively (it's ~12MB).
+          const romId = currentRomId.current!;
+          await save3dsSlot(romId, slot);
+          setStateSlots(await listStateSlots(romId));
+          const size = await n3dsSlotSize(romId, slot);
+          await uploadCloudSaveVia(authToken, gameKey, cloudStateSlot('3ds', slot), size, `slot${slot}.sav`, (url, type) =>
+            n3dsUploadSlot(romId, slot, url, type),
+          );
+          refreshCloudSaves();
+          return;
+        }
         const base64 = await saveEmuState();
         const bytes = base64ToBytes(base64);
         await uploadCloudSave(authToken, gameKey, slot, bytes, `slot${slot}.sav`);
@@ -567,10 +594,18 @@ function App(): React.JSX.Element {
     async (slot: number) => {
       const romId = currentRomId.current;
       if (!authToken || !romId) return;
-      const remote = cloudSaves.find(s => s.slot === slot);
+      const remote = cloudSaves.find(s => s.slot === cloudStateSlot(currentSaveSystem.current, slot));
       if (!remote) return;
       setCloudBusySlot(slot);
       try {
+        if (currentSaveSystem.current === '3ds') {
+          // Loaded into the game first; the local slot only changes if that
+          // worked (a state from a New 3DS may not load here).
+          await n3dsDownloadSlot(romId, slot, await cloudSaveDownloadUrl(authToken, remote.id));
+          setStateSlots(await listStateSlots(romId));
+          closeSaveModal();
+          return;
+        }
         const bytes = await downloadCloudSave(authToken, remote.id);
         const base64 = bytesToBase64(bytes);
         await loadEmuState(base64);
@@ -2010,10 +2045,10 @@ function App(): React.JSX.Element {
   // content, only the surrounding <Modal>/<Pressable> backdrop differs
   // per layout (well, it doesn't -- but keeping one JSX literal here
   // avoids maintaining two copies of this large block in sync).
-  // The in-game save syncs on every system; a 3DS state is ~11MB, over what
-  // the cloud takes, so those stay local.
+  // Everything syncs, the game save and the state slots alike. A 3DS state
+  // only loads on the same emulated model, though (see n3dsDownloadSlot).
   const cloudEnabled = !!authToken;
-  const stateCloudEnabled = !!authToken && system !== '3ds';
+  const stateCloudEnabled = !!authToken;
   const saveModalContent = (
     <>
       <Text style={styles.modalTitle}>Guardado manual</Text>
@@ -2023,7 +2058,7 @@ function App(): React.JSX.Element {
           <View style={styles.slotsRow}>
             {[0, 1, 2].map(slot => {
               const info = stateSlots.find(s => s.slot === slot) ?? {slot, exists: false};
-              const cloud = cloudSaves.find(s => s.slot === slot);
+              const cloud = cloudSaves.find(s => s.slot === cloudStateSlot(system, slot));
               const cloudBusy = cloudBusySlot === slot;
               return (
                 <View key={slot} style={styles.slotCard}>
@@ -2179,8 +2214,8 @@ function App(): React.JSX.Element {
       {system === '3ds' ? (
         <Text style={styles.modalCloudHint}>
           {authToken
-            ? 'En 3DS solo el guardado del juego va a la nube; los slots se quedan en este teléfono.'
-            : 'Inicia sesión en Cuenta para sincronizar el guardado del juego en la nube.'}
+            ? 'Los estados de 3DS en la nube son solo de Android: los de la app de Windows no son compatibles. El guardado del juego sí se comparte.'
+            : 'Inicia sesión en Cuenta para sincronizar tus guardados en la nube.'}
         </Text>
       ) : (
         !authToken && <Text style={styles.modalCloudHint}>Inicia sesión en Cuenta para sincronizar guardados en la nube.</Text>

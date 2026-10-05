@@ -13,6 +13,8 @@ import com.facebook.react.uimanager.SimpleViewManager
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.uimanager.ViewManager
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * Exposes [N3dsView] to React Native as `<N3dsView />`. Commands, same
@@ -62,6 +64,81 @@ class N3dsStateModule(private val context: ReactApplicationContext) : ReactConte
     @ReactMethod
     fun loadSlot(romId: String, slot: Int, promise: Promise) {
         N3dsSession.loadState(slotFile(romId, slot).path) { error -> settle(promise, error) }
+    }
+
+    // ---- Slots in the cloud --------------------------------------------------
+    // A state is ~11-13MB: these move it between the slot file and a presigned
+    // URL themselves (JS only gets the URLs from the API), rather than as a
+    // base64 string through the bridge. Off the main thread; never on the
+    // emulation thread, which keeps running the game meanwhile.
+
+    /** The slot file's size in bytes (0 if empty) -- the presign request needs it up front. */
+    @ReactMethod
+    fun slotSize(romId: String, slot: Int, promise: Promise) {
+        promise.resolve(slotFile(romId, slot).length().toDouble())
+    }
+
+    /** PUTs the slot's file to [uploadUrl]; resolves its size in bytes. */
+    @ReactMethod
+    fun uploadSlot(romId: String, slot: Int, uploadUrl: String, contentType: String, promise: Promise) {
+        Thread {
+            try {
+                val file = slotFile(romId, slot)
+                require(file.exists()) { "Ese slot está vacío" }
+                val connection = (URL(uploadUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "PUT"
+                    doOutput = true
+                    setRequestProperty("Content-Type", contentType)
+                    setFixedLengthStreamingMode(file.length())
+                }
+                file.inputStream().use { input -> connection.outputStream.use { input.copyTo(it) } }
+                val status = connection.responseCode
+                connection.disconnect()
+                check(status in 200..299) { "No se pudo subir el estado (HTTP $status)" }
+                promise.resolve(file.length().toDouble())
+            } catch (e: Exception) {
+                promise.reject("N3DS_STATE", e.message, e)
+            }
+        }.start()
+    }
+
+    /**
+     * Downloads a state from [downloadUrl] and loads it into the running game.
+     * Only once it has loaded does it replace the slot's file: a state the
+     * core can't load -- one from the desktop port, say, whose format differs
+     * ("incompatible native format - size of long") -- leaves the local slot
+     * as it was.
+     */
+    @ReactMethod
+    fun downloadSlot(romId: String, slot: Int, downloadUrl: String, promise: Promise) {
+        Thread {
+            val target = slotFile(romId, slot)
+            val incoming = File(target.path + ".cloud")
+            try {
+                val connection = URL(downloadUrl).openConnection() as HttpURLConnection
+                val status = connection.responseCode
+                check(status in 200..299) { "No se pudo descargar el estado (HTTP $status)" }
+                connection.inputStream.use { input -> incoming.outputStream().use { input.copyTo(it) } }
+                connection.disconnect()
+            } catch (e: Exception) {
+                incoming.delete()
+                promise.reject("N3DS_STATE", e.message, e)
+                return@Thread
+            }
+            N3dsSession.loadState(incoming.path) { error ->
+                if (error != null) {
+                    incoming.delete()
+                    promise.reject(
+                        "N3DS_STATE_INCOMPATIBLE",
+                        "Este estado no se pudo cargar en este teléfono (los estados de 3DS de la app " +
+                            "de Windows no son compatibles con Android). Tu slot no se ha tocado.",
+                    )
+                } else {
+                    incoming.renameTo(target.also { it.delete() })
+                    promise.resolve(null)
+                }
+            }
+        }.start()
     }
 
     private fun settle(promise: Promise, error: String?) {

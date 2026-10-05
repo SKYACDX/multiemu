@@ -17,8 +17,22 @@ y los flujos de guardado del juego de `App.tsx`.
   con "/" final.
 - Al restaurar se escribe en el id0/id1 que exista en el dispositivo local.
   Al leer se rechazan rutas con `..`, absolutas o con letra de unidad.
-- Los estados de 3DS **no** se sincronizan (pasan del límite de 20 MB del
-  servidor).
+- Los **estados** de 3DS también van a la nube (pesan ~9-13 MB, bajo el
+  límite de 20 MB), pero **no son portables entre plataformas**: Azahar los
+  serializa con el `binary_archive` de boost, que guarda el tamaño de los
+  tipos (`long` mide 4 bytes en Windows/MSVC y 8 en Android arm64). Cargar en
+  Android un estado de Windows falla con *"incompatible native format - size
+  of long"*. Por eso cada plataforma usa sus propios slots, con la misma
+  clave y nombre `slotN.sav`:
+
+  | Slots | Qué |
+  |---|---|
+  | 99 | guardado del juego (`game.zip`), el único compartido y portable |
+  | 0-3 | estados de Windows (3 = automático) |
+  | 10-13 | estados de Android (slot local N -> nube 10+N; 13 = automático) |
+
+  En Android un estado bajado de la nube se carga primero en el juego y solo
+  sustituye al slot local si cargó (`N3dsStateModule.downloadSlot`).
 
 ## Clave
 

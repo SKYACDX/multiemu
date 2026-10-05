@@ -90,6 +90,38 @@ export async function uploadCloudSave(
   );
 }
 
+/**
+ * uploadCloudSave for a file too big to hold in JS (a 3DS state, ~12MB):
+ * [put] sends it to the presigned URL from native code.
+ */
+export async function uploadCloudSaveVia(
+  token: string,
+  gameKey: string,
+  slot: number,
+  fileSize: number,
+  filename: string,
+  put: (uploadUrl: string, contentType: string) => Promise<unknown>,
+): Promise<void> {
+  const contentType = 'application/octet-stream';
+  const {uploadUrl, storedName} = await accountFetch<{uploadUrl: string; storedName: string}>(
+    '/api/saves/presign',
+    {method: 'POST', body: JSON.stringify({filename, fileSize, contentType})},
+    token,
+  );
+  await put(uploadUrl, contentType);
+  await accountFetch(
+    '/api/saves',
+    {method: 'POST', body: JSON.stringify({gameKey, slot, storedName, originalName: filename})},
+    token,
+  );
+}
+
+/** The short-lived URL a cloud save downloads from, for native code to fetch itself. */
+export async function cloudSaveDownloadUrl(token: string, id: string): Promise<string> {
+  const {downloadUrl} = await accountFetch<{downloadUrl: string}>(`/api/saves/${id}/download`, {}, token);
+  return downloadUrl;
+}
+
 export async function downloadCloudSave(token: string, id: string): Promise<Uint8Array> {
   const {downloadUrl} = await accountFetch<{downloadUrl: string}>(`/api/saves/${id}/download`, {}, token);
   const response = await fetch(downloadUrl);
