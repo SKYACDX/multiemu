@@ -30,6 +30,8 @@ interface RomLibraryNativeModule {
   loadFromCache(id: string): Promise<{base64: string}>;
   loadPathFromCache(id: string): Promise<{path: string}>;
   dsSaveId(path: string, legacyId: string): Promise<string>;
+  romCrc32(path: string): Promise<string>;
+  romTitle(path: string, system: string): Promise<string | null>;
   deleteFromCache(id: string): Promise<void>;
   pickFolder(): Promise<{uri: string; name: string}>;
   getLastFolder(): Promise<{uri: string; name: string} | null>;
@@ -164,4 +166,14 @@ export const legacyDsSaveId = (name: string, size: number) => `${name}-${size}`.
  */
 export function dsSaveId(path: string, legacyId: string): Promise<string> {
   return RomLibrary.dsSaveId(path, legacyId);
+}
+
+/** A ROM file's CRC32, unpadded hex -- a GB/GBA/DS game's cloud key, computed natively. */
+export function romCrc32(path: string): Promise<string> {
+  return RomLibrary.romCrc32(path);
+}
+
+/** The game's name for its cloud saves, read from the ROM (never the file name); null if none. */
+export function romTitle(path: string, system: string): Promise<string | null> {
+  return RomLibrary.romTitle(path, system);
 }

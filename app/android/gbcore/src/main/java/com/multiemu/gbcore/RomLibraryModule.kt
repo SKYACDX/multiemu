@@ -161,16 +161,7 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     fun dsSaveId(path: String, legacyId: String, promise: Promise) {
         Thread {
             try {
-                val crc = java.util.zip.CRC32()
-                File(path).inputStream().use { input ->
-                    val buffer = ByteArray(1 shl 20)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        crc.update(buffer, 0, read)
-                    }
-                }
-                val id = java.lang.Long.toHexString(crc.value)
+                val id = fileCrc32(File(path))
                 if (legacyId != id) {
                     val saves = File(reactContext.filesDir, "saves")
                     moveIfFree(File(saves, "$legacyId.sav"), File(saves, "$id.sav"))
@@ -184,6 +175,37 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
                 promise.reject("DS_SAVE_ID", e.message, e)
             }
         }.start()
+    }
+
+    /** A ROM file's CRC32 as unpadded hex -- the cloud key of a GB/GBA/DS game (see dsSaveId). */
+    @ReactMethod
+    fun romCrc32(path: String, promise: Promise) {
+        Thread {
+            try {
+                promise.resolve(fileCrc32(File(path)))
+            } catch (e: Exception) {
+                promise.reject("ROM_CRC32", e.message, e)
+            }
+        }.start()
+    }
+
+    /** The game's name for its cloud saves (RomTitle.forCloud); null when the ROM has none. */
+    @ReactMethod
+    fun romTitle(path: String, system: String, promise: Promise) {
+        Thread { promise.resolve(RomTitle.forCloud(File(path), system)) }.start()
+    }
+
+    private fun fileCrc32(file: File): String {
+        val crc = java.util.zip.CRC32()
+        file.inputStream().use { input ->
+            val buffer = ByteArray(1 shl 20)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                crc.update(buffer, 0, read)
+            }
+        }
+        return java.lang.Long.toHexString(crc.value)
     }
 
     private fun moveIfFree(from: File, to: File) {

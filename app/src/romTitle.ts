@@ -32,3 +32,28 @@ function decodeAscii(bytes: Uint8Array, offset: number, length: number): string 
   }
   return result.trim();
 }
+
+/**
+ * The name inside a DS game's banner -- every line but the last (the
+ * publisher), Spanish if the game has it, else English -- like RomTitle.kt
+ * and the desktop app. Null without a banner.
+ */
+export function dsBannerTitle(bytes: Uint8Array): string | null {
+  if (bytes.length < 0x6c) return null;
+  const banner = (bytes[0x68] | (bytes[0x69] << 8) | (bytes[0x6a] << 16) | (bytes[0x6b] << 24)) >>> 0;
+  if (!banner) return null;
+  for (const language of [5, 1]) {
+    const at = banner + 0x240 + language * 0x100;
+    if (bytes.length < at + 0x100) continue;
+    let text = '';
+    for (let i = 0; i < 0x100; i += 2) {
+      const unit = bytes[at + i] | (bytes[at + i + 1] << 8);
+      if (!unit) break;
+      text += String.fromCharCode(unit);
+    }
+    const lines = text.trim().split('\n');
+    const name = (lines.length > 1 ? lines.slice(0, -1) : lines).join(' ').replace(/\s+/g, ' ').trim();
+    if (name) return name;
+  }
+  return null;
+}

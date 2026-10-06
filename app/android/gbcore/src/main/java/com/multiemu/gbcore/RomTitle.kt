@@ -26,6 +26,27 @@ object RomTitle {
         }
     }.getOrNull()
 
+    /**
+     * The name a game's cloud saves carry (RomHack Hub's profile shows it):
+     * the DS banner / 3DS SMDH name, else the header's ASCII title -- DS at
+     * 0x00 (12), GBA at 0xA0 (12), GB/GBC at 0x134 (16). Never the file name.
+     */
+    fun forCloud(file: File, system: String): String? = read(file, system) ?: runCatching {
+        RandomAccessFile(file, "r").use { rom ->
+            when (system) {
+                "nds" -> ascii(bytes(rom, 0x00, 12))
+                "gba" -> ascii(bytes(rom, 0xA0, 12))
+                "gb", "gbc" -> ascii(bytes(rom, 0x134, 16))
+                else -> null
+            }
+        }
+    }.getOrNull()
+
+    /** Printable ASCII up to the first NUL, trimmed; null if nothing is left. */
+    private fun ascii(b: ByteArray): String? =
+        b.takeWhile { it != 0.toByte() }.filter { it in 0x20..0x7E }
+            .map { it.toInt().toChar() }.joinToString("").trim().ifEmpty { null }
+
     /** The banner (offset at 0x68): six 0x100-byte UTF-16 titles from +0x240, the last line being the publisher. */
     private fun ds(rom: RandomAccessFile): String? {
         val banner = u32(bytes(rom, 0x68, 4), 0)

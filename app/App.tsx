@@ -74,7 +74,7 @@ import ThemeEditorScreen from './src/ThemeEditorScreen';
 import ThemesExploreScreen from './src/ThemesExploreScreen';
 import {createTheme, incrementThemeDownload, updateTheme} from './src/api/themes';
 import {defaultTheme, resolveControlStyle, Theme, withAlpha} from './src/theme';
-import {readRomTitle} from './src/romTitle';
+import {dsBannerTitle, readRomTitle} from './src/romTitle';
 import {
   downloadRomToPath,
   InvalidRomExtensionError,
@@ -97,6 +97,8 @@ import {
   listRomFolder,
   dsSaveId,
   legacyDsSaveId,
+  romCrc32,
+  romTitle,
   listStateSlots,
   loadCachedRom,
   loadCachedRomPath,
@@ -131,6 +133,7 @@ import {
   setSessionRejectedHandler,
   cloudSaveDownloadUrl,
   CloudSave,
+  cleanSaveTitle,
   deleteCloudSave,
   downloadCloudSave,
   listCloudSaves,
@@ -138,6 +141,7 @@ import {
   TotpRequiredError,
   uploadCloudSave,
   uploadCloudSaveVia,
+  setCloudSaveTitle,
   verifyTotp as accountVerifyTotp,
 } from './src/api/romHackHubAccount';
 import {extractFromZip} from './src/zip';
@@ -275,15 +279,54 @@ const N3DS_CLOUD_STATE_SLOT_BASE = 10;
  * one. A slot the new key already has is left alone on both sides -- the
  * upload is an upsert, and the new key's copy may be the Windows app's.
  */
-async function moveLegacyDsCloudSaves(token: string, legacyId: string, romId: string) {
+async function moveLegacyDsCloudSaves(token: string, legacyId: string, romId: string, title: string | null) {
   const saves = await listCloudSaves(token);
   const newKey = `nds:${romId}`;
   for (const old of saves.filter(save => save.gameKey === `nds:${legacyId}`)) {
     if (saves.some(save => save.gameKey === newKey && save.slot === old.slot)) continue;
     const bytes = await downloadCloudSave(token, old.id);
-    await uploadCloudSave(token, newKey, old.slot, bytes, old.originalName);
+    await uploadCloudSave(token, newKey, old.slot, bytes, old.originalName, title ?? old.title);
     await deleteCloudSave(token, old.id);
   }
+}
+
+const TITLED_KEYS_PREFERENCE = 'cloudSaveTitlesSent';
+
+/**
+ * Names the account's cloud saves that have no title yet, from the ROMs in
+ * Recientes (RomHack Hub's public profile shows the name, never the key).
+ * Each key is named once -- remembered in a preference -- and only from the
+ * ROM itself (romTitle), never its file name. Skips a system with nothing
+ * to name, so DS ROMs aren't hashed for nothing.
+ */
+async function nameUntitledCloudSaves(token: string) {
+  const untitled = new Set(
+    (await listCloudSaves(token)).filter(save => !save.title).map(save => save.gameKey),
+  );
+  const sent: string[] = JSON.parse((await getPreference(TITLED_KEYS_PREFERENCE)) ?? '[]');
+  sent.forEach(key => untitled.delete(key));
+  if (!untitled.size) return;
+  const wanted = (prefix: string) => [...untitled].some(key => key.startsWith(`${prefix}:`));
+  for (const rom of await listCachedRoms()) {
+    if (!untitled.size) break;
+    if (!wanted(rom.system)) continue;
+    try {
+      const path = await loadCachedRomPath(rom.id);
+      const keys =
+        rom.system === '3ds'
+          ? [await n3dsGameKey(path)]
+          : [`${rom.system}:${await romCrc32(path)}`, ...(rom.system === 'nds' ? [`nds:${legacyDsSaveId(rom.name, rom.size)}`] : [])];
+      const key = keys.find(candidate => untitled.has(candidate));
+      if (!key) continue;
+      const title = cleanSaveTitle(await romTitle(path, rom.system));
+      if (title) await setCloudSaveTitle(token, key, title);
+      sent.push(key);
+      untitled.delete(key);
+    } catch {
+      // That ROM is gone or the request failed: try again next time.
+    }
+  }
+  await setPreference(TITLED_KEYS_PREFERENCE, JSON.stringify(sent));
 }
 
 const cloudStateSlot = (system: EmulatedSystem, slot: number) =>
@@ -338,6 +381,9 @@ function App(): React.JSX.Element {
   // A 3DS game's cloud key is "3ds:<program ID>" (docs/3ds-cloud-save.md),
   // not "<system>:<romId>": read from the ROM when it opens.
   const current3dsCloudKey = useRef<string | null>(null);
+  // The running game's name as its cloud saves carry it (RomHack Hub's
+  // profile shows it): read from the ROM, never from the file name.
+  const cloudTitle = useRef<string | null>(null);
   // Read by cloudGameKey/readGameSavePaused/checkGameSaveConflict -- a
   // ref (not the system state) so it's never stale/racy relative to
   // those closures, same reasoning as currentRomId.
@@ -401,7 +447,15 @@ function App(): React.JSX.Element {
   // A 3DS game's cloud key comes from its own header; once known, the same
   // conflict check GBA/DS get when a game opens.
   const checkGameSaveConflictRef = useRef<((romId: string) => void) | null>(null);
+  const loadCloudTitle = (path: string, system: string) => {
+    cloudTitle.current = null;
+    romTitle(path, system)
+      .then(title => (cloudTitle.current = title))
+      .catch(() => {});
+  };
+
   const start3dsCloudSync = (path: string, romId: string) => {
+    loadCloudTitle(path, '3ds');
     current3dsCloudKey.current = null;
     lastSyncedSaveCrc.current = null;
     saveConflictChecked.current = false;
@@ -504,6 +558,12 @@ function App(): React.JSX.Element {
       })
       .catch(() => {});
   }, [refreshRecentRoms]);
+
+  // Signed in (at start-up or just now): name the cloud saves that have no
+  // title yet, in the background.
+  useEffect(() => {
+    if (authToken) nameUntitledCloudSaves(authToken).catch(() => {});
+  }, [authToken]);
 
   const handleLogin = useCallback(async (email: string, password: string, label: string) => {
     try {
@@ -612,15 +672,21 @@ function App(): React.JSX.Element {
           await save3dsSlot(romId, slot);
           setStateSlots(await listStateSlots(romId));
           const size = await n3dsSlotSize(romId, slot);
-          await uploadCloudSaveVia(authToken, gameKey, cloudStateSlot('3ds', slot), size, `slot${slot}.sav`, (url, type) =>
-            n3dsUploadSlot(romId, slot, url, type),
+          await uploadCloudSaveVia(
+            authToken,
+            gameKey,
+            cloudStateSlot('3ds', slot),
+            size,
+            `slot${slot}.sav`,
+            (url, type) => n3dsUploadSlot(romId, slot, url, type),
+            cloudTitle.current,
           );
           refreshCloudSaves();
           return;
         }
         const base64 = await saveEmuState();
         const bytes = base64ToBytes(base64);
-        await uploadCloudSave(authToken, gameKey, slot, bytes, `slot${slot}.sav`);
+        await uploadCloudSave(authToken, gameKey, slot, bytes, `slot${slot}.sav`, cloudTitle.current);
         refreshCloudSaves();
       } catch (e) {
         Alert.alert('No se pudo subir a la nube', e instanceof Error ? e.message : String(e));
@@ -724,7 +790,7 @@ function App(): React.JSX.Element {
     try {
       const local = await readLocalGameSave(romId);
       if (!local) throw new Error('Este juego todavía no ha guardado nada');
-      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, local.bytes, gameSaveFileName());
+      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, local.bytes, gameSaveFileName(), cloudTitle.current);
       lastSyncedSaveCrc.current = local.crc;
       refreshCloudSaves();
     } catch (e) {
@@ -831,7 +897,7 @@ function App(): React.JSX.Element {
       if (!authToken || !gameKey) return;
       try {
         if (currentSaveSystem.current === 'nds' && dsLegacySaveId.current && dsLegacySaveId.current !== romId) {
-          await moveLegacyDsCloudSaves(authToken, dsLegacySaveId.current, romId);
+          await moveLegacyDsCloudSaves(authToken, dsLegacySaveId.current, romId, cloudTitle.current);
         }
         const saves = await listCloudSaves(authToken);
         const remote = saves.find(s => s.gameKey === gameKey && s.slot === GAME_SAVE_CLOUD_SLOT);
@@ -884,7 +950,7 @@ function App(): React.JSX.Element {
             {
               text: 'Este dispositivo',
               onPress: async () => {
-                await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, localBytes!, gameSaveFileName());
+                await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, localBytes!, gameSaveFileName(), cloudTitle.current);
                 lastSyncedSaveCrc.current = localCrc;
                 saveConflictChecked.current = true;
                 refreshCloudSaves();
@@ -943,7 +1009,7 @@ function App(): React.JSX.Element {
     }
     if (!local || local.crc === lastSyncedSaveCrc.current) return;
     try {
-      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, local.bytes, gameSaveFileName());
+      await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, local.bytes, gameSaveFileName(), cloudTitle.current);
       lastSyncedSaveCrc.current = local.crc;
       refreshCloudSaves();
     } catch {
@@ -1032,6 +1098,8 @@ function App(): React.JSX.Element {
       baseRomBytes.current = bytes;
       currentRomId.current = crc32(bytes).toString(16);
       dsLegacySaveId.current = null; // already keyed by CRC32 -- nothing to move
+      cloudTitle.current =
+        (targetSystem === 'nds' ? dsBannerTitle(bytes) : null) ?? (readRomTitle(bytes, targetSystem) || null);
       currentSaveSystem.current = targetSystem;
       setRomLabel(label);
       setSystem(targetSystem);
@@ -1343,6 +1411,7 @@ function App(): React.JSX.Element {
         const romId = await dsSaveId(dsPath, legacyId);
         currentRomId.current = romId;
         dsLegacySaveId.current = legacyId;
+        loadCloudTitle(dsPath, 'nds');
         setRomLabel(picked.name);
         setCoverImageUrl(null);
         setGbaCartLabel(null);
@@ -1475,6 +1544,7 @@ function App(): React.JSX.Element {
           const romId = await dsSaveId(dsPath, legacyId);
           currentRomId.current = romId;
           dsLegacySaveId.current = legacyId;
+          loadCloudTitle(dsPath, 'nds');
           currentSaveSystem.current = 'nds';
           currentDsRomPath.current = dsPath;
           hasUserRom.current = true;
@@ -1542,6 +1612,7 @@ function App(): React.JSX.Element {
           const romId = await dsSaveId(dsPath, legacyId);
           currentRomId.current = romId;
           dsLegacySaveId.current = legacyId;
+          loadCloudTitle(dsPath, 'nds');
           setRomLabel(file.title);
           setCoverImageUrl(null);
           setGbaCartLabel(null);

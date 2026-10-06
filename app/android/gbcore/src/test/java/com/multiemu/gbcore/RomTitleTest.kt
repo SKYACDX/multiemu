@@ -52,4 +52,16 @@ class RomTitleTest {
 
     @Test
     fun otherSystemsHaveNone() = assertNull(RomTitle.read(ds("x", "x"), "gba"))
+
+    @Test
+    fun cloudTitleFallsBackToTheHeader() {
+        val gba = rom(0x200) { it.text(0xA0, "POKEMON FIRE", Charsets.US_ASCII) }
+        assertEquals("POKEMON FIRE", RomTitle.forCloud(gba, "gba"))
+        val gb = rom(0x200) { it.text(0x134, "UCITY", Charsets.US_ASCII) } // NUL-padded to 16
+        assertEquals("UCITY", RomTitle.forCloud(gb, "gb"))
+        val dsWithoutBanner = rom(0x200) { it.text(0x00, "HOMEBREW", Charsets.US_ASCII) }
+        assertEquals("HOMEBREW", RomTitle.forCloud(dsWithoutBanner, "nds"))
+        assertEquals("Pokémon Y", RomTitle.forCloud(n3ds(noCrypto = true), "3ds"))
+        assertNull(RomTitle.forCloud(rom(0x200) {}, "gba"))
+    }
 }

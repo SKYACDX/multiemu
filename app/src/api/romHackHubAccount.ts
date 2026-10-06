@@ -15,6 +15,19 @@ export interface CloudSave {
   fileSize: number;
   updatedAt: string;
   downloadUrl: string;
+  /** The game's name, read from the ROM itself; null until some device has sent one. */
+  title?: string | null;
+}
+
+/**
+ * A save title the server accepts: no control characters, whitespace
+ * collapsed, at most 120 characters; undefined when nothing is left. It must
+ * come from the ROM (header, DS banner, 3DS SMDH) -- never from the file
+ * name, which is what the public profile used to leak.
+ */
+export function cleanSaveTitle(title: string | null | undefined): string | undefined {
+  const clean = (title ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120).trim();
+  return clean || undefined;
 }
 
 export class TotpRequiredError extends Error {
@@ -88,6 +101,7 @@ export async function uploadCloudSave(
   slot: number,
   bytes: Uint8Array,
   filename: string,
+  title?: string | null,
 ): Promise<void> {
   const contentType = 'application/octet-stream';
   const {uploadUrl, storedName} = await accountFetch<{uploadUrl: string; storedName: string}>(
@@ -103,7 +117,7 @@ export async function uploadCloudSave(
 
   await accountFetch(
     '/api/saves',
-    {method: 'POST', body: JSON.stringify({gameKey, slot, storedName, originalName: filename})},
+    {method: 'POST', body: JSON.stringify({gameKey, slot, storedName, originalName: filename, title: cleanSaveTitle(title)})},
     token,
   );
 }
@@ -119,6 +133,7 @@ export async function uploadCloudSaveVia(
   fileSize: number,
   filename: string,
   put: (uploadUrl: string, contentType: string) => Promise<unknown>,
+  title?: string | null,
 ): Promise<void> {
   const contentType = 'application/octet-stream';
   const {uploadUrl, storedName} = await accountFetch<{uploadUrl: string; storedName: string}>(
@@ -129,9 +144,16 @@ export async function uploadCloudSaveVia(
   await put(uploadUrl, contentType);
   await accountFetch(
     '/api/saves',
-    {method: 'POST', body: JSON.stringify({gameKey, slot, storedName, originalName: filename})},
+    {method: 'POST', body: JSON.stringify({gameKey, slot, storedName, originalName: filename, title: cleanSaveTitle(title)})},
     token,
   );
+}
+
+/** Names every save of [gameKey] without uploading anything (PUT /api/saves/title). */
+export async function setCloudSaveTitle(token: string, gameKey: string, title: string): Promise<void> {
+  const clean = cleanSaveTitle(title);
+  if (!clean) return;
+  await accountFetch('/api/saves/title', {method: 'PUT', body: JSON.stringify({gameKey, title: clean})}, token);
 }
 
 /** The short-lived URL a cloud save downloads from, for native code to fetch itself. */
