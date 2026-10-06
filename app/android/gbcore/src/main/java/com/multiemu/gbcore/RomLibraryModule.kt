@@ -58,6 +58,9 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     private var pendingFolderPromise: Promise? = null
     private var pendingSaveImport: Pair<Promise, String>? = null
     private var pendingSaveExport: Pair<Promise, ByteArray>? = null
+    // A recovered import, converted and waiting for the user's yes: the bytes
+    // stay here, so what gets written is what SaveNormalizer produced.
+    private var recoveredImport: Pair<String, ByteArray>? = null
 
     init {
         reactContext.addActivityEventListener(this)
@@ -405,8 +408,9 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
 
     /**
      * An import left half-way by a restart (PendingSaveImport): resolves
-     * {romId, label, base64, note} once it's read and converted, or null if
-     * there is none. Either way it's forgotten -- the user is asked once.
+     * {label, note} once it's read and converted -- the bytes stay here for
+     * commitPendingSaveImport -- or null if there is none (or it's over an
+     * hour old). Either way the pending note is forgotten: asked once.
      */
     @ReactMethod
     fun takePendingSaveImport(promise: Promise) {
@@ -430,12 +434,13 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
                     out.toByteArray()
                 } ?: throw IllegalStateException("No se pudo abrir el archivo")
                 when (val result = SaveNormalizer.normalize(bytes, pending.target)) {
-                    is SaveNormalizer.Result.Ok -> promise.resolve(Arguments.createMap().apply {
-                        putString("romId", pending.romId)
-                        putString("label", pending.label)
-                        putString("base64", Base64.encodeToString(result.bytes, Base64.NO_WRAP))
-                        putString("note", result.note)
-                    })
+                    is SaveNormalizer.Result.Ok -> {
+                        recoveredImport = pending.romId to result.bytes
+                        promise.resolve(Arguments.createMap().apply {
+                            putString("label", pending.label)
+                            putString("note", result.note)
+                        })
+                    }
                     is SaveNormalizer.Result.Error -> promise.reject("NOT_A_SAVE", result.message)
                 }
             } catch (e: Exception) {
@@ -447,16 +452,24 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     }
 
     /**
-     * Writes a recovered import (takePendingSaveImport) in place of the
-     * game's save -- at start-up, before any game is running, so no core can
-     * write over it. Keeps one .bak of the old save, like replaceSave.
+     * The user said yes: writes the recovered import (takePendingSaveImport)
+     * in place of the game's save -- at start-up, before any game is running,
+     * so no core can write over it. Keeps one .bak of the old save, like
+     * replaceSave. [confirm] false just drops it.
      */
     @ReactMethod
-    fun commitPendingSaveImport(romId: String, base64: String, promise: Promise) {
+    fun commitPendingSaveImport(confirm: Boolean, promise: Promise) {
+        val recovered = recoveredImport
+        recoveredImport = null
+        if (!confirm || recovered == null) {
+            promise.resolve(null)
+            return
+        }
         try {
+            val (romId, bytes) = recovered
             val file = replacementSaveFile(reactContext.filesDir, romId)
             if (file.exists()) file.copyTo(File(file.path + ".bak"), overwrite = true)
-            writeFileAtomically(file, Base64.decode(base64, Base64.DEFAULT))
+            writeFileAtomically(file, bytes)
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("IMPORT_ERROR", "No se pudo guardar la partida.", e)

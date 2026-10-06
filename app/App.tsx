@@ -591,11 +591,11 @@ function App(): React.JSX.Element {
             pending.note ? `\n\n${pending.note}` : ''
           }\n\nSi la importas, reemplaza la partida de ese juego; la actual se guarda como copia de seguridad.`,
           [
-            {text: 'Descartar', style: 'cancel'},
+            {text: 'Descartar', style: 'cancel', onPress: () => commitPendingSaveImport(false).catch(() => {})},
             {
               text: 'Importar',
               onPress: () =>
-                commitPendingSaveImport(pending.romId, pending.base64)
+                commitPendingSaveImport(true)
                   .then(() => Alert.alert('Partida importada', 'Se usará la próxima vez que abras ese juego.'))
                   .catch(e => Alert.alert('No se pudo importar', e instanceof Error ? e.message : String(e))),
             },

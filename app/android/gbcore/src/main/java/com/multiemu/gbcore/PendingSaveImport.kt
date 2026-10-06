@@ -16,13 +16,17 @@ import android.net.Uri
 object PendingSaveImport {
     const val REQUEST_CODE = 9003
     private const val PREFS = "pending_save_import"
+    // Older than this, it's forgotten (and its read grant released): no
+    // "¿Terminar la importación?" days later for a game nobody remembers.
+    private const val MAX_AGE_MS = 60 * 60 * 1000L
 
     class Pending(val romId: String, val target: String, val label: String, val uri: Uri)
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun start(context: Context, romId: String, target: String, label: String) {
-        prefs(context).edit().clear().putString("romId", romId).putString("target", target).putString("label", label).apply()
+        prefs(context).edit().clear().putString("romId", romId).putString("target", target).putString("label", label)
+            .putLong("startedAt", System.currentTimeMillis()).apply()
     }
 
     /** From MainActivity.onActivityResult, before React sees it (it may not be up yet). */
@@ -37,6 +41,7 @@ object PendingSaveImport {
         val p = prefs(context)
         val romId = p.getString("romId", null) ?: return null
         val uri = p.getString("uri", null) ?: return null
+        if (System.currentTimeMillis() - p.getLong("startedAt", 0) > MAX_AGE_MS) return null
         return Pending(romId, p.getString("target", "") ?: "", p.getString("label", "") ?: "", Uri.parse(uri))
     }
 
