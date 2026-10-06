@@ -106,6 +106,18 @@ Valen para Android y escritorio. Seguridad revisa el código antes del push.
 - **Escrituras atómicas:** `.tmp` + fsync + rename (en Windows, reemplazando el destino), y una sola copia `.bak` rotada.
 - **Tests:** zip slip (`..`, absolutas, con unidad, symlink), zip bomb, demasiadas entradas, tamaños inválidos y fallo a mitad de importación con el original intacto.
 
+## Resultados (Android, 2026-10-05)
+
+| Sistema | Origen | Archivo | Importar en multiemu | Exportar | Vuelta al origen |
+|---|---|---|---|---|---|
+| DS | melonDS (Android) | `Pokémon Blanco.sav`, 512 KB crudo | ✅ Pokémon Blanco continúa desde esa partida | ✅ mismos bytes | pendiente |
+| GBA | Pizza Boy GBA (Android, perfil de trabajo) | `.sav` de Esmeralda, 128 KB (flash) crudo | ✅ «CONTINUAR — JUGADOR DENISSE» | pendiente | pendiente |
+
+Lo aprendido:
+- **Pizza Boy guarda por defecto en su carpeta privada** (`Android/data`), que ninguna otra app puede leer desde Android 11. El usuario tuvo que mover la partida a Descargas. Hay que explicarlo en la ayuda de «Importar» (en Pizza Boy: cambiar la carpeta de guardados, o copiar el archivo).
+- **Si Android cierra multiemu mientras el selector de archivos está abierto** (poca memoria; pasó con dos perfiles abiertos en un teléfono de 4 GB), al volver la app arranca de cero y la importación se pierde sin aviso. Arreglo pendiente: guardar que había una importación en curso y, al arrancar, ofrecer terminarla con el archivo que devolvió el selector.
+- Un perfil de trabajo (Island) no deja que una app personal lea sus archivos: hay que importar desde una copia de multiemu instalada en ese mismo perfil.
+
 ## A quién afecta
 
 - **Escritorio** (multiemu_exe): normalizador, clave de nube del DS si se unifica, «Importar» para 3DS.

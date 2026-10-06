@@ -2516,7 +2516,7 @@ function App(): React.JSX.Element {
                     const cloudSave = cloudSaves.find(s => s.slot === GAME_SAVE_CLOUD_SLOT);
                     return cloudSave ? `En la nube: ${formatCloudTimestamp(cloudSave.updatedAt)}` : 'Sin guardado en la nube';
                   })()
-                : 'De otro emulador, o una copia para llevártela'}
+                : 'De otro emulador, o para llevártela'}
             </Text>
           </View>
           {cloudEnabled && system !== 'gb' && (
