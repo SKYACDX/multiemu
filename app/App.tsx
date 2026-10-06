@@ -99,6 +99,9 @@ import {
   legacyDsSaveId,
   romCrc32,
   romTitle,
+  pickSaveToImport,
+  exportSave,
+  writeCloudBackup,
   listStateSlots,
   loadCachedRom,
   loadCachedRomPath,
@@ -834,6 +837,79 @@ function App(): React.JSX.Element {
       setCloudBusySlot(null);
     }
   }, [authToken, cloudSaves, writeLocalGameSave, remoteGameSaveCrc]);
+
+  // A save from another emulator (docs/save-import.md): picked and converted
+  // natively (SaveNormalizer), confirmed, then put in place with the core
+  // closed (replaceSave keeps one .bak of the old one) and the game
+  // restarted. It never goes to the cloud behind the user's back: they're
+  // asked, and the cloud's current copy is kept on the phone first.
+  const applyImportedSave = async (romId: string, bytes: Uint8Array) => {
+    closeSaveModal();
+    await writeLocalGameSave(romId, bytes);
+    // So the auto-sync doesn't upload it on its own: the user decides below.
+    lastSyncedSaveCrc.current = crc32(bytes);
+    reloadActiveRom(romId);
+    const gameKey = cloudGameKey();
+    if (!authToken || !gameKey || currentSaveSystem.current === 'gb') {
+      Alert.alert('Partida importada', 'El juego se reinició con la partida importada.');
+      return;
+    }
+    Alert.alert(
+      'Partida importada',
+      'El juego se reinició con la partida importada. ¿Subirla también a la nube? La copia que haya ahora en la nube se guarda en el teléfono antes de reemplazarla.',
+      [
+        {text: 'Ahora no', style: 'cancel'},
+        {
+          text: 'Subir',
+          onPress: async () => {
+            try {
+              const remote = (await listCloudSaves(authToken)).find(
+                save => save.gameKey === gameKey && save.slot === GAME_SAVE_CLOUD_SLOT,
+              );
+              if (remote) await writeCloudBackup(romId, bytesToBase64(await downloadCloudSave(authToken, remote.id)));
+              await uploadCloudSave(authToken, gameKey, GAME_SAVE_CLOUD_SLOT, bytes, gameSaveFileName(), cloudTitle.current);
+              refreshCloudSaves();
+            } catch (e) {
+              Alert.alert('No se pudo subir la partida', e instanceof Error ? e.message : String(e));
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleImportGameSave = async () => {
+    const romId = currentRomId.current;
+    const target = currentSaveSystem.current;
+    if (!romId || target === '3ds') return;
+    let picked: {base64: string; note: string | null};
+    try {
+      picked = await pickSaveToImport(target);
+    } catch (e: any) {
+      if (e?.code !== 'CANCELLED') Alert.alert('No se pudo importar', e instanceof Error ? e.message : String(e));
+      return;
+    }
+    Alert.alert(
+      '¿Reemplazar la partida de este juego?',
+      `${picked.note ? `${picked.note}\n\n` : ''}La partida actual se guarda como copia de seguridad en el teléfono.`,
+      [
+        {text: 'Cancelar', style: 'cancel'},
+        {text: 'Importar', onPress: () => applyImportedSave(romId, base64ToBytes(picked.base64))},
+      ],
+    );
+  };
+
+  const handleExportGameSave = async () => {
+    const romId = currentRomId.current;
+    if (!romId) return;
+    const name = (cloudTitle.current ?? romLabel).replace(/[\\/:*?"<>|]/g, '').trim() || 'partida';
+    try {
+      await exportSave(romId, `${name}.sav`);
+      Alert.alert('Partida exportada', 'Se guardó una copia de la partida de este juego.');
+    } catch (e: any) {
+      if (e?.code !== 'CANCELLED') Alert.alert('No se pudo exportar', e instanceof Error ? e.message : String(e));
+    }
+  };
 
   // CRC of the game-save bytes as of the last successful upload/download,
   // so the periodic auto-sync effect can tell "changed since we last
@@ -2230,7 +2306,7 @@ function App(): React.JSX.Element {
                 </View>
               </View>
             )}
-            {(system === 'gba' || system === 'nds' || system === '3ds') && (
+            {(system === 'gb' || system === 'gba' || system === 'nds' || system === '3ds') && (
               <Pressable
                 style={styles.menuItem}
                 onPress={() => {
@@ -2430,17 +2506,20 @@ function App(): React.JSX.Element {
         </>
       )}
 
-      {cloudEnabled && (
+      {((cloudEnabled && system !== 'gb') || system !== '3ds') && (
         <View style={[styles.slotCard, styles.gameSaveCard]}>
           <View>
             <Text style={styles.slotLabel}>Guardado del juego</Text>
             <Text style={styles.slotMeta} numberOfLines={1}>
-              {(() => {
-                const cloudSave = cloudSaves.find(s => s.slot === GAME_SAVE_CLOUD_SLOT);
-                return cloudSave ? `En la nube: ${formatCloudTimestamp(cloudSave.updatedAt)}` : 'Sin guardado en la nube';
-              })()}
+              {cloudEnabled && system !== 'gb'
+                ? (() => {
+                    const cloudSave = cloudSaves.find(s => s.slot === GAME_SAVE_CLOUD_SLOT);
+                    return cloudSave ? `En la nube: ${formatCloudTimestamp(cloudSave.updatedAt)}` : 'Sin guardado en la nube';
+                  })()
+                : 'De otro emulador, o una copia para llevártela'}
             </Text>
           </View>
+          {cloudEnabled && system !== 'gb' && (
           <View style={styles.slotActions}>
             <Pressable
               style={[styles.slotActionButton, styles.slotActionButtonCloud, cloudBusySlot === GAME_SAVE_CLOUD_SLOT && styles.slotActionButtonDisabled]}
@@ -2475,6 +2554,17 @@ function App(): React.JSX.Element {
               </Text>
             </Pressable>
           </View>
+          )}
+          {system !== '3ds' && (
+            <View style={styles.slotActions}>
+              <Pressable style={styles.slotActionButton} onPress={handleImportGameSave}>
+                <Text style={styles.slotActionLabel}>Importar</Text>
+              </Pressable>
+              <Pressable style={styles.slotActionButton} onPress={handleExportGameSave}>
+                <Text style={styles.slotActionLabel}>Exportar</Text>
+              </Pressable>
+            </View>
+          )}
         </View>
       )}
       {system === '3ds' ? (

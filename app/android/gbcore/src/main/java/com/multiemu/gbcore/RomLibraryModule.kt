@@ -20,6 +20,10 @@ import org.json.JSONObject
 import java.io.File
 
 private const val REQUEST_CODE_PICK_FOLDER = 9002
+private const val REQUEST_CODE_PICK_SAVE = 9003
+private const val REQUEST_CODE_EXPORT_SAVE = 9004
+// The biggest DS save (32MB) plus a NO$GBA header; anything larger is not a save.
+private const val MAX_SAVE_IMPORT = 32 * 1024 * 1024 + 0x4C
 private const val CACHE_INDEX_FILE = "rom_cache_index.json"
 // Where ROMs actually live now: getExternalFilesDir, not the internal
 // dir they used to sit in. It's browsable
@@ -52,6 +56,8 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext), ActivityEventListener {
 
     private var pendingFolderPromise: Promise? = null
+    private var pendingSaveImport: Pair<Promise, String>? = null
+    private var pendingSaveExport: Pair<Promise, ByteArray>? = null
 
     init {
         reactContext.addActivityEventListener(this)
@@ -341,7 +347,137 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    // ---- Saves from and to other emulators (docs/save-import.md) ------------
+    // The system pickers (Storage Access Framework): no storage permission,
+    // only the one file the user chose, copied into memory before anything
+    // reads it. Its name and path never leave this module.
+
+    /**
+     * Lets the user pick a save file from another emulator and converts it
+     * for [target] ("gb", "gba", "nds") with SaveNormalizer. Resolves
+     * {base64, note}; rejects with a message for the user ("CANCELLED" if
+     * they backed out). Nothing is written: the caller decides.
+     */
+    @ReactMethod
+    fun pickSaveToImport(target: String, promise: Promise) {
+        val activity = reactContext.currentActivity
+        if (activity == null) {
+            promise.reject("NO_ACTIVITY", "No hay ninguna pantalla activa")
+            return
+        }
+        pendingSaveImport = promise to target
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+        try {
+            activity.startActivityForResult(intent, REQUEST_CODE_PICK_SAVE)
+        } catch (e: Exception) {
+            pendingSaveImport = null
+            promise.reject("PICKER_ERROR", e.message, e)
+        }
+    }
+
+    /** Copies saves/<romId>.sav to a file the user creates with the system picker, suggested as [suggestedName]. */
+    @ReactMethod
+    fun exportSave(romId: String, suggestedName: String, promise: Promise) {
+        val activity = reactContext.currentActivity
+        val file = runCatching { saveFile(romId) }.getOrNull()
+        if (activity == null || file == null) {
+            promise.reject("EXPORT_ERROR", "No se pudo exportar")
+            return
+        }
+        if (!file.exists()) {
+            promise.reject("NO_SAVE_DATA", "Este juego todavía no tiene una partida guardada.")
+            return
+        }
+        pendingSaveExport = promise to file.readBytes()
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("application/octet-stream")
+            .putExtra(Intent.EXTRA_TITLE, suggestedName)
+        try {
+            activity.startActivityForResult(intent, REQUEST_CODE_EXPORT_SAVE)
+        } catch (e: Exception) {
+            pendingSaveExport = null
+            promise.reject("PICKER_ERROR", e.message, e)
+        }
+    }
+
+    /** Keeps the cloud's copy as saves/<romId>.cloud.bak before an import replaces it there. */
+    @ReactMethod
+    fun writeCloudBackup(romId: String, base64: String, promise: Promise) {
+        try {
+            val file = saveFile(romId)
+            File(file.path.removeSuffix(".sav") + ".cloud.bak").writeBytes(Base64.decode(base64, Base64.DEFAULT))
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("BACKUP_ERROR", e.message, e)
+        }
+    }
+
+    /** filesDir/saves/<romId>.sav for a romId that came from JS (same rule as the views' replaceSave). */
+    private fun saveFile(romId: String): File {
+        require(Regex("^[A-Za-z0-9:_-]{1,64}$").matches(romId)) { "invalid romId" }
+        val dir = File(reactContext.filesDir, "saves").apply { mkdirs() }
+        val file = File(dir, "$romId.sav")
+        require(file.canonicalPath.startsWith(dir.canonicalPath + File.separator)) { "invalid romId" }
+        return file
+    }
+
+    private fun finishSaveImport(promise: Promise, target: String, uri: Uri) {
+        Thread {
+            try {
+                val bytes = reactContext.contentResolver.openInputStream(uri)?.use { input ->
+                    val out = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        out.write(buffer, 0, read)
+                        if (out.size() > MAX_SAVE_IMPORT) {
+                            promise.reject("TOO_BIG", "Ese archivo es demasiado grande para ser un guardado.")
+                            return@Thread
+                        }
+                    }
+                    out.toByteArray()
+                } ?: throw IllegalStateException("No se pudo abrir el archivo")
+                when (val result = SaveNormalizer.normalize(bytes, target)) {
+                    is SaveNormalizer.Result.Ok -> promise.resolve(Arguments.createMap().apply {
+                        putString("base64", Base64.encodeToString(result.bytes, Base64.NO_WRAP))
+                        putString("note", result.note)
+                    })
+                    is SaveNormalizer.Result.Error -> promise.reject("NOT_A_SAVE", result.message)
+                }
+            } catch (e: Exception) {
+                promise.reject("IMPORT_ERROR", "No se pudo leer el archivo.", e)
+            }
+        }.start()
+    }
+
+    private fun finishSaveExport(promise: Promise, bytes: ByteArray, uri: Uri) {
+        Thread {
+            try {
+                reactContext.contentResolver.openOutputStream(uri, "w")?.use { it.write(bytes) }
+                    ?: throw IllegalStateException("No se pudo crear el archivo")
+                promise.resolve(null)
+            } catch (e: Exception) {
+                promise.reject("EXPORT_ERROR", "No se pudo escribir el archivo.", e)
+            }
+        }.start()
+    }
+
     override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQUEST_CODE_PICK_SAVE || requestCode == REQUEST_CODE_EXPORT_SAVE) {
+            val uri = data?.data
+            if (requestCode == REQUEST_CODE_PICK_SAVE) {
+                val (promise, target) = pendingSaveImport ?: return
+                pendingSaveImport = null
+                if (resultCode != Activity.RESULT_OK || uri == null) promise.reject("CANCELLED", "Cancelado") else finishSaveImport(promise, target, uri)
+            } else {
+                val (promise, bytes) = pendingSaveExport ?: return
+                pendingSaveExport = null
+                if (resultCode != Activity.RESULT_OK || uri == null) promise.reject("CANCELLED", "Cancelado") else finishSaveExport(promise, bytes, uri)
+            }
+            return
+        }
         if (requestCode != REQUEST_CODE_PICK_FOLDER) return
         val promise = pendingFolderPromise ?: return
         pendingFolderPromise = null

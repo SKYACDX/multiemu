@@ -356,6 +356,8 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
                 sharedDs = null
                 sharedKey = null
                 ds = null
+                // One copy of what it replaces (a cloud download, an import).
+                if (file.exists()) file.copyTo(File(file.path + ".bak"), overwrite = true)
                 writeFileAtomically(file, save)
             }
         }

@@ -32,6 +32,9 @@ interface RomLibraryNativeModule {
   dsSaveId(path: string, legacyId: string): Promise<string>;
   romCrc32(path: string): Promise<string>;
   romTitle(path: string, system: string): Promise<string | null>;
+  pickSaveToImport(target: string): Promise<{base64: string; note: string | null}>;
+  exportSave(romId: string, suggestedName: string): Promise<void>;
+  writeCloudBackup(romId: string, base64: string): Promise<void>;
   deleteFromCache(id: string): Promise<void>;
   pickFolder(): Promise<{uri: string; name: string}>;
   getLastFolder(): Promise<{uri: string; name: string} | null>;
@@ -176,4 +179,23 @@ export function romCrc32(path: string): Promise<string> {
 /** The game's name for its cloud saves, read from the ROM (never the file name); null if none. */
 export function romTitle(path: string, system: string): Promise<string | null> {
   return RomLibrary.romTitle(path, system);
+}
+
+/**
+ * Lets the user pick a save file from another emulator (system picker) and
+ * converts it for target ("gb" | "gba" | "nds") -- see SaveNormalizer.kt.
+ * Rejects with a message for the user; code "CANCELLED" if they backed out.
+ */
+export function pickSaveToImport(target: string): Promise<{base64: string; note: string | null}> {
+  return RomLibrary.pickSaveToImport(target);
+}
+
+/** Copies the game's save to a file the user creates (system picker). */
+export function exportSave(romId: string, suggestedName: string): Promise<void> {
+  return RomLibrary.exportSave(romId, suggestedName);
+}
+
+/** Keeps the cloud's copy of a game save locally before an import replaces it there. */
+export function writeCloudBackup(romId: string, base64: string): Promise<void> {
+  return RomLibrary.writeCloudBackup(romId, base64);
 }

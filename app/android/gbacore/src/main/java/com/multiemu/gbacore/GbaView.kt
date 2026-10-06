@@ -127,6 +127,8 @@ class GbaView(context: Context) : View(context) {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
+        // One copy of what it replaces (a cloud download, an import).
+        if (file.exists()) file.copyTo(File(file.path + ".bak"), overwrite = true)
         writeFileAtomically(file, save)
     }
 

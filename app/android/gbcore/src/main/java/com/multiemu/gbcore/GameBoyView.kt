@@ -102,6 +102,8 @@ class GameBoyView(context: Context) : View(context) {
         gameBoy = null
         saveFile = null
         releaseAudio()
+        // One copy of what it replaces (a cloud download, an import).
+        if (file.exists()) file.copyTo(File(file.path + ".bak"), overwrite = true)
         writeFileAtomically(file, save)
     }
 
