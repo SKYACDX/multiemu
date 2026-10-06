@@ -271,6 +271,25 @@ TEST_CASE(mbc3_save_carries_the_clock_across_sessions) {
     return true;
 }
 
+TEST_CASE(save_of_another_size_is_padded_or_cut_not_ignored) {
+    // MBC5 + 32KiB RAM + battery. A save of half that: copied, rest 0xFF.
+    auto cart = gb::loadCartridge(makeRom(2, 0x1B, 0x03));
+    std::vector<gb::u8> half(16 * 1024, 0x42);
+    cart->loadRam(half);
+    cart->writeRom(0x0000, 0x0A);  // enable RAM
+    CHECK(cart->readRam(0xA000) == 0x42);
+    cart->writeRom(0x4000, 0x03);  // RAM bank 3, past the end of the file
+    CHECK(cart->readRam(0xA000) == 0xFF);
+    // MBC1 + 8KiB: a padded 32KiB file keeps its first 8KiB.
+    auto mbc1 = gb::loadCartridge(makeRom(2, 0x03, 0x02));
+    std::vector<gb::u8> padded(32 * 1024, 0x00);
+    padded[0] = 0x77;
+    mbc1->loadRam(padded);
+    CHECK(mbc1->ram().size() == 8 * 1024);
+    CHECK(mbc1->ram()[0] == 0x77);
+    return true;
+}
+
 TEST_CASE(too_short_rom_returns_null) {
     std::vector<gb::u8> rom(0x100, 0);  // shorter than the header itself
     CHECK(gb::loadCartridge(rom) == nullptr);

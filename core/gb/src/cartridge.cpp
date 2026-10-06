@@ -11,6 +11,16 @@ constexpr u16 kRomBankSize = 0x4000;
 constexpr u16 kRamBankSize = 0x2000;
 
 std::int64_t wallClock() { return static_cast<std::int64_t>(std::time(nullptr)); }
+
+// A save from another emulator isn't always exactly the cartridge's RAM size
+// (some pad it out, some write only what the game used). Copy what fits and
+// leave the rest as erased memory (0xFF), rather than ignoring the whole file
+// and starting the player over.
+void copySave(std::vector<u8>& ram, const std::vector<u8>& data) {
+    const std::size_t n = std::min(ram.size(), data.size());
+    std::copy(data.begin(), data.begin() + n, ram.begin());
+    std::fill(ram.begin() + n, ram.end(), u8(0xFF));
+}
 ClockSource g_clock = wallClock;
 
 // No mapper at all: a single fixed 32 KiB ROM, no external RAM. Covers the
@@ -91,7 +101,7 @@ class Mbc1Cartridge : public Cartridge {
     bool hasBattery() const override { return hasBattery_; }
     const std::vector<u8>& ram() const override { return ram_; }
     void loadRam(const std::vector<u8>& data) override {
-        if (data.size() == ram_.size()) ram_ = data;
+        if (!data.empty()) copySave(ram_, data);
     }
 
    private:
@@ -194,8 +204,9 @@ class Mbc3Cartridge : public Cartridge {
     }
 
     void loadRam(const std::vector<u8>& data) override {
-        if (data.size() < ram_.size()) return;
-        std::copy(data.begin(), data.begin() + ram_.size(), ram_.begin());
+        if (data.empty()) return;
+        copySave(ram_, data);
+        if (data.size() <= ram_.size()) return;
         // 48 bytes of clock with a 64-bit timestamp, or 44 with the older
         // 32-bit one. Anything else: no clock saved, keep the fresh one.
         const std::size_t extra = data.size() - ram_.size();
@@ -340,7 +351,7 @@ class Mbc5Cartridge : public Cartridge {
     bool hasBattery() const override { return hasBattery_; }
     const std::vector<u8>& ram() const override { return ram_; }
     void loadRam(const std::vector<u8>& data) override {
-        if (data.size() == ram_.size()) ram_ = data;
+        if (!data.empty()) copySave(ram_, data);
     }
 
    private:
