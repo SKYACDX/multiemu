@@ -95,6 +95,8 @@ import {
   getLastFolder,
   listCachedRoms,
   listRomFolder,
+  dsSaveId,
+  legacyDsSaveId,
   listStateSlots,
   loadCachedRom,
   loadCachedRomPath,
@@ -129,6 +131,7 @@ import {
   setSessionRejectedHandler,
   cloudSaveDownloadUrl,
   CloudSave,
+  deleteCloudSave,
   downloadCloudSave,
   listCloudSaves,
   login as accountLogin,
@@ -266,6 +269,23 @@ const GAME_SAVE_CLOUD_SLOT = 99;
 // keep their 3DS states in separate cloud slots -- Windows 0-3, Android 10-13
 // -- rather than overwriting each other's with something unusable.
 const N3DS_CLOUD_STATE_SLOT_BASE = 10;
+/**
+ * Moves a DS game's cloud saves from its pre-1.17 key (nds:<name>-<size>) to
+ * the desktop app's (nds:<crc32>), slot by slot: copy, then delete the old
+ * one. A slot the new key already has is left alone on both sides -- the
+ * upload is an upsert, and the new key's copy may be the Windows app's.
+ */
+async function moveLegacyDsCloudSaves(token: string, legacyId: string, romId: string) {
+  const saves = await listCloudSaves(token);
+  const newKey = `nds:${romId}`;
+  for (const old of saves.filter(save => save.gameKey === `nds:${legacyId}`)) {
+    if (saves.some(save => save.gameKey === newKey && save.slot === old.slot)) continue;
+    const bytes = await downloadCloudSave(token, old.id);
+    await uploadCloudSave(token, newKey, old.slot, bytes, old.originalName);
+    await deleteCloudSave(token, old.id);
+  }
+}
+
 const cloudStateSlot = (system: EmulatedSystem, slot: number) =>
   system === '3ds' ? N3DS_CLOUD_STATE_SLOT_BASE + slot : slot;
 
@@ -796,6 +816,10 @@ function App(): React.JSX.Element {
   const formatCloudTimestamp = (iso: string) =>
     new Date(iso).toLocaleString(undefined, {day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'});
 
+  // The id a DS game's save had before 1.17 ("<name>-<size>"); see
+  // moveLegacyDsCloudSaves.
+  const dsLegacySaveId = useRef<string | null>(null);
+
   // Right after loading a ROM (see loadIntoEmulator/handlePickRom), or
   // from autoSyncGameSave's first tick for a ROM if this hasn't run yet
   // (see saveConflictChecked): if the user is logged in and the device's
@@ -806,6 +830,9 @@ function App(): React.JSX.Element {
       const gameKey = cloudGameKey();
       if (!authToken || !gameKey) return;
       try {
+        if (currentSaveSystem.current === 'nds' && dsLegacySaveId.current && dsLegacySaveId.current !== romId) {
+          await moveLegacyDsCloudSaves(authToken, dsLegacySaveId.current, romId);
+        }
         const saves = await listCloudSaves(authToken);
         const remote = saves.find(s => s.gameKey === gameKey && s.slot === GAME_SAVE_CLOUD_SLOT);
         const local = currentSaveSystem.current === '3ds' ? await readLocalGameSave(romId) : null;
@@ -1004,6 +1031,7 @@ function App(): React.JSX.Element {
     (bytes: Uint8Array, label: string, targetSystem: EmulatedSystem, base64?: string) => {
       baseRomBytes.current = bytes;
       currentRomId.current = crc32(bytes).toString(16);
+      dsLegacySaveId.current = null; // already keyed by CRC32 -- nothing to move
       currentSaveSystem.current = targetSystem;
       setRomLabel(label);
       setSystem(targetSystem);
@@ -1295,13 +1323,11 @@ function App(): React.JSX.Element {
       }
 
       if (targetSystem === 'nds') {
-        // romId is a stable, deterministic identifier (name+size, not the
-        // cache entry's own id -- see saveRomToCachePath) so the save file
-        // and any Recientes reopen resolve to the same key every time.
-        // Cover art only needs the 12-byte title at the very start of the
-        // file, so it's cheap even without the rest.
-        const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
-        currentRomId.current = romId;
+        // romId is the ROM's CRC32 (see dsSaveId), not the cache entry's own
+        // id, so the save file, any Recientes reopen and the desktop app all
+        // resolve to the same key. Cover art only needs the 12-byte title at
+        // the very start of the file, so it's cheap even without the rest.
+        const legacyId = legacyDsSaveId(picked.name, picked.size);
         currentSaveSystem.current = 'nds';
         // Cached the same way GB/GBA ROMs are (see saveRomToCache), just
         // path-based instead of base64 -- the file stays on disk the whole
@@ -1314,6 +1340,9 @@ function App(): React.JSX.Element {
           refreshRecentRoms();
         } catch {}
         currentDsRomPath.current = dsPath;
+        const romId = await dsSaveId(dsPath, legacyId);
+        currentRomId.current = romId;
+        dsLegacySaveId.current = legacyId;
         setRomLabel(picked.name);
         setCoverImageUrl(null);
         setGbaCartLabel(null);
@@ -1438,13 +1467,14 @@ function App(): React.JSX.Element {
           return;
         }
         if (rom.system === 'nds') {
-          // Same deterministic romId formula as handlePickRom/
-          // handleSelectHubFile (name+size, not rom.id -- that's just the
-          // cache entry's own key) so the save file resolves the same way
-          // regardless of how this ROM was opened.
-          const romId = `${rom.name}-${rom.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+          // Same romId as handlePickRom/handleSelectHubFile (the ROM's
+          // CRC32, not rom.id -- that's just the cache entry's own key) so
+          // the save file resolves the same way however the ROM was opened.
           const dsPath = await loadCachedRomPath(rom.id);
+          const legacyId = legacyDsSaveId(rom.name, rom.size);
+          const romId = await dsSaveId(dsPath, legacyId);
           currentRomId.current = romId;
+          dsLegacySaveId.current = legacyId;
           currentSaveSystem.current = 'nds';
           currentDsRomPath.current = dsPath;
           hasUserRom.current = true;
@@ -1500,8 +1530,7 @@ function App(): React.JSX.Element {
         hasUserRom.current = true;
 
         if (targetSystem === 'nds') {
-          const romId = `${picked.name}-${picked.size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
-          currentRomId.current = romId;
+          const legacyId = legacyDsSaveId(picked.name, picked.size);
           currentSaveSystem.current = 'nds';
           let dsPath = picked.path;
           try {
@@ -1510,6 +1539,9 @@ function App(): React.JSX.Element {
             refreshRecentRoms();
           } catch {}
           currentDsRomPath.current = dsPath;
+          const romId = await dsSaveId(dsPath, legacyId);
+          currentRomId.current = romId;
+          dsLegacySaveId.current = legacyId;
           setRomLabel(file.title);
           setCoverImageUrl(null);
           setGbaCartLabel(null);

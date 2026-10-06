@@ -148,6 +148,48 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    /**
+     * A DS game's save id: the CRC32 of the whole ROM file, in hex without
+     * leading zeros -- what the desktop app keys a DS game's cloud save by, so
+     * both find the same one. (Android used to use "<name>-<size>", which
+     * differed between the two apps and between two copies of one ROM with
+     * different names.) The save and state slots kept under [legacyId] move
+     * to the new id the first time, unless it already has its own. Off the
+     * module thread: a DS ROM is 128-512MB.
+     */
+    @ReactMethod
+    fun dsSaveId(path: String, legacyId: String, promise: Promise) {
+        Thread {
+            try {
+                val crc = java.util.zip.CRC32()
+                File(path).inputStream().use { input ->
+                    val buffer = ByteArray(1 shl 20)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        crc.update(buffer, 0, read)
+                    }
+                }
+                val id = java.lang.Long.toHexString(crc.value)
+                if (legacyId != id) {
+                    val saves = File(reactContext.filesDir, "saves")
+                    moveIfFree(File(saves, "$legacyId.sav"), File(saves, "$id.sav"))
+                    val states = File(reactContext.filesDir, "states")
+                    for (slot in 0..3) {
+                        moveIfFree(File(states, "${legacyId}_slot$slot.state"), File(states, "${id}_slot$slot.state"))
+                    }
+                }
+                promise.resolve(id)
+            } catch (e: Exception) {
+                promise.reject("DS_SAVE_ID", e.message, e)
+            }
+        }.start()
+    }
+
+    private fun moveIfFree(from: File, to: File) {
+        if (from.exists() && !to.exists()) from.renameTo(to)
+    }
+
     /** Path-based sibling of [loadFromCache] -- resolves to the cached file's path instead of reading it into base64. */
     @ReactMethod
     fun loadPathFromCache(id: String, promise: Promise) {

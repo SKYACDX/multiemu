@@ -29,6 +29,7 @@ interface RomLibraryNativeModule {
   listCache(): Promise<CachedRom[]>;
   loadFromCache(id: string): Promise<{base64: string}>;
   loadPathFromCache(id: string): Promise<{path: string}>;
+  dsSaveId(path: string, legacyId: string): Promise<string>;
   deleteFromCache(id: string): Promise<void>;
   pickFolder(): Promise<{uri: string; name: string}>;
   getLastFolder(): Promise<{uri: string; name: string} | null>;
@@ -152,4 +153,15 @@ export function getAppVersionCode(): Promise<number> {
 
 export function getAppVersionName(): Promise<string> {
   return RomLibrary.getAppVersionName();
+}
+
+/** The id Android used for a DS game's save before 1.17: "<name>-<size>". */
+export const legacyDsSaveId = (name: string, size: number) => `${name}-${size}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+
+/**
+ * A DS game's save id, the ROM's CRC32 (the desktop app's key -- see
+ * RomLibraryModule.dsSaveId); moves a save kept under the old id over.
+ */
+export function dsSaveId(path: string, legacyId: string): Promise<string> {
+  return RomLibrary.dsSaveId(path, legacyId);
 }
