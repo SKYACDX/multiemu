@@ -28,6 +28,33 @@ En PC, poner un `.sav` crudo con el nombre de la ROM al lado ya funciona como im
 2. **«Importar guardado» y «Exportar guardado»** en el menú Guardado, para todos los sistemas (GB incluido). Al importar: se elige el archivo, se convierte, se hace copia del guardado actual (`save-backups/`), se escribe, se **reinicia el núcleo de verdad** y se avisa qué pasó. Exportar sirve para la prueba de ida y vuelta y para que nadie quede atrapado en multiemu.
 3. **Escritorio:** el mismo normalizador al abrir un `.sav`, `.dsv` o `.srm` junto a la ROM, y un «Importar» para 3DS.
 
+## Especificación del normalizador (v1)
+
+La misma en Kotlin y en JS. Entrada: los bytes del archivo y el destino (`gb`, `gba`, `nds` o `nds-slot2`, el cartucho de GBA dentro del DS). La extensión del archivo no decide nada: solo sirve para el mensaje. Salida: los bytes que se escriben como `.sav` y una nota corta para el usuario, o un error legible. No se interpreta nada más allá de quitar envolturas.
+
+| Destino | Tamaños válidos de los datos | Envolturas que se quitan |
+|---|---|---|
+| `gb` | 512, 2K, 8K, 32K, 64K, 128K | Ninguna: un pie de RTC de 44 o 48 bytes detrás de esos tamaños se deja, porque `core/gb` lo lee en MBC3. |
+| `gba` | 512, 8K, 32K, 64K, 128K | El pie de RTC de 16 bytes de mGBA se deja (mGBA lo lee). Un `.srm` combinado de 0x22000 bytes (núcleos VBA de RetroArch) se convierte: si los primeros 0x20000 no son todos 0xFF, esos (SRAM/flash); si lo son, los últimos 0x2000 (EEPROM). *Hay que confirmarlo con un archivo real.* |
+| `nds` | 512, 8K, 32K, 64K, 128K, 256K, 512K, 1M, 2M, 4M, 8M, 16M, 32M | `.dsv` de DeSmuME y DraStic: si los últimos 16 bytes son `\|-DESMUME SAVE-\|`, se quitan los últimos 122 (el pie). NO$GBA: si empieza por `NocashGbaBackupMediaSavDataFile`, sin compresión (u32 en 0x44 = 0) los datos van desde 0x4C; con compresión, error (v1). |
+| `nds-slot2` | 512, 8K, 32K, 64K, 128K, y 128K+16 | Se quita un pie de RTC de 16 bytes salvo en 128K+16, el único tamaño con pie que melonDS acepta. |
+
+- El tamaño se comprueba **después** de quitar la envoltura. Para `gb` y `gba` se admiten además los pies citados (+44, +48 en GB; +16 en GBA). Cualquier otro tamaño da error.
+- Un archivo todo a 0xFF o todo a 0x00 se acepta, pero la nota avisa de que parece vacío.
+- `core/gb` (compartido) deja de ignorar en silencio un guardado de tamaño distinto en MBC1/MBC5: copia lo que quepa y rellena el resto con 0xFF, como ya hace MBC3. Este cambio necesita el visto bueno de escritorio.
+- Errores (texto para el usuario):
+  - «Ese archivo no tiene el tamaño de un guardado de <sistema> (<n> bytes).»
+  - «Es un guardado comprimido de NO$GBA. En NO$GBA, guárdalo sin compresión e inténtalo de nuevo.»
+  - «Ese archivo está vacío.»
+- Notas:
+  - «Convertido desde DeSmuME/DraStic.»
+  - «Convertido desde NO$GBA.»
+  - «Convertido desde RetroArch (VBA).»
+  - «Se quitó el reloj del cartucho (el DS no lo usa).»
+- Tests: un archivo sintético por fila y por error, con los mismos vectores en Kotlin y JS (Android: `SaveNormalizerTest.kt`).
+- Ojo con `nds-slot2`: el cartucho de GBA dentro del DS usa **el mismo** `.sav` que ese juego en mGBA. Si se le quita el reloj al meterlo en melonDS, melonDS reescribe el archivo entero sin él y mGBA lo pierde, aunque lo vuelve a escribir en el siguiente guardado. Para no tocarlo, se recorta solo en memoria y el archivo no se reescribe hasta que el juego guarda.
+- Zips en Kotlin: `ZipInputStream` se fía del tamaño de la cabecera local, así que hay que comprobar también el tamaño y el CRC32 de cada entrada después de descomprimirla, como hace escritorio (863fb1f).
+
 ## Errores a arreglar antes (o la importación fallará igual)
 
 - **DS (Android):** recargar la misma ROM conserva la sesión de melonDS (`DsView.adoptOrLoad` con la misma clave). Un guardado descargado de la nube o importado se queda en disco, pero el núcleo sigue con la memoria vieja y lo pisa en el siguiente guardado del juego. Probablemente ya afecta a la descarga desde la nube del DS: hay que confirmarlo con una prueba.
