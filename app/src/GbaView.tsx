@@ -24,6 +24,8 @@ export type GbaButton =
 export interface GbaViewHandle {
   /** romId (e.g. the ROM's CRC32) keys its save file -- omit to skip save persistence. */
   loadRomBase64(base64: string, romId?: string): void;
+  /** Closes the running game, then puts this save (base64) in place of romId's -- reload the ROM right after. */
+  replaceSave(romId: string, base64: string): void;
   setButtonPressed(button: GbaButton, pressed: boolean): void;
   /** 1/2/3x fast-forward (audio mutes above 1x). */
   setSpeedMultiplier(multiplier: 1 | 2 | 3): void;
@@ -49,6 +51,9 @@ const GbaView = forwardRef<GbaViewHandle, ViewProps>((props, ref) => {
   useImperativeHandle(ref, () => ({
     loadRomBase64(base64: string, romId?: string) {
       dispatchCommand('loadRomBase64', [base64, romId ?? null]);
+    },
+    replaceSave(romId: string, base64: string) {
+      dispatchCommand('replaceSave', [romId, base64]);
     },
     setButtonPressed(button: GbaButton, pressed: boolean) {
       dispatchCommand('setButtonPressed', [button, pressed]);

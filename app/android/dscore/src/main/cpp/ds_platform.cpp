@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 #include <thread>
+#include <unistd.h>
 
 #define TAG "melonDS"
 
@@ -241,13 +242,22 @@ void SignalStop(StopReason reason, void* userdata) {
     Log(LogLevel::Info, "[melonDS] SignalStop reason=%d\n", static_cast<int>(reason));
 }
 
+// Through path.tmp, synced and renamed over the save: killing the app in
+// the middle of a write used to leave a truncated save, the one thing a
+// player can't get back. rename() replaces the old file in one step.
+static void WriteSaveAtomically(const std::string& path, const u8* data, u32 length) {
+    const std::string temporary = path + ".tmp";
+    FILE* f = fopen(temporary.c_str(), "wb");
+    if (!f) return;
+    const bool written = fwrite(data, 1, length, f) == length && fflush(f) == 0 && fsync(fileno(f)) == 0;
+    fclose(f);
+    if (!written || rename(temporary.c_str(), path.c_str()) != 0) remove(temporary.c_str());
+}
+
 void WriteNDSSave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen, void* userdata) {
     auto* path = static_cast<const std::string*>(userdata);
     if (!path || path->empty()) return;
-    FILE* f = fopen(path->c_str(), "wb");
-    if (!f) return;
-    fwrite(savedata, 1, savelen, f);
-    fclose(f);
+    WriteSaveAtomically(*path, savedata, savelen);
 }
 
 // Same shape as WriteNDSSave -- userdata is the inserted GBA cart's own
@@ -257,10 +267,7 @@ void WriteNDSSave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen
 void WriteGBASave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen, void* userdata) {
     auto* path = static_cast<const std::string*>(userdata);
     if (!path || path->empty()) return;
-    FILE* f = fopen(path->c_str(), "wb");
-    if (!f) return;
-    fwrite(savedata, 1, savelen, f);
-    fclose(f);
+    WriteSaveAtomically(*path, savedata, savelen);
 }
 
 // TODO: persist firmware changes (e.g. the user's DS settings) back to

@@ -92,6 +92,19 @@ class GameBoyView(context: Context) : View(context) {
     }
 
     /**
+     * Puts [save] in place of [romId]'s save file. The running game is closed
+     * without writing its RAM first -- loadRom would otherwise flush the old
+     * save over this one. The caller reloads the ROM next (loadRom).
+     */
+    fun replaceSave(romId: String, save: ByteArray) {
+        gameBoy?.close()
+        gameBoy = null
+        saveFile = null
+        releaseAudio()
+        writeFileAtomically(File(File(context.filesDir, "saves").apply { mkdirs() }, "$romId.sav"), save)
+    }
+
+    /**
      * Replaces whatever ROM is currently loaded (if any) with [rom].
      * [romId] identifies the save file (a stable per-ROM key, e.g. its
      * CRC32) -- pass null to skip save persistence entirely (used for the
@@ -191,7 +204,7 @@ class GameBoyView(context: Context) : View(context) {
         val file = saveFile ?: return
         if (!instance.hasBattery) return
         try {
-            file.writeBytes(instance.getSaveData())
+            writeFileAtomically(file, instance.getSaveData())
         } catch (e: Exception) {
             Log.w(TAG, "writeSaveFile: failed to write $file", e)
         }
@@ -221,5 +234,22 @@ class GameBoyView(context: Context) : View(context) {
         super.onDraw(canvas)
         val destRect = Rect(0, 0, width, height)
         canvas.drawBitmap(bitmap, srcRect, destRect, paint)
+    }
+}
+
+/**
+ * Writes [bytes] to [file] through a temporary file that is synced and then
+ * renamed over it, so a crash or a killed app mid-write never leaves half a
+ * save behind: the file is either the old one or the new one.
+ */
+internal fun writeFileAtomically(file: File, bytes: ByteArray) {
+    val temporary = File(file.path + ".tmp")
+    java.io.FileOutputStream(temporary).use { out ->
+        out.write(bytes)
+        out.fd.sync()
+    }
+    if (!temporary.renameTo(file)) {
+        temporary.delete()
+        throw java.io.IOException("could not replace $file")
     }
 }

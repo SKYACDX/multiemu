@@ -337,6 +337,26 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
         adoptOrLoad("bytes:${rom.size}:$romId") { DsNative.load(rom, savePathFor(romId)) }
     }
 
+    /**
+     * Puts [save] in place of [romId]'s save file -- a cloud copy or an
+     * imported one. The running session is closed first: melonDS keeps the
+     * whole save in memory, and a session adopted afterwards (same ROM, same
+     * key -- see adoptOrLoad) would keep playing the old one and write it
+     * back over this file on the game's next save. The caller reloads the
+     * ROM next (loadRomPath), which then builds a fresh session that reads
+     * this file. Queued on the emu thread, so it lands before that reload.
+     */
+    fun replaceSave(romId: String, save: ByteArray) = onEmuThread {
+        synchronized(dsLock) {
+            stopAudio()
+            sharedDs?.close()
+            sharedDs = null
+            sharedKey = null
+            ds = null
+            savePathFor(romId)?.let { writeFileAtomically(File(it), save) }
+        }
+    }
+
     /** Reads the ROM straight off disk -- see DsNative.loadFromPath. This is the path a real (128-512MB) NDS ROM should take. */
     fun loadRomFromPath(romPath: String, romId: String?) = onEmuThread {
         adoptOrLoad("path:$romPath:$romId") { DsNative.loadFromPath(romPath, savePathFor(romId)) }
@@ -553,5 +573,22 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
             }
         }
         return false
+    }
+}
+
+/**
+ * Writes [bytes] to [file] through a temporary file that is synced and then
+ * renamed over it, so a crash or a killed app mid-write never leaves half a
+ * save behind: the file is either the old one or the new one.
+ */
+internal fun writeFileAtomically(file: File, bytes: ByteArray) {
+    val temporary = File(file.path + ".tmp")
+    java.io.FileOutputStream(temporary).use { out ->
+        out.write(bytes)
+        out.fd.sync()
+    }
+    if (!temporary.renameTo(file)) {
+        temporary.delete()
+        throw java.io.IOException("could not replace $file")
     }
 }

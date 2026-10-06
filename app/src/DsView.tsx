@@ -10,6 +10,8 @@ export interface DsViewHandle {
   loadRomBase64(base64: string, romId?: string): void;
   /** Reads the ROM straight off disk on the native side -- the path a real (128-512MB) NDS ROM should take. */
   loadRomPath(path: string, romId?: string): void;
+  /** Closes the running game, then puts this save (base64) in place of romId's -- reload the ROM right after. */
+  replaceSave(romId: string, base64: string): void;
   setButtonPressed(button: DsButton, pressed: boolean): void;
   /** Freezes emulation (used while the manual-save modal is open). */
   setPaused(paused: boolean): void;
@@ -38,6 +40,9 @@ const DsView = forwardRef<DsViewHandle, ViewProps>((props, ref) => {
     },
     loadRomPath(path: string, romId?: string) {
       dispatchCommand('loadRomPath', [path, romId ?? null]);
+    },
+    replaceSave(romId: string, base64: string) {
+      dispatchCommand('replaceSave', [romId, base64]);
     },
     setButtonPressed(button: DsButton, pressed: boolean) {
       dispatchCommand('setButtonPressed', [button, pressed]);

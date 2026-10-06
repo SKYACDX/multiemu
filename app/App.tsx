@@ -120,7 +120,6 @@ import {
   loadGbaState,
   saveDsState,
   saveGbaState,
-  setGameSaveBytes,
 } from './src/EmulatorControlNative';
 import {base64ToBytes, bytesToBase64} from './src/base64';
 import {crc32} from './src/patchers/crc32';
@@ -676,12 +675,22 @@ function App(): React.JSX.Element {
     [],
   );
 
-  /** Puts a cloud copy in place of the local save (a 3DS game is closed first; see reloadActiveRom). */
+  /**
+   * Puts a cloud copy in place of the local save. The running game is closed
+   * before the file changes (the DS core keeps its save in memory and would
+   * write the old one back; GB flushes its RAM on reload), so the caller must
+   * reload the ROM right after -- see reloadActiveRom.
+   */
   const writeLocalGameSave = useCallback(async (romId: string, bytes: Uint8Array) => {
+    const base64 = bytesToBase64(bytes);
     if (currentSaveSystem.current === '3ds') {
-      if (current3dsRomPath.current) await n3dsRestoreSave(current3dsRomPath.current, bytesToBase64(bytes));
+      if (current3dsRomPath.current) await n3dsRestoreSave(current3dsRomPath.current, base64);
+    } else if (currentSaveSystem.current === 'nds') {
+      dsRef.current?.replaceSave(romId, base64);
+    } else if (currentSaveSystem.current === 'gba') {
+      gbaRef.current?.replaceSave(romId, base64);
     } else {
-      await setGameSaveBytes(romId, bytesToBase64(bytes));
+      gameBoyRef.current?.replaceSave(romId, base64);
     }
   }, []);
 
@@ -776,8 +785,10 @@ function App(): React.JSX.Element {
       if (current3dsRomPath.current) n3dsRef.current?.loadRomPath(current3dsRomPath.current);
     } else if (currentSaveSystem.current === 'nds') {
       if (currentDsRomPath.current) dsRef.current?.loadRomPath(currentDsRomPath.current, romId);
-    } else {
+    } else if (currentSaveSystem.current === 'gba') {
       gbaRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
+    } else {
+      gameBoyRef.current?.loadRomBase64(bytesToBase64(baseRomBytes.current), romId);
     }
   }, []);
 

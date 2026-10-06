@@ -39,6 +39,10 @@ class DsViewManager : SimpleViewManager<DsView>() {
                 val romId = if (args.size() > 1 && !args.isNull(1)) args.getString(1) else null
                 view.loadRomFromPath(path, romId)
             }
+            "replaceSave" -> {
+                val romId = args?.getString(0) ?: return
+                view.replaceSave(romId, Base64.decode(args.getString(1) ?: return, Base64.DEFAULT))
+            }
             "setButtonPressed" -> {
                 val buttonName = args?.getString(0) ?: return
                 val pressed = args.getBoolean(1)

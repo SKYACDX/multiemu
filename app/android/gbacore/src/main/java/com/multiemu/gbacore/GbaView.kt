@@ -116,6 +116,20 @@ class GbaView(context: Context) : View(context) {
     fun loadState(data: ByteArray): Boolean = gba?.loadState(data) ?: false
 
     /**
+     * Puts [save] in place of [romId]'s save file, with mGBA closed first so
+     * nothing it still holds open can be written back over it. The caller
+     * reloads the ROM next (loadRom).
+     */
+    fun replaceSave(romId: String, save: ByteArray) {
+        gba?.close()
+        gba = null
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
+        writeFileAtomically(File(File(context.filesDir, "saves").apply { mkdirs() }, "$romId.sav"), save)
+    }
+
+    /**
      * Replaces whatever ROM is currently loaded (if any) with [rom].
      * [romId] (a stable per-ROM key, e.g. its CRC32) is where mGBA reads
      * and writes this game's save data -- pass null to skip persistence.
@@ -232,5 +246,22 @@ class GbaView(context: Context) : View(context) {
         val srcRect = Rect(0, 0, bmp.width, bmp.height)
         val destRect = Rect(0, 0, width, height)
         canvas.drawBitmap(bmp, srcRect, destRect, paint)
+    }
+}
+
+/**
+ * Writes [bytes] to [file] through a temporary file that is synced and then
+ * renamed over it, so a crash or a killed app mid-write never leaves half a
+ * save behind: the file is either the old one or the new one.
+ */
+internal fun writeFileAtomically(file: File, bytes: ByteArray) {
+    val temporary = File(file.path + ".tmp")
+    java.io.FileOutputStream(temporary).use { out ->
+        out.write(bytes)
+        out.fd.sync()
+    }
+    if (!temporary.renameTo(file)) {
+        temporary.delete()
+        throw java.io.IOException("could not replace $file")
     }
 }
