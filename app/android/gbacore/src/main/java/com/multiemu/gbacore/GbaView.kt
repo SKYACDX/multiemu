@@ -121,12 +121,13 @@ class GbaView(context: Context) : View(context) {
      * reloads the ROM next (loadRom).
      */
     fun replaceSave(romId: String, save: ByteArray) {
+        val file = replacementSaveFile(context.filesDir, romId)
         gba?.close()
         gba = null
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
-        writeFileAtomically(File(File(context.filesDir, "saves").apply { mkdirs() }, "$romId.sav"), save)
+        writeFileAtomically(file, save)
     }
 
     /**
@@ -264,4 +265,18 @@ internal fun writeFileAtomically(file: File, bytes: ByteArray) {
         temporary.delete()
         throw java.io.IOException("could not replace $file")
     }
+}
+
+/**
+ * filesDir/saves/<romId>.sav for a romId that came from JS. Anything that
+ * isn't a plain id -- or that would still resolve outside saves/ -- is
+ * refused with IllegalArgumentException, so a bad value can never write a
+ * file somewhere else.
+ */
+internal fun replacementSaveFile(filesDir: File, romId: String): File {
+    require(Regex("^[A-Za-z0-9:_-]{1,64}$").matches(romId)) { "invalid romId" }
+    val dir = File(filesDir, "saves").apply { mkdirs() }
+    val file = File(dir, "$romId.sav")
+    require(file.canonicalPath.startsWith(dir.canonicalPath + File.separator)) { "invalid romId" }
+    return file
 }

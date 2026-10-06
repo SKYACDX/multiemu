@@ -29,6 +29,8 @@
 #include <vector>
 #include <thread>
 #include <unistd.h>
+#include <cerrno>
+#include <fcntl.h>
 
 #define TAG "melonDS"
 
@@ -245,13 +247,35 @@ void SignalStop(StopReason reason, void* userdata) {
 // Through path.tmp, synced and renamed over the save: killing the app in
 // the middle of a write used to leave a truncated save, the one thing a
 // player can't get back. rename() replaces the old file in one step.
+// A save that couldn't be written is logged with the reason: losing one
+// silently is the worst thing that can happen to a player. The directory is
+// synced after the rename so the rename itself survives a power cut.
 static void WriteSaveAtomically(const std::string& path, const u8* data, u32 length) {
     const std::string temporary = path + ".tmp";
     FILE* f = fopen(temporary.c_str(), "wb");
-    if (!f) return;
+    if (!f) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "save: cannot open %s: %s", temporary.c_str(), strerror(errno));
+        return;
+    }
     const bool written = fwrite(data, 1, length, f) == length && fflush(f) == 0 && fsync(fileno(f)) == 0;
+    const int writeError = errno;
     fclose(f);
-    if (!written || rename(temporary.c_str(), path.c_str()) != 0) remove(temporary.c_str());
+    if (!written) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "save: cannot write %s: %s", temporary.c_str(), strerror(writeError));
+        remove(temporary.c_str());
+        return;
+    }
+    if (rename(temporary.c_str(), path.c_str()) != 0) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "save: cannot replace %s: %s", path.c_str(), strerror(errno));
+        remove(temporary.c_str());
+        return;
+    }
+    const std::string directory = path.substr(0, path.find_last_of('/'));
+    const int dirFd = open(directory.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dirFd >= 0) {
+        fsync(dirFd);
+        close(dirFd);
+    }
 }
 
 void WriteNDSSave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen, void* userdata) {

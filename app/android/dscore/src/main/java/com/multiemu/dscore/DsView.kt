@@ -346,14 +346,18 @@ class DsView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
      * ROM next (loadRomPath), which then builds a fresh session that reads
      * this file. Queued on the emu thread, so it lands before that reload.
      */
-    fun replaceSave(romId: String, save: ByteArray) = onEmuThread {
-        synchronized(dsLock) {
-            stopAudio()
-            sharedDs?.close()
-            sharedDs = null
-            sharedKey = null
-            ds = null
-            savePathFor(romId)?.let { writeFileAtomically(File(it), save) }
+    fun replaceSave(romId: String, save: ByteArray) {
+        // Checked here, on the caller's thread, before anything is closed.
+        val file = replacementSaveFile(context.filesDir, romId)
+        onEmuThread {
+            synchronized(dsLock) {
+                stopAudio()
+                sharedDs?.close()
+                sharedDs = null
+                sharedKey = null
+                ds = null
+                writeFileAtomically(file, save)
+            }
         }
     }
 
@@ -591,4 +595,18 @@ internal fun writeFileAtomically(file: File, bytes: ByteArray) {
         temporary.delete()
         throw java.io.IOException("could not replace $file")
     }
+}
+
+/**
+ * filesDir/saves/<romId>.sav for a romId that came from JS. Anything that
+ * isn't a plain id -- or that would still resolve outside saves/ -- is
+ * refused with IllegalArgumentException, so a bad value can never write a
+ * file somewhere else.
+ */
+internal fun replacementSaveFile(filesDir: File, romId: String): File {
+    require(Regex("^[A-Za-z0-9:_-]{1,64}$").matches(romId)) { "invalid romId" }
+    val dir = File(filesDir, "saves").apply { mkdirs() }
+    val file = File(dir, "$romId.sav")
+    require(file.canonicalPath.startsWith(dir.canonicalPath + File.separator)) { "invalid romId" }
+    return file
 }

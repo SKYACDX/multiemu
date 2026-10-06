@@ -32,7 +32,11 @@ class GbaViewManager : SimpleViewManager<GbaView>() {
             }
             "replaceSave" -> {
                 val romId = args?.getString(0) ?: return
-                view.replaceSave(romId, Base64.decode(args.getString(1) ?: return, Base64.DEFAULT))
+                try {
+                    view.replaceSave(romId, Base64.decode(args.getString(1) ?: return, Base64.DEFAULT))
+                } catch (e: IllegalArgumentException) {
+                    android.util.Log.e("GbaViewManager", "replaceSave refused: ${e.message}")
+                }
             }
             "setButtonPressed" -> {
                 val buttonName = args?.getString(0) ?: return
