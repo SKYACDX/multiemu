@@ -32,7 +32,9 @@ interface RomLibraryNativeModule {
   dsSaveId(path: string, legacyId: string): Promise<string>;
   romCrc32(path: string): Promise<string>;
   romTitle(path: string, system: string): Promise<string | null>;
-  pickSaveToImport(target: string): Promise<{base64: string; note: string | null}>;
+  pickSaveToImport(target: string, romId: string, label: string): Promise<{base64: string; note: string | null}>;
+  takePendingSaveImport(): Promise<{romId: string; label: string; base64: string; note: string | null} | null>;
+  commitPendingSaveImport(romId: string, base64: string): Promise<void>;
   exportSave(romId: string, suggestedName: string): Promise<void>;
   writeCloudBackup(romId: string, base64: string): Promise<void>;
   deleteFromCache(id: string): Promise<void>;
@@ -186,8 +188,18 @@ export function romTitle(path: string, system: string): Promise<string | null> {
  * converts it for target ("gb" | "gba" | "nds") -- see SaveNormalizer.kt.
  * Rejects with a message for the user; code "CANCELLED" if they backed out.
  */
-export function pickSaveToImport(target: string): Promise<{base64: string; note: string | null}> {
-  return RomLibrary.pickSaveToImport(target);
+export function pickSaveToImport(target: string, romId: string, label: string): Promise<{base64: string; note: string | null}> {
+  return RomLibrary.pickSaveToImport(target, romId, label);
+}
+
+/** An import a restart interrupted (see PendingSaveImport.kt), read and converted; null if none. */
+export function takePendingSaveImport(): Promise<{romId: string; label: string; base64: string; note: string | null} | null> {
+  return RomLibrary.takePendingSaveImport();
+}
+
+/** Writes a recovered import as the game's save; only while no game is running. */
+export function commitPendingSaveImport(romId: string, base64: string): Promise<void> {
+  return RomLibrary.commitPendingSaveImport(romId, base64);
 }
 
 /** Copies the game's save to a file the user creates (system picker). */

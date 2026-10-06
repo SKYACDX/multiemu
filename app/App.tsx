@@ -74,7 +74,7 @@ import ThemeEditorScreen from './src/ThemeEditorScreen';
 import ThemesExploreScreen from './src/ThemesExploreScreen';
 import {createTheme, incrementThemeDownload, updateTheme} from './src/api/themes';
 import {defaultTheme, resolveControlStyle, Theme, withAlpha} from './src/theme';
-import {dsBannerTitle, readRomTitle} from './src/romTitle';
+import {dsBannerTitle, readRomTitle, tidyRomFileName} from './src/romTitle';
 import {
   downloadRomToPath,
   InvalidRomExtensionError,
@@ -100,6 +100,8 @@ import {
   romCrc32,
   romTitle,
   pickSaveToImport,
+  takePendingSaveImport,
+  commitPendingSaveImport,
   exportSave,
   writeCloudBackup,
   listStateSlots,
@@ -576,6 +578,33 @@ function App(): React.JSX.Element {
       .catch(() => {});
   }, [refreshRecentRoms]);
 
+  // An import whose file picker outlived the app (Android killed it while
+  // the picker was up -- see PendingSaveImport.kt): ask once, at start-up,
+  // while no game is running, so nothing can write over the save.
+  useEffect(() => {
+    takePendingSaveImport()
+      .then(pending => {
+        if (!pending) return;
+        Alert.alert(
+          '¿Terminar la importación?',
+          `Elegiste una partida para ${pending.label || 'un juego'} y Android cerró multiemu antes de terminar.${
+            pending.note ? `\n\n${pending.note}` : ''
+          }\n\nSi la importas, reemplaza la partida de ese juego; la actual se guarda como copia de seguridad.`,
+          [
+            {text: 'Descartar', style: 'cancel'},
+            {
+              text: 'Importar',
+              onPress: () =>
+                commitPendingSaveImport(pending.romId, pending.base64)
+                  .then(() => Alert.alert('Partida importada', 'Se usará la próxima vez que abras ese juego.'))
+                  .catch(e => Alert.alert('No se pudo importar', e instanceof Error ? e.message : String(e))),
+            },
+          ],
+        );
+      })
+      .catch(e => Alert.alert('No se pudo terminar la importación', e instanceof Error ? e.message : String(e)));
+  }, []);
+
   // Signed in (at start-up or just now): name the cloud saves that have no
   // title yet, in the background.
   useEffect(() => {
@@ -884,7 +913,7 @@ function App(): React.JSX.Element {
     if (!romId || target === '3ds') return;
     let picked: {base64: string; note: string | null};
     try {
-      picked = await pickSaveToImport(target);
+      picked = await pickSaveToImport(target, romId, cloudTitle.current ?? romLabel);
     } catch (e: any) {
       if (e?.code !== 'CANCELLED') Alert.alert('No se pudo importar', e instanceof Error ? e.message : String(e));
       return;
@@ -902,7 +931,11 @@ function App(): React.JSX.Element {
   const handleExportGameSave = async () => {
     const romId = currentRomId.current;
     if (!romId) return;
-    const name = (cloudTitle.current ?? romLabel).replace(/[\\/:*?"<>|]/g, '').trim() || 'partida';
+    // DS/3DS: the name inside the game; GB/GBA headers only have a short
+    // uppercase code, so the tidied file name reads better there.
+    const system = currentSaveSystem.current;
+    const base = system === 'nds' || system === '3ds' ? cloudTitle.current ?? romLabel : tidyRomFileName(romLabel);
+    const name = base.replace(/[\\/:*?"<>|]/g, '').trim() || 'partida';
     try {
       await exportSave(romId, `${name}.sav`);
       Alert.alert('Partida exportada', 'Se guardó una copia de la partida de este juego.');
@@ -2565,6 +2598,11 @@ function App(): React.JSX.Element {
               </Pressable>
             </View>
           )}
+          {system !== '3ds' && (
+            <Text style={styles.importHint}>
+              Si tu otro emulador guarda en una carpeta privada (como Pizza Boy), copia primero la partida a Descargas.
+            </Text>
+          )}
         </View>
       )}
       {system === '3ds' ? (
@@ -3651,6 +3689,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#3a5a7a',
   },
   slotActionSolo: {flex: 0, paddingHorizontal: 20},
+  importHint: {color: '#8a8a8a', fontSize: 11, lineHeight: 15},
   slotActionButtonDisabled: {backgroundColor: '#2a2a2a', opacity: 0.5},
   slotActionButtonCloud: {
     flexDirection: 'row',

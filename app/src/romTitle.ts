@@ -57,3 +57,13 @@ export function dsBannerTitle(bytes: Uint8Array): string | null {
   }
   return null;
 }
+
+/** A ROM file name without its extension, a leading "1234 - " or anything in ( ) / [ ] -- like the desktop app's library. */
+export function tidyRomFileName(name: string): string {
+  const tidy = name
+    .replace(/\.[^.]+$/, '')
+    .replace(/^\d+\s+-\s+/, '')
+    .replace(/\s*[([][^)\]]*[)\]]/g, '')
+    .trim();
+  return tidy || name;
+}

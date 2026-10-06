@@ -20,7 +20,7 @@ import org.json.JSONObject
 import java.io.File
 
 private const val REQUEST_CODE_PICK_FOLDER = 9002
-private const val REQUEST_CODE_PICK_SAVE = 9003
+private const val REQUEST_CODE_PICK_SAVE = PendingSaveImport.REQUEST_CODE
 private const val REQUEST_CODE_EXPORT_SAVE = 9004
 // The biggest DS save (32MB) plus a NO$GBA header; anything larger is not a save.
 private const val MAX_SAVE_IMPORT = 32 * 1024 * 1024 + 0x4C
@@ -359,13 +359,15 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
      * they backed out). Nothing is written: the caller decides.
      */
     @ReactMethod
-    fun pickSaveToImport(target: String, promise: Promise) {
+    fun pickSaveToImport(target: String, romId: String, label: String, promise: Promise) {
         val activity = reactContext.currentActivity
         if (activity == null) {
             promise.reject("NO_ACTIVITY", "No hay ninguna pantalla activa")
             return
         }
         pendingSaveImport = promise to target
+        // In case Android kills the app while the picker is up: see PendingSaveImport.
+        PendingSaveImport.start(reactContext, romId, target, label)
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
         try {
             activity.startActivityForResult(intent, REQUEST_CODE_PICK_SAVE)
@@ -398,6 +400,66 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         } catch (e: Exception) {
             pendingSaveExport = null
             promise.reject("PICKER_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * An import left half-way by a restart (PendingSaveImport): resolves
+     * {romId, label, base64, note} once it's read and converted, or null if
+     * there is none. Either way it's forgotten -- the user is asked once.
+     */
+    @ReactMethod
+    fun takePendingSaveImport(promise: Promise) {
+        val pending = PendingSaveImport.take(reactContext)
+        if (pending == null) {
+            PendingSaveImport.clear(reactContext)
+            promise.resolve(null)
+            return
+        }
+        Thread {
+            try {
+                val bytes = reactContext.contentResolver.openInputStream(pending.uri)?.use { input ->
+                    val out = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        out.write(buffer, 0, read)
+                        if (out.size() > MAX_SAVE_IMPORT) throw IllegalStateException("Ese archivo es demasiado grande para ser un guardado.")
+                    }
+                    out.toByteArray()
+                } ?: throw IllegalStateException("No se pudo abrir el archivo")
+                when (val result = SaveNormalizer.normalize(bytes, pending.target)) {
+                    is SaveNormalizer.Result.Ok -> promise.resolve(Arguments.createMap().apply {
+                        putString("romId", pending.romId)
+                        putString("label", pending.label)
+                        putString("base64", Base64.encodeToString(result.bytes, Base64.NO_WRAP))
+                        putString("note", result.note)
+                    })
+                    is SaveNormalizer.Result.Error -> promise.reject("NOT_A_SAVE", result.message)
+                }
+            } catch (e: Exception) {
+                promise.reject("IMPORT_ERROR", e.message ?: "No se pudo leer el archivo.", e)
+            } finally {
+                PendingSaveImport.clear(reactContext)
+            }
+        }.start()
+    }
+
+    /**
+     * Writes a recovered import (takePendingSaveImport) in place of the
+     * game's save -- at start-up, before any game is running, so no core can
+     * write over it. Keeps one .bak of the old save, like replaceSave.
+     */
+    @ReactMethod
+    fun commitPendingSaveImport(romId: String, base64: String, promise: Promise) {
+        try {
+            val file = replacementSaveFile(reactContext.filesDir, romId)
+            if (file.exists()) file.copyTo(File(file.path + ".bak"), overwrite = true)
+            writeFileAtomically(file, Base64.decode(base64, Base64.DEFAULT))
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("IMPORT_ERROR", "No se pudo guardar la partida.", e)
         }
     }
 
@@ -468,8 +530,11 @@ class RomLibraryModule(private val reactContext: ReactApplicationContext) :
         if (requestCode == REQUEST_CODE_PICK_SAVE || requestCode == REQUEST_CODE_EXPORT_SAVE) {
             val uri = data?.data
             if (requestCode == REQUEST_CODE_PICK_SAVE) {
+                // No promise: the app was restarted under the picker, and
+                // MainActivity kept the file for takePendingSaveImport.
                 val (promise, target) = pendingSaveImport ?: return
                 pendingSaveImport = null
+                PendingSaveImport.clear(reactContext)
                 if (resultCode != Activity.RESULT_OK || uri == null) promise.reject("CANCELLED", "Cancelado") else finishSaveImport(promise, target, uri)
             } else {
                 val (promise, bytes) = pendingSaveExport ?: return

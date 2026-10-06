@@ -1,6 +1,7 @@
 import React from 'react';
 import {ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View} from 'react-native';
 import {CachedRom} from './RomLibraryNative';
+import {tidyRomFileName} from './romTitle';
 import {IconAccount, IconCartridge, IconClose, IconFile, IconFolder, IconGlobe, IconLink} from './icons';
 
 const SYSTEM_LABEL: Record<string, string> = {gb: 'GB', gbc: 'GBC', gba: 'GBA', nds: 'NDS', '3ds': '3DS'};
@@ -10,13 +11,7 @@ const SYSTEM_COLOR: Record<string, string> = {gb: '#4a90d9', gbc: '#5cb85c', gba
 // src/renderer/library.js): the title inside a DS/3DS game, else the file
 // name without its extension, a leading "1234 - " or anything in ( ) / [ ].
 function gameName(rom: CachedRom): string {
-  if (rom.title) return rom.title;
-  const tidy = rom.label
-    .replace(/\.[^.]+$/, '')
-    .replace(/^\d+\s+-\s+/, '')
-    .replace(/\s*[([][^)\]]*[)\]]/g, '')
-    .trim();
-  return tidy || rom.label;
+  return rom.title || tidyRomFileName(rom.label);
 }
 
 // "2 GB", "16 MB", "65 KB": the largest unit with a whole number in front.
