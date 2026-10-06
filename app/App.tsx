@@ -278,15 +278,29 @@ const N3DS_CLOUD_STATE_SLOT_BASE = 10;
  * the desktop app's (nds:<crc32>), slot by slot: copy, then delete the old
  * one. A slot the new key already has is left alone on both sides -- the
  * upload is an upsert, and the new key's copy may be the Windows app's.
+ *
+ * Losing a cloud save can't be undone, so the old copy is only deleted once
+ * a fresh listing shows the new key holding that slot at the same size. A
+ * slot that fails (say another device migrated it a moment ago and the old
+ * one is already gone -- a 404) is skipped without stopping the others. The
+ * copy gets a generic file name, not whatever the old one carried.
  */
 async function moveLegacyDsCloudSaves(token: string, legacyId: string, romId: string, title: string | null) {
   const saves = await listCloudSaves(token);
   const newKey = `nds:${romId}`;
   for (const old of saves.filter(save => save.gameKey === `nds:${legacyId}`)) {
     if (saves.some(save => save.gameKey === newKey && save.slot === old.slot)) continue;
-    const bytes = await downloadCloudSave(token, old.id);
-    await uploadCloudSave(token, newKey, old.slot, bytes, old.originalName, title ?? old.title);
-    await deleteCloudSave(token, old.id);
+    try {
+      const bytes = await downloadCloudSave(token, old.id);
+      const fileName = old.slot === GAME_SAVE_CLOUD_SLOT ? 'game.sav' : `slot${old.slot}.sav`;
+      await uploadCloudSave(token, newKey, old.slot, bytes, fileName, title ?? old.title);
+      const copied = (await listCloudSaves(token)).some(
+        save => save.gameKey === newKey && save.slot === old.slot && save.fileSize === bytes.length,
+      );
+      if (copied) await deleteCloudSave(token, old.id);
+    } catch {
+      // Left as it was; the next time the game opens tries again.
+    }
   }
 }
 

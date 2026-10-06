@@ -69,6 +69,7 @@ Valen para Android y escritorio. Seguridad revisa el código antes del push.
   - Se rechazan enlaces simbólicos y entradas que no sean archivos, nombres duplicados (sin distinguir mayúsculas), nombres reservados de Windows y caracteres no válidos.
   - Contra zip slip se valida la ruta ya resuelta, que tiene que quedar dentro del destino.
   - Se extrae a una carpeta temporal, se valida y solo entonces se mueve. Si algo falla, el guardado actual no se toca.
+- **Longitud y CRC de cada entrada (lección de escritorio, 1f8f01a):** se cuentan los bytes reales al descomprimir y se exige que la longitud final y el CRC32 coincidan con los de la cabecera. Un zip que declara 1 KB y trae 300 MB no puede colarse truncado sin aviso. Los nombres reservados de Windows, `:` y los duplicados sin distinguir mayúsculas se rechazan también en Android, porque un zip importado aquí puede acabar en la nube y bajarse en Windows.
 - **Archivos sueltos:** solo se aceptan los tamaños válidos para ese sistema o tipo de memoria (contando el pie de `.dsv`). El contenido nunca se interpreta más allá de copiarlo a la memoria de guardado.
 - **Superficie:**
   - Android: SAF (`ACTION_OPEN_DOCUMENT` / `CREATE_DOCUMENT`), sin permisos amplios de almacenamiento, y copia a almacenamiento privado antes de procesar.
